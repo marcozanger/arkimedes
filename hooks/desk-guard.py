@@ -4,9 +4,11 @@
 - approvals/ is written only by `ark approve` (a Python process, not a tool call): every tool
   write there is denied, in every session.
 - desk/ is read-only for runner processes (ARK_ROLE set by ark-loop / ark-dispatch).
-- Approving must go through `ark approve`, which has an ask permission rule; calling the CLI
-  module directly is denied.
+- Approving must go through exactly `ark approve <repo>/<slug>` (or `<path>/bin/ark approve ...`),
+  the forms that have an ask permission rule. Any other way of invoking approve is denied, and a
+  runner process may not approve at all.
 Shell detection is a heuristic: a command that names a protected path and looks like a write.
+The hook never crashes a session: bad input means allow (no output, exit 0).
 """
 import json
 import os
@@ -17,9 +19,19 @@ from pathlib import Path
 HOME = Path(os.environ.get("ARK_HOME") or Path.home() / ".claude" / "arkimedes").expanduser()
 WRITE = re.compile(
     r"(?<![0-9&])>(?!&)"
-    r"|\b(tee|cp|mv|rm|rmdir|touch|mkdir|ln|truncate|dd|install|python3?|node|perl|ruby)\b"
-    r"|\bsed\s+-\w*i")
-APPROVE_BYPASS = re.compile(r"ark[./]cli(\.py)?\b.*\bapprove\b")
+    r"|\b(tee|cp|mv|rm|rmdir|touch|mkdir|ln|truncate|dd|install|python3?|node|perl|ruby"
+    r"|chmod|rsync|tar|unzip|patch|sh|bash|zsh|eval|xargs)\b"
+    r"|\bsed\s+-\w*i"
+    r"|\bgit\b.*\b(checkout|restore|apply|stash|reset|clean)\b")
+INTERPRETER = re.compile(r"\b(python3?|node|perl|ruby|sh|bash|zsh)\b")
+HEREDOC = re.compile(r"(<<-?\s*(['\"]?)(\w+)\2[^\n]*)\n.*?\n[ \t]*\3[ \t]*(?=\n|$)", re.S)
+QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
+APPROVE_CALL = re.compile(
+    r"((^|[\s;&|(`'\"/])ark['\"]?\s+approve\b)"
+    r"|((\bark\.cli\b|from\s+ark\s+import|cmd_approve).*\bapprove)")
+CANONICAL = re.compile(r"\s*(ark|\S+/bin/ark)\s+approve\s+[\w.@/-]+\s*")
+APPROVE_MSG = ("Approve with `ark approve <repo>/<slug>` (or `~/.local/bin/ark approve <repo>/<slug>`) "
+               "as the whole command: it is the only way, and Marco confirms it.")
 
 
 def deny(reason: str) -> None:
@@ -37,9 +49,16 @@ def under(path: Path, base: Path) -> bool:
 def mentions(cmd: str, name: str, cwd: str) -> bool:
     pats = [re.escape(str(HOME / name)), re.escape(str(HOME.resolve() / name)),
             re.escape(f"arkimedes/{name}"), r"ARK_HOME\}?/" + name]
-    if cwd and Path(cwd).resolve() == HOME.resolve():
-        pats.append(rf"(^|[\s\"'=(])(\./)?{name}(/|[\s\"')]|$)")
+    if (cwd and under(Path(cwd), HOME)) or re.search(r"arkimedes|ARK_HOME", cmd):
+        pats.append(rf"(^|[\s\"'=(/])(\./)?{name}(/|[\s\"')]|$)")
     return any(re.search(p, cmd) for p in pats)
+
+
+def strip_heredocs(cmd: str) -> str:
+    """Drop heredoc bodies (text, not code) unless the command also runs an interpreter."""
+    if INTERPRETER.search(QUOTED.sub("''", cmd)):
+        return cmd
+    return HEREDOC.sub(lambda m: m.group(1), cmd)
 
 
 def main() -> None:
@@ -47,14 +66,16 @@ def main() -> None:
     tool = d.get("tool_name", "")
     ti = d.get("tool_input") or {}
     cwd = d.get("cwd") or ""
-    runner = bool(os.environ.get("ARK_ROLE"))
+    if not isinstance(ti, dict) or not isinstance(cwd, str):
+        return
+    runner = "ARK_ROLE" in os.environ
     protected = [("approvals", True,
                   "Only `ark approve <repo>/<slug>` writes approvals/, and Marco confirms it."),
                  ("desk", runner,
                   "Runner processes (ARK_ROLE) never write desk/: plans belong to Marco's planning sessions.")]
-    if tool in ("Write", "Edit", "NotebookEdit"):
+    if tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
         f = ti.get("file_path") or ti.get("notebook_path") or ""
-        if not f:
+        if not f or not isinstance(f, str):
             return
         p = Path(f).expanduser()
         if not p.is_absolute():
@@ -64,12 +85,20 @@ def main() -> None:
                 deny(reason)
     elif tool == "Bash":
         cmd = ti.get("command") or ""
-        if APPROVE_BYPASS.search(cmd):
-            deny("Approve with `ark approve <repo>/<slug>`: it is the only way, and Marco confirms it.")
+        if not isinstance(cmd, str):
+            return
+        cmd = strip_heredocs(cmd)
+        if APPROVE_CALL.search(cmd) and (runner or not CANONICAL.fullmatch(cmd)):
+            deny("Runner processes never approve plans. " + APPROVE_MSG if runner else APPROVE_MSG)
+        shell = QUOTED.sub("''", cmd)
         for name, on, reason in protected:
-            if on and mentions(cmd, name, cwd) and WRITE.search(cmd):
+            if on and mentions(cmd, name, cwd) and WRITE.search(shell):
                 deny(reason + " (This command names that folder and looks like a write.)")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:  # fail open, never block sessions on a hook bug
+        print(f"desk-guard: ignored error: {e!r}", file=sys.stderr)
+        sys.exit(0)

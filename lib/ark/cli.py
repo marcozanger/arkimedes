@@ -73,7 +73,7 @@ def _pr_table(m: dict) -> str:
 
 
 def cmd_approve(args) -> int:
-    if os.environ.get("ARK_ROLE"):
+    if "ARK_ROLE" in os.environ:
         print("ark approve: rechazado. Lo está corriendo un proceso del runner (ARK_ROLE); "
               "solo Marco aprueba planes.", file=sys.stderr)
         return 2
