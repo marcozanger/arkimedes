@@ -36,8 +36,11 @@ START_SLOP = 2                        # ps start times can move a second on Linu
 
 OURS, GONE, REUSED, UNKNOWN = "ours", "gone", "reused", "unknown"
 
-# ps must answer the same whatever the caller's locale, timezone or PATH.
-PS_ENV = {"LC_ALL": "C", "TZ": "UTC", "PATH": "/bin:/usr/bin"}
+# ps must answer the same whatever the caller's locale, timezone or PATH. Dates stay in English
+# (LC_TIME=C) but the command comes out as UTF-8: with LC_ALL=C, ps prints non-ASCII bytes as `M-CM-1`
+# and a run path like `diseño` would never match what .proc recorded.
+PS_ENV = {"LC_CTYPE": "en_US.UTF-8", "LC_TIME": "C", "TZ": "UTC", "PATH": "/bin:/usr/bin"}
+LSOF_ENV = {"LC_CTYPE": "en_US.UTF-8", "PATH": "/usr/sbin:/usr/bin:/sbin:/bin"}
 
 # Popen objects of the processes this ark-loop started: poll() them so none stays a zombie.
 _children: dict[str, subprocess.Popen] = {}
@@ -101,7 +104,8 @@ def _receipt(run_dir: Path, name: str, code: int, reason: str, **extra) -> None:
 def _ps(*args: str) -> str | None:
     """ps's output, or None if it could not answer. No output means no such process."""
     try:
-        r = subprocess.run(["ps", *args], capture_output=True, text=True, errors="replace", timeout=5, env=PS_ENV,
+        r = subprocess.run(["ps", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
+                           env=PS_ENV,
                            stdin=subprocess.DEVNULL, start_new_session=True)   # never a member of a group we watch
     except (OSError, subprocess.SubprocessError):
         return None
@@ -373,7 +377,10 @@ def consume(run_dir, name: str) -> dict | None:
     done = run_dir / "done"
     done.mkdir(exist_ok=True)
     end = r["end"]
-    stamp = f"{name}-{int(end * 1e9) if isinstance(end, (int, float)) else time.time_ns()}"
+    if not (isinstance(end, (int, float)) and math.isfinite(end)):
+        r.update(reason="unreadable receipt", exit=-1, end=None)
+        end = None
+    stamp = f"{name}-{int(end * 1e9) if end is not None else time.time_ns()}"
     _atomic(done / f"{stamp}.json", {**r, "proc": info})
     log = run_dir / f"{name}.log"
     if log.exists():
@@ -384,6 +391,65 @@ def consume(run_dir, name: str) -> dict | None:
     if child is not None:
         child.poll()
     return r
+
+
+class CwdHoldersError(RuntimeError):
+    """lsof could not answer: not the same as nobody being there."""
+
+
+def cwd_holders(path) -> list[int]:
+    """Pids of this user's processes whose current directory is `path` or inside it (symlinks resolved).
+    Raises CwdHoldersError if lsof is missing, times out or fails: an empty list always means none."""
+    root = os.path.realpath(path)
+    try:
+        r = subprocess.run(["lsof", "-nP", "-a", "-d", "cwd", "-u", str(os.getuid()), "-Fpn"],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+                           env=LSOF_ENV, stdin=subprocess.DEVNULL, start_new_session=True)
+    except (OSError, subprocess.SubprocessError) as e:
+        raise CwdHoldersError(f"lsof could not run: {e}") from e
+    if r.returncode == 1 and not r.stdout.strip() and not r.stderr.strip():
+        return []                                         # lsof's way of saying nothing matched
+    if r.returncode not in (0, 1) or not r.stdout.strip() or (r.returncode == 1 and r.stderr.strip()):
+        raise CwdHoldersError(f"lsof failed (exit {r.returncode}): {(r.stderr or r.stdout).strip()[:200]}")
+    holders, pid, seen = [], None, 0
+    for line in r.stdout.splitlines():
+        if line.startswith("p") and line[1:].isdigit():
+            pid, seen = int(line[1:]), seen + 1
+        elif line.startswith("n") and pid is not None:
+            cwd = os.path.realpath(line[1:])
+            if cwd == root or cwd.startswith(root.rstrip(os.sep) + os.sep):
+                holders.append(pid)
+            pid = None
+    if not seen:
+        raise CwdHoldersError(f"lsof gave output that could not be read: {r.stdout.strip()[:200]}")
+    return sorted(set(holders))
+
+
+def _stop_cli(d: Path, job: str) -> int:
+    stopped, notes = [], []
+    for n in active(d):
+        if not n.startswith(job + ".") or (d / f"{n}.receipt.json").exists():
+            continue
+        ok = stop(d, n, "stopped by Marco")
+        left = (_read(d / f"{n}.receipt.json") or {}).get("survivors")
+        if ok:
+            stopped.append(n)
+            if left:
+                notes.append(f"ojo: {n}: se mandó SIGTERM y SIGKILL, pero quedan procesos del grupo vivos; "
+                             "revisalos a mano.")
+        elif left:
+            notes.append(f"ojo: {n}: el proceso principal ya no estaba, pero quedan procesos de su grupo "
+                         "que no se pudieron verificar; no se mandó ninguna señal.")
+        elif not (d / f"{n}.receipt.json").exists():
+            notes.append(f"{n}: no se pudo verificar qué proceso es (ps no respondió); no se tocó nada. "
+                         "Reintentá en unos segundos.")
+    if stopped:
+        print("detenido: " + ", ".join(stopped))
+    elif not notes:
+        print(f"nada corriendo para {job}")
+    for note in notes:
+        print(note)
+    return 0 if stopped else 1
 
 
 def main(argv=None) -> int:
@@ -402,11 +468,7 @@ def main(argv=None) -> int:
             and ".." not in argv[1].split("/"):
         repo, _, slug = argv[1].rpartition("/")
         d = paths.run_dir(repo, slug)
-        stopped = [n for n in active(d) if n.startswith(argv[2] + ".") and stop(d, n, "stopped by Marco")]
-        print("detenido: " + ", ".join(stopped) if stopped else f"nada corriendo para {argv[2]}")
-        if any((_read(d / f"{n}.receipt.json") or {}).get("survivors") for n in stopped):
-            print("ojo: quedan procesos del grupo que no se pudieron verificar; no se les mandó ninguna señal.")
-        return 0 if stopped else 1
+        return _stop_cli(d, argv[2])
     print("uso: ark-dispatch stop <repo>/<slug> <job>", file=sys.stderr)
     return 2
 

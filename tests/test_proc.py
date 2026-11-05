@@ -181,6 +181,52 @@ def test_dispatch_stop(ark_home):
     assert proc.main(["stop", "demo/x", "shell"]) == 1
 
 
+def stop_cli(ark_home, capsys, job="j"):
+    code = proc.main(["stop", "demo/x", job])
+    return code, capsys.readouterr().out
+
+
+def test_dispatch_stop_with_survivors_after_signalling_says_so(ark_home, capsys, monkeypatch):
+    d = paths.run_dir("demo", "x")
+    _, pid = stubborn(d)
+    monkeypatch.setattr(proc, "_group_ended", lambda pgid, seconds: False)
+    code, out = stop_cli(ark_home, capsys)
+    assert code == 0
+    assert "detenido: j.worker" in out and "quedan" in out
+    assert "ninguna señal" not in out and "nada corriendo" not in out
+
+
+def test_dispatch_stop_with_survivors_of_a_dead_wrapper_does_not_say_nothing_runs(ark_home, capsys, monkeypatch):
+    monkeypatch.setattr(proc, "KILL_WAIT", 0.3)
+    d = paths.run_dir("demo", "x")
+    pid_file = d / "pid"
+    d.mkdir(parents=True)
+    orphan_maker = ("import os, sys, time\n"
+                    "if os.fork() == 0:\n"
+                    "    open(sys.argv[1], 'w').write(str(os.getpid())); time.sleep(20)\n")
+    leader = subprocess.Popen([sys.executable, "-c", orphan_maker, str(pid_file)], start_new_session=True,
+                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    member = read_pid(pid_file)
+    leader.wait()
+    info = dead_wrapper_proc(d, "j.worker")
+    (d / "j.worker.proc").write_text(json.dumps({**info, "pid": leader.pid}))
+    code, out = stop_cli(ark_home, capsys)
+    assert code == 1
+    assert "quedan" in out and "nada corriendo" not in out and "no se mandó ninguna señal" in out
+    assert running(member)
+
+
+def test_dispatch_stop_with_an_undecided_identity_does_not_say_nothing_runs(ark_home, capsys, monkeypatch):
+    d = paths.run_dir("demo", "x")
+    info = proc.start(d, "j.worker", ["sleep", "20"], cwd=d, env=dict(os.environ), minutes=5)
+    restart()
+    monkeypatch.setattr(proc, "_describe", lambda pid: proc.UNKNOWN)
+    code, out = stop_cli(ark_home, capsys)
+    assert code == 1
+    assert "nada corriendo" not in out and "no se pudo verificar" in out and "j.worker" in out
+    assert running(info["pid"])
+
+
 # ---- identity: a signal reaches only the group this runner started ------------------------------
 
 def test_a_live_wrapper_is_recognised_after_a_restart_in_any_locale_or_timezone(tmp_path, monkeypatch):
@@ -193,6 +239,23 @@ def test_a_live_wrapper_is_recognised_after_a_restart_in_any_locale_or_timezone(
     assert proc.reap(tmp_path) == []
     assert proc.stop(tmp_path, "j.worker", "stopped by Marco") is True
     assert proc.consume(tmp_path, "j.worker")["reason"] == "stopped by Marco"
+
+
+def test_a_live_wrapper_is_recognised_with_a_non_ascii_run_dir(tmp_path):
+    d = tmp_path / "diseño-ñandú-日本"
+    info = proc.start(d, "j.worker", ["sleep", "20"], cwd=tmp_path, env=dict(os.environ), minutes=5)
+    restart()
+    assert proc._alive(d, "j.worker", info["pid"]) is True
+    assert proc.reap(d) == []
+    assert proc.stop(d, "j.worker", "stopped by Marco") is True
+    assert proc.consume(d, "j.worker")["reason"] == "stopped by Marco"
+
+
+def test_ps_dates_parse_in_other_locales(monkeypatch):
+    monkeypatch.setenv("LC_ALL", "es_AR.UTF-8")
+    monkeypatch.setenv("LANG", "ja_JP.UTF-8")
+    seen = proc._describe(os.getpid())
+    assert not isinstance(seen, str) and abs(seen[0] - time.time()) < 86400 * 365
 
 
 def reused_variants(tmp_path, name, variant):
@@ -432,7 +495,8 @@ def test_consume_without_a_receipt_changes_nothing(tmp_path):
     assert proc.active(tmp_path) == ["j.gate"]
 
 
-@pytest.mark.parametrize("content", ["[1]", "{not json", "", '{"exit": 0}'])
+@pytest.mark.parametrize("content", ["[1]", "{not json", "", '{"exit": 0}', '{"exit": 0, "end": NaN}',
+                                     '{"exit": 0, "end": Infinity}', '{"exit": 0, "end": -Infinity}'])
 def test_a_bad_receipt_is_a_failure_with_every_key(tmp_path, content):
     proc.start(tmp_path, "j.worker", ["true"], cwd=tmp_path, env=dict(os.environ), minutes=1)
     wait_receipt(tmp_path, "j.worker")
@@ -514,3 +578,77 @@ def test_setup_with_a_bad_cwd_keeps_the_reason(tmp_path):
     wait_receipt(tmp_path, "j.worker")
     r = proc.consume(tmp_path, "j.worker")
     assert r["exit"] == 127 and r["reason"].startswith("cannot start")
+
+
+# ---- cwd_holders: who sits in a folder ----------------------------------------------------------
+
+def sitter(cwd):
+    p = subprocess.Popen(["sleep", "20"], cwd=cwd, start_new_session=True, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    _mine.append(p)
+    return p
+
+
+def wait_holders(path, pid, want=True):
+    end = time.time() + 5
+    while time.time() < end:
+        if (pid in proc.cwd_holders(path)) == want:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def test_cwd_holders_finds_a_process_in_the_folder_or_inside_it(tmp_path):
+    (tmp_path / "a" / "b").mkdir(parents=True)
+    inside, deep = sitter(tmp_path), sitter(tmp_path / "a" / "b")
+    assert wait_holders(tmp_path, inside.pid) and wait_holders(tmp_path, deep.pid)
+
+
+def test_cwd_holders_ignores_a_sibling_with_the_same_prefix(tmp_path):
+    (tmp_path / "w").mkdir()
+    (tmp_path / "w-2").mkdir()
+    sibling = sitter(tmp_path / "w-2")
+    assert wait_holders(tmp_path / "w-2", sibling.pid)
+    assert sibling.pid not in proc.cwd_holders(tmp_path / "w")
+
+
+def test_cwd_holders_resolves_symlinks(tmp_path):
+    (tmp_path / "real").mkdir()
+    (tmp_path / "link").symlink_to(tmp_path / "real")
+    p = sitter(tmp_path / "real")
+    assert wait_holders(tmp_path / "link", p.pid)
+
+
+def test_cwd_holders_is_empty_for_an_empty_folder(tmp_path):
+    (tmp_path / "empty").mkdir()
+    assert proc.cwd_holders(tmp_path / "empty") == []
+
+
+def test_cwd_holders_forgets_a_process_that_left(tmp_path):
+    p = sitter(tmp_path)
+    assert wait_holders(tmp_path, p.pid)
+    p.kill()
+    p.wait()
+    assert wait_holders(tmp_path, p.pid, want=False)
+
+
+def test_cwd_holders_raises_when_lsof_is_missing_or_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr(proc, "LSOF_ENV", {"PATH": "/nonexistent"})
+    with pytest.raises(proc.CwdHoldersError):
+        proc.cwd_holders(tmp_path)
+
+
+def test_cwd_holders_raises_on_a_timeout(tmp_path, monkeypatch):
+    def slow(*a, **k):
+        raise subprocess.TimeoutExpired("lsof", 1)
+    monkeypatch.setattr(subprocess, "run", slow)
+    with pytest.raises(proc.CwdHoldersError):
+        proc.cwd_holders(tmp_path)
+
+
+@pytest.mark.parametrize("code,out,err", [(1, "", "lsof: boom"), (2, "", ""), (0, "", ""), (1, "pgarbage\n", "")])
+def test_cwd_holders_does_not_read_a_failure_as_nothing(tmp_path, monkeypatch, code, out, err):
+    r = subprocess.CompletedProcess(["lsof"], code, out, err)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: r)
+    with pytest.raises(proc.CwdHoldersError):
+        proc.cwd_holders(tmp_path)
