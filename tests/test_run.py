@@ -31,3 +31,15 @@ def test_events_are_capped(ark_home):
     for i in range(250):
         run.event(st, f"e{i}")
     assert len(st["events"]) == run.MAX_EVENTS and st["events"][-1].endswith("e249")
+
+
+import pytest
+
+
+@pytest.mark.parametrize("content", ['{"repo": "r", "sl', "[1, 2]"])
+def test_load_corrupt_raises_not_none(ark_home, content):
+    f = run.state_file("r", "s")
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(content, encoding="utf-8")
+    with pytest.raises(run.StateCorrupt, match="state.json"):
+        run.load("r", "s")

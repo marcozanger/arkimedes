@@ -6,6 +6,7 @@ runs/<repo>/<slug>.md is rendered from it for people and for `ark status` (its `
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -43,11 +44,21 @@ def state_file(repo: str, slug: str) -> Path:
     return paths.run_dir(repo, slug) / "state.json"
 
 
+class StateCorrupt(Exception):
+    """state.json exists but is unreadable. Never treated as "no run yet"."""
+
+
 def load(repo: str, slug: str) -> dict | None:
     f = state_file(repo, slug)
     if not f.exists():
         return None
-    return json.loads(f.read_text(encoding="utf-8"))
+    try:
+        st = json.loads(f.read_text(encoding="utf-8"))
+    except (ValueError, UnicodeDecodeError) as e:
+        raise StateCorrupt(f"corrupt run state {f}: {e}") from e
+    if not isinstance(st, dict):
+        raise StateCorrupt(f"corrupt run state {f}: not a JSON object")
+    return st
 
 
 def event(st: dict, text: str) -> None:
@@ -64,8 +75,16 @@ def alert(st: dict, text: str) -> None:
 def _atomic(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
     tmp.replace(path)
+    dfd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
 
 
 def save(st: dict) -> None:
