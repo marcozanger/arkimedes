@@ -585,3 +585,60 @@ def test_add_worktree_after_its_directory_was_deleted(runner, tmp_path):
     shutil.rmtree(p)
     gitops.add_worktree(repo, p, "ark/a", base)
     assert gitops.rev(p, "HEAD") == base
+
+
+# ---- N5: remove_worktree never deletes another repo's worktree ----
+
+def test_remove_worktree_leaves_another_repos_live_worktree(runner, tmp_path):
+    a, b = runner("a"), runner("b")
+    wt = tmp_path / "wt" / "job"
+    gitops.add_worktree(b, wt, "ark/x", gitops.rev(b, "HEAD"))
+    (wt / "uncommitted.txt").write_text("keep me")
+    with pytest.raises(gitops.GitError, match="job"):
+        gitops.remove_worktree(a, wt)
+    assert (wt / "uncommitted.txt").read_text() == "keep me"
+    assert gitops.git(wt, "rev-parse", "--show-toplevel")
+
+
+def test_remove_worktree_leaves_a_dir_with_a_git_directory(runner, tmp_path):
+    repo = runner()
+    d = tmp_path / "wt" / "clone"
+    (d / ".git").mkdir(parents=True)
+    (d / "f").write_text("x")
+    with pytest.raises(gitops.GitError, match="clone"):
+        gitops.remove_worktree(repo, d)
+    assert (d / "f").exists()
+
+
+def test_remove_worktree_removes_a_half_removed_scratch_of_this_repo(runner, tmp_path):
+    repo = runner()
+    wt = tmp_path / "wt" / "half"
+    gitops.add_worktree(repo, wt, "ark/x", gitops.rev(repo, "HEAD"))
+    (wt / "junk").write_text("x")
+    # git forgot the worktree but the directory (with its .git file) is still there
+    gitdir = (wt / ".git").read_text().split(":", 1)[1].strip()
+    shutil.rmtree(gitdir)
+    gitops.remove_worktree(repo, wt)
+    assert not wt.exists()
+
+
+def test_cleanup_refusal_does_not_discard_a_successful_squash(runner, tmp_path):
+    a, b = runner("a"), runner("b")
+    base = gitops.rev(a, "HEAD")
+    w = tmp_path / "w"
+    gitops.add_worktree(a, w, "ark/a", base)
+    _commit(w, "a.txt", "a\n")
+    scratch = tmp_path / "wt" / "s"
+    # the scratch path becomes another repo's worktree only after squash_keep has run
+    real = gitops.squash_keep
+
+    def keep_then_swap(*args):
+        sha = real(*args)
+        gitops.git(a, "worktree", "remove", "--force", str(scratch))
+        gitops.add_worktree(b, scratch, "ark/y", gitops.rev(b, "HEAD"))
+        return sha
+
+    import unittest.mock as m
+    with m.patch.object(gitops, "squash_keep", keep_then_swap):
+        assert gitops.squash(a, "master", "ark/a", "sq", scratch)
+    assert scratch.exists()

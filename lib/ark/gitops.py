@@ -148,6 +148,27 @@ def add_worktree(repo, path: Path, branch: str, start: str) -> None:
         git(repo, "worktree", "add", "-q", "-b", branch, str(path), start)
 
 
+def _belongs_elsewhere(repo, path: Path) -> bool:
+    """True unless `path` is safe to delete: it has no .git entry (a stale scratch), or its .git is
+    a file whose gitdir lies inside this repo's common git dir (a half-removed scratch of this
+    repo). Anything else, including an unreadable .git, counts as another repo's."""
+    dot_git = path / ".git"
+    if not os.path.lexists(dot_git):
+        return False
+    try:
+        if dot_git.is_symlink() or not dot_git.is_file():
+            return True
+        line = dot_git.read_text(encoding="utf-8", errors="replace").splitlines()[0]
+        if not line.startswith("gitdir:"):
+            return True
+        gitdir = Path(line.split(":", 1)[1].strip())
+        gitdir = _abs(gitdir if gitdir.is_absolute() else path / gitdir)
+        common = _abs(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+        return common not in gitdir.parents
+    except (OSError, IndexError, GitError):
+        return True
+
+
 def remove_worktree(repo, path: Path) -> None:
     git(repo, "worktree", "remove", "--force", str(path), check=False)
     git(repo, "worktree", "prune", check=False)
@@ -155,6 +176,9 @@ def remove_worktree(repo, path: Path) -> None:
     if path.exists() or path.is_symlink():
         root = _abs(paths.worktrees_dir())
         if root in _abs(path).parents:
+            if not path.is_symlink() and _belongs_elsewhere(repo, path):
+                raise GitError(f"{path} holds a git checkout that is not a leftover of this repo: "
+                               "not deleting it")
             try:
                 shutil.rmtree(path) if path.is_dir() and not path.is_symlink() else path.unlink()
             except OSError as e:
