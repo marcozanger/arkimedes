@@ -43,6 +43,10 @@ def desk_location(path: Path) -> tuple[str, str] | None:
     return "/".join(rel.parts[:-1]), rel.parts[-1]
 
 
+def _non_empty_str(v) -> bool:
+    return isinstance(v, str) and bool(v.strip())
+
+
 def validate(path, *, approved: bool = False) -> list[Problem]:
     path = Path(path)
     out: list[Problem] = []
@@ -54,6 +58,8 @@ def validate(path, *, approved: bool = False) -> list[Problem]:
         plan = load_plan(path)
     except PlanError as e:
         return [Problem("frontmatter", str(e))]
+    except UnicodeDecodeError as e:
+        return [Problem("frontmatter", f"cannot read {path}: not valid UTF-8 ({e.reason})")]
     fm = plan.frontmatter
     repo_path = _check_frontmatter(path, fm, add)
     _check_spec(path, fm, repo_path, add)
@@ -78,7 +84,9 @@ def _check_frontmatter(path, fm, add):
     if fm.get("slug") and not SAFE_ID.match(str(fm["slug"])):
         add("frontmatter", f"slug {fm['slug']!r} must be lowercase letters, digits and dashes")
     loc = desk_location(path)
-    if loc:
+    if not loc or path.name != "plan.md":
+        add("frontmatter", "plan is not on the desk (expected desk/<repo>/<slug>/plan.md)")
+    else:
         repo, slug = loc
         if fm.get("repo") and str(fm["repo"]) != repo:
             add("frontmatter", f"repo is {fm['repo']!r} but the plan sits under desk/{repo}/")
@@ -103,7 +111,7 @@ def _check_spec(path, fm, repo_path, add):
             return
         try:
             status = split_frontmatter(sibling.read_text(encoding="utf-8"))[0].get("status")
-        except PlanError:
+        except (PlanError, OSError, UnicodeDecodeError):
             status = None
         if status != "approved":
             add("spec", f"spec.md is {status or 'without status'}, not approved")
@@ -127,10 +135,12 @@ def _positive(v) -> bool:
 
 def _check_manifest(m, tasks, add):
     for key in ("integration_gate", "final_pr_title"):
-        if not m.get(key):
+        if m.get(key) in (None, "", [], {}):
             add("manifest", f"missing `{key}`")
-    if "setup" in m and not isinstance(m["setup"], list):
-        add("manifest", "`setup` must be a list of commands")
+        elif not _non_empty_str(m[key]):
+            add("manifest", f"`{key}` must be a non-empty string")
+    if "setup" in m and not (isinstance(m["setup"], list) and all(_non_empty_str(c) for c in m["setup"])):
+        add("manifest", "`setup` must be a list of non-empty strings (commands)")
     jobs = m.get("jobs")
     if not isinstance(jobs, list) or not jobs:
         add("manifest", "`jobs` must be a non-empty list")
@@ -160,7 +170,10 @@ def _check_job(jid, j, add):
     for key in JOB_FIELDS:
         if j.get(key) in (None, "", [], {}):
             add("jobs", f"{jid}: missing `{key}`")
-    if j.get("tier") and j["tier"] not in TIERS:
+    for key in ("pr_title", "includes", "excludes", "gate"):
+        if j.get(key) not in (None, "", [], {}) and not _non_empty_str(j[key]):
+            add("jobs", f"{jid}: `{key}` must be a non-empty string")
+    if j.get("tier") and (not isinstance(j["tier"], str) or j["tier"] not in TIERS):
         add("jobs", f"{jid}: tier must be T0, T1 or T2, not {j['tier']!r}")
     for key in ("area", "done"):
         if j.get(key) and not _str_list(j[key]):
@@ -255,5 +268,10 @@ def _check_approval(path, fm, add):
     except (OSError, ValueError) as e:
         add("approval", f"approval file unreadable: {e}")
         return
+    if not isinstance(rec, dict):
+        add("approval", "approval file unreadable: not a JSON object")
+        return
+    if rec.get("plan") != str(path.resolve()):
+        add("approval", f"approval record is for another plan ({rec.get('plan')})")
     if rec.get("sha256") != sha256_file(path):
         add("approval", "the plan changed after approval; run `ark approve` again")

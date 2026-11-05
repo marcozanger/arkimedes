@@ -144,3 +144,81 @@ def test_overlap_is_fine_through_a_transitive_order(make_feature):
 
 def test_approved_check_needs_a_closed_plan(make_feature):
     assert "plan is not closed" in messages(make_feature(), approved=True)
+
+
+# fix-up: wrong-typed or undecodable input gives problems, never a traceback
+
+def test_unhashable_tier_is_a_problem(make_feature):
+    m = manifest(jobs=[job("shell", ["T1", "T2", "T3"], ["src/**"], tier=["T1"])])
+    assert "tier must be" in messages(make_feature(plan_text(m)))
+
+
+def test_approval_file_that_is_not_an_object(make_feature, ark_home):
+    p = make_feature(plan_text(status="closed"))
+    f = ark_home / "approvals/demo/notes-edit.json"
+    f.parent.mkdir(parents=True)
+    f.write_text("[]")
+    assert "approval file unreadable" in messages(p, approved=True)
+
+
+def test_spec_md_that_is_a_directory_or_not_utf8(make_feature):
+    p = make_feature(spec_status=None)
+    (p.parent / "spec.md").mkdir()
+    assert "spec" in checks(p)
+    (p.parent / "spec.md").rmdir()
+    (p.parent / "spec.md").write_bytes(b"---\nstatus: approved\n---\n\xff")
+    assert "spec" in checks(p)
+    (p.parent / "spec.md").write_bytes(b"\xff\xfe")
+    assert "spec" in checks(p)
+
+
+def test_plan_that_is_not_utf8(make_feature):
+    p = make_feature()
+    p.write_bytes(b"---\nstatus: draft\n---\n\xff\xfe")
+    assert "frontmatter" in checks(p)
+
+
+# fix-up: required fields must be real strings
+
+def test_gate_must_be_a_string(make_feature):
+    for bad in (False, 0, ["a"], "  "):
+        m = manifest(jobs=[job("shell", ["T1", "T2", "T3"], ["src/**"], gate=bad)])
+        assert "shell: `gate` must be a non-empty string" in messages(make_feature(plan_text(m))), bad
+
+
+def test_other_job_strings(make_feature):
+    m = manifest(jobs=[job("shell", ["T1", "T2", "T3"], ["src/**"], pr_title=5, includes=["x"], excludes={"a": 1})])
+    msg = messages(make_feature(plan_text(m)))
+    for key in ("pr_title", "includes", "excludes"):
+        assert f"shell: `{key}` must be a non-empty string" in msg
+
+
+def test_manifest_strings_and_setup(make_feature):
+    msg = messages(make_feature(plan_text(manifest(integration_gate=["x"], final_pr_title=3))))
+    assert "`integration_gate` must be a non-empty string" in msg
+    assert "`final_pr_title` must be a non-empty string" in msg
+    assert "`setup` must be a list of non-empty strings" in messages(
+        make_feature(plan_text(manifest(setup=[1, None]))))
+
+
+# fix-up: the plan must sit on the desk
+
+def test_plan_outside_the_desk(make_feature, tmp_path):
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "plan.md").write_text(plan_text())
+    (elsewhere / "spec.md").write_text("---\nstatus: approved\n---\n")
+    make_feature()
+    assert "plan is not on the desk" in messages(elsewhere / "plan.md")
+
+
+def test_approval_must_point_at_this_plan(make_feature, ark_home):
+    import json
+    from ark.plan import sha256_file
+    p = make_feature(plan_text(status="closed"))
+    f = ark_home / "approvals/demo/notes-edit.json"
+    f.parent.mkdir(parents=True)
+    f.write_text(json.dumps({"sha256": sha256_file(p), "plan": "/elsewhere/plan.md"}))
+    assert "approval record is for another plan" in messages(p, approved=True)
+    f.write_text(json.dumps({"sha256": sha256_file(p), "plan": str(p.resolve())}))
+    assert validate(p, approved=True) == []
