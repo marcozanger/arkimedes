@@ -1,6 +1,7 @@
 """Where Arkimedes keeps things, and how a repo name maps to a folder."""
 from __future__ import annotations
 
+import copy
 import json
 import os
 import subprocess
@@ -31,11 +32,35 @@ def run_file(repo: str, slug: str) -> Path:
     return runs_dir() / repo / f"{slug}.md"
 
 
+DEFAULTS = {
+    "roots": [],
+    "exclude": [],
+    "limits": {"writers_per_repo": 3, "writers_total": 6, "heavy_gates": 1},
+    "tick_minutes": 15,
+    "poll_seconds": 15,
+}
+
+
+def code_dir() -> Path:
+    """Where Arkimedes' code lives (bin/, lib/, hooks/, agents/): this checkout."""
+    return Path(__file__).resolve().parents[2]
+
+
+def worktrees_dir() -> Path:
+    return Path(os.environ.get("ARK_WORKTREES") or Path.home() / ".claude" / "ark-worktrees").expanduser()
+
+
+def run_dir(repo: str, slug: str) -> Path:
+    return runs_dir() / repo / slug
+
+
 def load_workspace() -> dict:
     f = ark_home() / "workspace.json"
-    if not f.exists():
-        return {"roots": [], "exclude": []}
-    return json.loads(f.read_text(encoding="utf-8"))
+    data = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+    ws = copy.deepcopy(DEFAULTS)
+    ws.update({k: v for k, v in data.items() if k != "limits"})
+    ws["limits"].update(data.get("limits") or {})
+    return ws
 
 
 def _has_origin(path: Path) -> bool:
