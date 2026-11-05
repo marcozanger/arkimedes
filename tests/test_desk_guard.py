@@ -123,6 +123,29 @@ def test_discussing_the_folders_is_not_a_write(ark_home):
     assert guard(ark_home, "Bash", {"command": 'echo {} > "approvals/x"'}, cwd=cwd) == "deny"
 
 
+def test_stripping_does_not_hide_real_writes(ark_home):
+    cwd = str(ark_home)
+    deny_cmds = [
+        'echo "$(touch approvals/demo/x.json)"',
+        'echo "`touch approvals/demo/x.json`"',
+        '"touch" approvals/demo/x.json',
+        '"rm" -rf approvals',
+        """"python3" -c "open('approvals/x','w')\"""",
+        "source /dev/stdin <<EOF\ntouch approvals/demo/x.json\nEOF",
+        '"/usr/bin/python3" - <<\'EOF\'\nopen("approvals/demo/x.json","w")\nEOF',
+        f"xargs touch <<EOF\n{ark_home}/approvals/demo/x.json\nEOF",
+        f'while read f; do touch "$f"; done <<EOF\n{ark_home}/approvals/demo/x.json\nEOF',
+        "$(touch${IFS}approvals/x)/bin/ark approve demo/x",
+    ]
+    for c in deny_cmds:
+        assert guard(ark_home, "Bash", {"command": c}, cwd=cwd) == "deny", c
+    assert guard(ark_home, "Bash", {"command": ". /dev/stdin <<EOF\nark approve demo/x\nEOF"}) == "deny"
+    assert guard(ark_home, "Bash", {"command": "'cp' /tmp/p.md desk/demo/x/plan.md"}, role="tick", cwd=cwd) == "deny"
+    for c in ['git commit -m "$(cat <<\'EOF\'\nstop approvals writes, rm dead code\nEOF\n)"',
+              "cat > /tmp/n.md <<EOF\napprovals notes, rm x\nEOF"]:
+        assert guard(ark_home, "Bash", {"command": c}, cwd=cwd) == "allow", c
+
+
 def test_bad_input_never_crashes_or_blocks(ark_home):
     env = {**os.environ, "ARK_HOME": str(ark_home)}
     for payload in ["", "not json", "[]", "null", '{"tool_name":"Bash"}', '{"tool_name":"Bash","tool_input":"x"}',

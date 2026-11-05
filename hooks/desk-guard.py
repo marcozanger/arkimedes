@@ -23,13 +23,12 @@ WRITE = re.compile(
     r"|chmod|rsync|tar|unzip|patch|sh|bash|zsh|eval|xargs)\b"
     r"|\bsed\s+-\w*i"
     r"|\bgit\b.*\b(checkout|restore|apply|stash|reset|clean)\b")
-INTERPRETER = re.compile(r"\b(python3?|node|perl|ruby|sh|bash|zsh)\b")
 HEREDOC = re.compile(r"(<<-?\s*(['\"]?)(\w+)\2[^\n]*)\n.*?\n[ \t]*\3[ \t]*(?=\n|$)", re.S)
-QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
+QUOTED = re.compile(r"(?<=\s)('[^']*'|\"[^\"$`]*\")")  # argument strings only, no $( or ``
 APPROVE_CALL = re.compile(
     r"((^|[\s;&|(`'\"/])ark['\"]?\s+approve\b)"
     r"|((\bark\.cli\b|from\s+ark\s+import|cmd_approve).*\bapprove)")
-CANONICAL = re.compile(r"\s*(ark|\S+/bin/ark)\s+approve\s+[\w.@/-]+\s*")
+CANONICAL = re.compile(r"\s*(ark|[\w.~$/-]*/bin/ark)\s+approve\s+[\w.@/-]+\s*")
 APPROVE_MSG = ("Approve with `ark approve <repo>/<slug>` (or `~/.local/bin/ark approve <repo>/<slug>`) "
                "as the whole command: it is the only way, and Marco confirms it.")
 
@@ -55,10 +54,11 @@ def mentions(cmd: str, name: str, cwd: str) -> bool:
 
 
 def strip_heredocs(cmd: str) -> str:
-    """Drop heredoc bodies (text, not code) unless the command also runs an interpreter."""
-    if INTERPRETER.search(QUOTED.sub("''", cmd)):
-        return cmd
-    return HEREDOC.sub(lambda m: m.group(1), cmd)
+    """Drop heredoc bodies only when `cat` reads them (text); any other consumer may run them."""
+    def text_only(m):
+        line = cmd[cmd.rfind("\n", 0, m.start()) + 1:m.start()]
+        return m.group(1) if re.search(r"\bcat(\s+>\s*\S+)?\s*$", line) else m.group(0)
+    return HEREDOC.sub(text_only, cmd)
 
 
 def main() -> None:
