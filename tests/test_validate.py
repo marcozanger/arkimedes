@@ -222,3 +222,25 @@ def test_approval_must_point_at_this_plan(make_feature, ark_home):
     assert "approval record is for another plan" in messages(p, approved=True)
     f.write_text(json.dumps({"sha256": sha256_file(p), "plan": str(p.resolve())}))
     assert validate(p, approved=True) == []
+
+
+import pytest
+
+
+@pytest.mark.parametrize("field,value", [
+    ("tier", 0), ("tier", False), ("tier", ["T1"]),
+    ("done", False), ("done", 0), ("done", "text"), ("done", [1]),
+    ("area", 0), ("area", False),
+    ("budget", False), ("budget", 0), ("budget", "30"), ("budget", {"minutes": "x", "usd": 1}),
+    ("budget", {"minutes": 0, "usd": 1}),
+    ("gate", 0), ("gate", False), ("pr_title", 0), ("includes", False), ("excludes", 0),
+    ("after", 0), ("after", False), ("after", "shell"),
+    ("heavy", 0), ("heavy", "yes"),
+    ("tasks", 0), ("tasks", False),
+])
+def test_falsy_or_mistyped_job_value_is_a_problem(make_feature, field, value):
+    j = job("shell", ["T1", "T2", "T3"], ["src/**"])
+    j[field] = value
+    m = manifest(jobs=[j])
+    probs = validate(make_feature(plan_text(m)))
+    assert any(p.check in ("jobs", "after") and "shell" in str(p) for p in probs), (field, value)

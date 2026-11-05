@@ -166,23 +166,31 @@ def _check_manifest(m, tasks, add):
         _check_areas(valid, reach, add)
 
 
+def _missing(j, key) -> bool:
+    v = j.get(key)
+    return key not in j or v is None or (isinstance(v, (str, list, dict)) and not v)
+
+
 def _check_job(jid, j, add):
     for key in JOB_FIELDS:
-        if j.get(key) in (None, "", [], {}):
+        if _missing(j, key):
             add("jobs", f"{jid}: missing `{key}`")
     for key in ("pr_title", "includes", "excludes", "gate"):
-        if j.get(key) not in (None, "", [], {}) and not _non_empty_str(j[key]):
+        if not _missing(j, key) and not _non_empty_str(j[key]):
             add("jobs", f"{jid}: `{key}` must be a non-empty string")
-    if j.get("tier") and (not isinstance(j["tier"], str) or j["tier"] not in TIERS):
+    if not _missing(j, "tier") and (not isinstance(j["tier"], str) or j["tier"] not in TIERS):
         add("jobs", f"{jid}: tier must be T0, T1 or T2, not {j['tier']!r}")
     for key in ("area", "done"):
-        if j.get(key) and not _str_list(j[key]):
+        if not _missing(j, key) and not _str_list(j[key]):
             add("jobs", f"{jid}: `{key}` must be a list of non-empty strings")
-    b = j.get("budget")
-    if b and not (isinstance(b, dict) and _positive(b.get("minutes")) and _positive(b.get("usd"))):
-        add("jobs", f"{jid}: budget needs positive numeric `minutes` and `usd`")
+    if not _missing(j, "budget"):
+        b = j["budget"]
+        if not (isinstance(b, dict) and _positive(b.get("minutes")) and _positive(b.get("usd"))):
+            add("jobs", f"{jid}: budget needs positive numeric `minutes` and `usd`")
     if "heavy" in j and not isinstance(j["heavy"], bool):
         add("jobs", f"{jid}: `heavy` must be true or false")
+    if "after" in j and j["after"] is not None and not isinstance(j["after"], list):
+        add("jobs", f"{jid}: `after` must be a list")
     if not isinstance(j.get("tasks"), list) or not j["tasks"]:
         add("jobs", f"{jid}: needs at least one task")
 
