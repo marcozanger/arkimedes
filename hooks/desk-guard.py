@@ -28,7 +28,7 @@ QUOTED = re.compile(r"(?<=\s)('[^']*'|\"[^\"$`]*\")")  # argument strings only, 
 APPROVE_CALL = re.compile(
     r"((^|[\s;&|(`'\"/])ark['\"]?\s+approve\b)"
     r"|((\bark\.cli\b|from\s+ark\s+import|cmd_approve).*\bapprove)")
-CANONICAL = re.compile(r"\s*(ark|[\w.~$/-]*/bin/ark)\s+approve\s+[\w.@/-]+\s*")
+CANONICAL = re.compile(r"(ark|[\w.~$/-]*/bin/ark) approve [\w.@/-]+")
 APPROVE_MSG = ("Approve with `ark approve <repo>/<slug>` (or `~/.local/bin/ark approve <repo>/<slug>`) "
                "as the whole command: it is the only way, and Marco confirms it.")
 

@@ -82,6 +82,15 @@ def test_approve_only_in_the_canonical_form(ark_home):
     assert guard(ark_home, "Bash", {"command": "sed -n 75,120p lib/ark/cli.py | grep approve"}) == "allow"
 
 
+def test_approve_rejects_whitespace_variants(ark_home):
+    for c in ["ark  approve demo/x", "ark\tapprove demo/x", "ark approve  demo/x", "ark approve\tdemo/x",
+              " ark approve demo/x", "ark approve demo/x ", "ark approve demo/x\n", "\tark approve demo/x",
+              "/a/b/bin/ark  approve demo/x", " ~/.local/bin/ark approve demo/x"]:
+        assert guard(ark_home, "Bash", {"command": c}) == "deny", repr(c)
+    for c in ["ark approve demo/x", "~/.local/bin/ark approve demo/x", "/a/b/bin/ark approve demo/x"]:
+        assert guard(ark_home, "Bash", {"command": c}) == "allow", c
+
+
 def test_runner_never_approves_even_canonically(ark_home):
     for c in ["ark approve demo/x", "ARK_ROLE= ark approve demo/x",
               "env -u ARK_ROLE ~/.local/bin/ark approve demo/x"]:
