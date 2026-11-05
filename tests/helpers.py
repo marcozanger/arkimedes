@@ -1,0 +1,42 @@
+"""Builders for plan files used across the tests."""
+import yaml
+
+
+def job(id, tasks, area, after=None, **over):
+    j = {
+        "id": id, "pr_title": f"feat: {id}", "includes": f"{id} work", "excludes": "anything else",
+        "tasks": list(tasks), "area": list(area), "after": list(after or []), "tier": "T1",
+        "gate": "true", "heavy": False, "done": [f"{id} done"], "budget": {"minutes": 30, "usd": 2},
+    }
+    j.update(over)
+    return j
+
+
+def manifest(**over):
+    m = {
+        "setup": [],
+        "integration_gate": "true",
+        "final_pr_title": "feat(notes): edit and delete notes",
+        "jobs": [
+            job("shell", ["T1", "T2"], ["src/shell/**"]),
+            job("ui", ["T3"], ["src/ui/**"], after=["shell"]),
+        ],
+    }
+    m.update(over)
+    return m
+
+
+def plan_text(m=None, *, tasks=("T1", "T2", "T3"), drop=(), **fm):
+    """A complete desk plan. Frontmatter keys passed as None are left out."""
+    front = {"status": "draft", "repo": "demo", "slug": "notes-edit", "created": "2026-11-05"}
+    front.update(fm)
+    front = {k: v for k, v in front.items() if v is not None}
+    sections = {
+        "Goal": "Edit and delete notes.",
+        "Context": "Spec next to this plan.",
+        "Tasks": "\n\n".join(f"### {t} — step\n\nDo it, test first." for t in tasks),
+        "PR plan": "Shell first, then the UI.",
+        "Run manifest": "```yaml\n" + yaml.safe_dump(m if m is not None else manifest(), sort_keys=False) + "```",
+    }
+    body = "\n\n".join(f"## {k}\n\n{v}" for k, v in sections.items() if k not in drop)
+    return "---\n" + yaml.safe_dump(front, sort_keys=False) + "---\n# Notes edit\n\n" + body + "\n"
