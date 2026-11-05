@@ -33,7 +33,7 @@ queue in this mode (the queue keeps the current daytime Arkimedes flow); no clou
   `desk/` and `approvals/` folders; neither starts or talks to the other.
 - **Planning session.** Any interactive session Marco opens for it: a plain `claude`
   or the interactive Arkimedes (`ark`), usually in `~/.claude/arkimedes/`
-  (`ark plan` is a shortcut that opens one there). He can drive it from the computer
+  (`planner` is a shortcut that opens one there). He can drive it from the computer
   or from his phone (Remote Control) and manages its context himself (one plan per
   session, `/clear` when he wants), so planning stays cheap. The folder's `CLAUDE.md`
   tells any session there how to work (§2a). Interactive sessions may write under `desk/`;
@@ -60,7 +60,7 @@ queue in this mode (the queue keeps the current daytime Arkimedes flow); no clou
 ## 2a. The Arkimedes folder (desk mode)
 
 When Marco opens a session in `~/.claude/arkimedes/` (plain `claude`, `ark`, or
-`ark plan` from anywhere), it is in **desk mode**: it already knows the layout, the
+`planner` from anywhere), it is in **desk mode**: it already knows the layout, the
 formats and the steps from idea to a closed plan, with no extra prompt.
 
 **Layout**

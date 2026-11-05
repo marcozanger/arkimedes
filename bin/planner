@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# planner — a planning session in the Arkimedes desk: plain claude in ~/.claude/arkimedes,
+# which loads the desk CLAUDE.md, the desk overview and the desk status line.
+#   planner [claude args]
+set -euo pipefail
+cd "${ARK_HOME:-$HOME/.claude/arkimedes}" && exec claude "$@"
