@@ -2062,3 +2062,18 @@ No code. Each check is done by Marco or with him watching; write the results at 
 | §12 tests: draft never runnable, approve refuses incomplete manifest and ARK_ROLE, asks Marco in a planning session (also Remote Control, auto mode), interactive Arkimedes writes desk, `ark-validate` refuses each broken contract | 5, 6, 8, 11 |
 
 Left for later plans: `workspace.json` limits and `tick_minutes` (P2), `usd_per_day` (P3), `templates/squad.yaml` and squad defaults for `gate`/`setup` (P5), `read-guard.sh` (P2, registered in worker settings), `ark add`/`answer`/`ps`/… (P3, P5).
+
+## Smoke results
+
+2026-11-05, run by Marco in a fresh terminal. All six steps passed.
+
+| Step | Result |
+|---|---|
+| 1. Terminal: `type ark`, `ark status`, `ark` opens interactive Arkimedes | OK |
+| 2. Desk session: `ark plan` greets with the desk overview | OK |
+| 3. Throwaway plan `humanharness/ark-smoke` validates | OK |
+| 4. Approve from Claude prompts and is declined; direct write to `approvals/` denied by desk-guard | OK |
+| 5. Marco approves by hand; `ark plans` shows `closed ok -` | OK |
+| 6. Smoke files removed | OK (verified: no `desk/humanharness/ark-smoke`, no approval file) |
+
+Added during the smoke: the status line says `arkimedes` (agent) and `arkimedes · desk` (desk folder), 9c8de0f.
