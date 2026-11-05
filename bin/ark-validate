@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# ark-validate <repo>/<slug>|<plan.md> [--approved] — the plan contract (spec §2b).
+exec "$(dirname "$(realpath "$0")")/ark" validate "$@"

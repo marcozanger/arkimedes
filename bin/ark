@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# ark — Arkimedes from the terminal.
+#   ark [claude flags]        interactive Arkimedes (queue mode; desk mode inside ~/.claude/arkimedes)
+#   ark plan [claude args]    a planning session in the desk (plain claude, desk mode)
+#   ark status|plans|validate|approve ...   no-model commands (lib/ark/cli.py)
+set -euo pipefail
+CODE="$(cd "$(dirname "$(realpath "$0")")/.." && pwd)"
+ARK_HOME="${ARK_HOME:-$HOME/.claude/arkimedes}"
+case "${1:-}" in
+  ""|-*) exec claude --agent arkimedes --settings "$CODE/settings.json" "$@" ;;
+  plan)  shift; cd "$ARK_HOME" && exec claude "$@" ;;
+esac
+export PYTHONPATH="$CODE/lib${PYTHONPATH:+:$PYTHONPATH}"
+exec "$CODE/.venv/bin/python" -m ark.cli "$@"
