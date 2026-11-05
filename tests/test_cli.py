@@ -1,8 +1,16 @@
 import json
 
+import pytest
+
 from ark import cli, paths
 from ark.plan import load_plan, sha256_file
 from helpers import plan_text
+
+
+@pytest.fixture(autouse=True)
+def _claude_session(monkeypatch):
+    # No TTY under pytest: approve only runs inside a Claude Code session (CLAUDECODE=1).
+    monkeypatch.setenv("CLAUDECODE", "1")
 
 
 def run(capsys, *argv):
@@ -76,3 +84,27 @@ def test_validate_accepts_a_path(make_feature, capsys):
     p = make_feature()
     code, out, _ = run(capsys, "validate", str(p))
     assert code == 0 and out.startswith("OK")
+
+
+def test_approve_without_tty_outside_claude_code_is_refused(make_feature, capsys, monkeypatch):
+    make_feature()
+    monkeypatch.delenv("CLAUDECODE")
+    code, _, err = run(capsys, "approve", "demo/notes-edit")
+    assert code == 2 and "terminal" in err
+    assert not paths.approval_file("demo", "notes-edit").exists()
+
+
+def test_approve_refuses_a_plan_edited_during_confirmation(make_feature, capsys, monkeypatch):
+    p = make_feature()
+    original = p.read_text()
+
+    def edit_then_yes(_prompt):
+        p.write_text(original + "\nSneaky edit.\n")
+        return "s"
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", edit_then_yes)
+    code, _, err = run(capsys, "approve", "demo/notes-edit")
+    assert code == 1 and "cambió" in err
+    assert load_plan(p).frontmatter["status"] == "draft"
+    assert not paths.approval_file("demo", "notes-edit").exists()

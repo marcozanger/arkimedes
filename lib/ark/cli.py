@@ -77,7 +77,17 @@ def cmd_approve(args) -> int:
         print("ark approve: rechazado. Lo está corriendo un proceso del runner (ARK_ROLE); "
               "solo Marco aprueba planes.", file=sys.stderr)
         return 2
+    interactive = sys.stdin.isatty()
+    if not interactive and os.environ.get("CLAUDECODE") != "1":
+        print("ark approve: sin terminal solo se aprueba desde una sesión de Claude Code "
+              "(su permiso es la confirmación); corrélo desde una terminal.", file=sys.stderr)
+        return 2
     path = _resolve(args.target)
+    try:
+        sha_seen = sha256_file(path)
+    except OSError as e:
+        print(f"ark approve: no se pudo leer {path}: {e}", file=sys.stderr)
+        return 1
     problems = validate.validate(path)
     if problems:
         print("No se puede aprobar: el plan no cumple el contrato.", file=sys.stderr)
@@ -86,11 +96,14 @@ def cmd_approve(args) -> int:
         return 1
     plan = load_plan(path)
     print(_pr_table(plan.manifest))
-    if sys.stdin.isatty():
+    if interactive:
         answer = input("¿Aprobar este plan? [s/N] ").strip().lower()
         if answer not in ("s", "si", "sí", "y", "yes"):
             print("No aprobado.")
             return 1
+    if sha256_file(path) != sha_seen:
+        print("El plan cambió mientras se aprobaba; volvé a correr ark approve.", file=sys.stderr)
+        return 1
     set_status(path, "closed")
     sha = sha256_file(path)
     repo, slug = str(plan.frontmatter["repo"]), str(plan.frontmatter["slug"])
