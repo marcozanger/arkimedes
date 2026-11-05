@@ -1,0 +1,11 @@
+{
+  "env": { "ARKIMEDES": "1" },
+  "statusLine": { "type": "command", "command": "/Users/marcozanger/.claude/arkimedes/hooks/statusline.sh" },
+  "hooks": {
+    "SessionStart": [ { "hooks": [ { "type": "command", "command": "/Users/marcozanger/.claude/arkimedes/hooks/session-start.sh" } ] } ],
+    "PreToolUse": [
+      { "matcher": "Agent|Task", "hooks": [ { "type": "command", "command": "/Users/marcozanger/.claude/arkimedes/hooks/require-model.sh" } ] },
+      { "matcher": "Write|Edit|NotebookEdit", "hooks": [ { "type": "command", "command": "/Users/marcozanger/.claude/arkimedes/hooks/guard-edits.sh" } ] }
+    ]
+  }
+}

@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.tmp
+runs/
+approvals/
+history/
+repos/
+questions.md
+log.jsonl
