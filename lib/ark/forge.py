@@ -18,7 +18,7 @@ class ForgeError(Exception):
 
 
 GH_TIMEOUT = 120  # seconds per gh call
-_PR_URL = re.compile(r"https://[^/\s]+/[^/\s]+/[^/\s]+/pull/([0-9]+)")
+_PR_URL = re.compile(r"https://[^/\s]+/[^/\s]+/[^/\s]+/pull/([0-9]{1,18})")
 _FULL_SHA = re.compile(r"[0-9a-f]{40,64}")
 
 
@@ -26,6 +26,26 @@ def _number(number) -> int:
     if isinstance(number, bool) or not isinstance(number, int) or number < 1:
         raise ForgeError(f"not a PR number: {number!r}")
     return number
+
+
+def _pr_ref(url) -> dict:
+    m = _PR_URL.fullmatch(url) if isinstance(url, str) else None
+    if not m:
+        raise ForgeError(f"not a PR url: {str(url)[:200]!r}")
+    return {"number": _number(int(m.group(1))), "url": url}
+
+
+def _open_for(prs: list[dict], *, base: str, head: str) -> dict | None:
+    """The rule both forges share for find-or-create: the one open PR of this head into this base,
+    or None. Merged and closed PRs don't count; an open PR of this head into another base is an
+    error, because nothing here can tell which of the two the caller means."""
+    mine = [p for p in prs if p["head"] == head and p["state"] == "OPEN"]
+    for p in mine:
+        if p["base"] != base:
+            raise ForgeError(f"{head} already has an open PR into {p['base']}, not {base}: {p['url']}")
+    if len(mine) > 1:
+        raise ForgeError(f"{head} has {len(mine)} open PRs into {base}")
+    return mine[0] if mine else None
 
 
 def _check_mergeable(v: dict, head_sha) -> None:
@@ -71,14 +91,43 @@ class GhForge:
             raise ForgeError(f"gh {what}: {(stderr or stdout).strip()}")
         return stdout.strip()
 
+    def _find_open(self, repo, base: str, head: str) -> dict | None:
+        raw = self._gh(repo, "pr", "list", "--head", head, "--state", "open", "--json",
+                       "url,baseRefName,headRefName,state,isCrossRepository")
+        try:
+            rows = json.loads(raw)
+            if not isinstance(rows, list):
+                raise TypeError("not a list")
+            prs = [{"url": d["url"], "base": d["baseRefName"], "head": d["headRefName"], "state": d["state"]}
+                   for d in rows if not d["isCrossRepository"]]   # a fork's branch can share the name
+        except (ValueError, KeyError, TypeError, RecursionError) as e:
+            raise ForgeError(f"gh pr list: unreadable output ({type(e).__name__})") from None
+        found = _open_for(prs, base=base, head=head)
+        return _pr_ref(found["url"]) if found else None
+
     def create(self, repo, *, base: str, head: str, title: str, body: str) -> dict:
+        """Find-or-create, so a run that lost the PR's number can always get it back: a crash before
+        the state was saved, or gh dying after GitHub already made the PR. A lookup that fails stops
+        here: without an answer there is nothing safe to create."""
+        pr = self._find_open(repo, base, head)
+        if pr:
+            return pr
+        try:
+            return self._create_new(repo, base=base, head=head, title=title, body=body)
+        except ForgeError:
+            try:
+                pr = self._find_open(repo, base, head)
+            except ForgeError:
+                pr = None   # the next call looks again; the create's error says more
+            if not pr:
+                raise
+            return pr
+
+    def _create_new(self, repo, *, base: str, head: str, title: str, body: str) -> dict:
         lines = self._gh(repo, "pr", "create", "--base", base, "--head", head, "--title", title,
                          "--body-file", "-", input=body).splitlines()
-        url = lines[-1].strip() if lines else ""
-        m = _PR_URL.fullmatch(url)
-        if not m:
-            raise ForgeError(f"gh pr create printed no PR url: {url[:200]!r}")
-        pr = {"number": int(m.group(1)), "url": url}
+        pr = _pr_ref(lines[-1].strip() if lines else "")
+        url = pr["url"]
         v = self.view(repo, pr["number"])
         if (v["base"], v["head"]) != (base, head):
             raise ForgeError(f"gh pr create returned {url}, which is {v['head']} into {v['base']}, "
@@ -92,7 +141,7 @@ class GhForge:
             d = json.loads(raw)
             v = {"base": d["baseRefName"], "head": d["headRefName"], "head_sha": d["headRefOid"],
                  "state": d["state"], "url": d["url"]}
-        except (ValueError, KeyError, TypeError) as e:
+        except (ValueError, KeyError, TypeError, RecursionError) as e:
             raise ForgeError(f"gh pr view {number}: unreadable output ({type(e).__name__})") from None
         if not all(isinstance(x, str) and x for x in v.values()):
             raise ForgeError(f"gh pr view {number}: unexpected fields")
@@ -117,6 +166,9 @@ class LocalForge:
 
     def create(self, repo, *, base: str, head: str, title: str, body: str) -> dict:
         prs = self.list(repo)
+        found = _open_for(prs, base=base, head=head)
+        if found:
+            return {"number": found["number"], "url": found["url"]}
         n = len(prs) + 1
         pr = {"number": n, "url": f"local://{Path(repo).name}/pull/{n}", "base": base, "head": head,
               "title": title, "body": body, "state": "OPEN"}
