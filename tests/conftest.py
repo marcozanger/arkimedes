@@ -52,3 +52,38 @@ def make_feature(ark_home, make_repo, tmp_path):
         p.write_text(text if text is not None else plan_text(repo=repo, slug=slug))
         return p
     return make
+
+
+from pathlib import Path
+
+CODE = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(autouse=True)
+def git_identity(monkeypatch):
+    for k, v in {"GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.com",
+                 "GIT_COMMITTER_NAME": "Test", "GIT_COMMITTER_EMAIL": "test@example.com"}.items():
+        monkeypatch.setenv(k, v)
+
+
+@pytest.fixture
+def runner(ark_home, make_repo, tmp_path, monkeypatch):
+    """Runner test setup: fake claude, local forge, worktrees under tmp. Returns seed(name) that
+    creates a repo with one commit on master, pushed, origin/HEAD set."""
+    monkeypatch.setenv("ARK_WORKTREES", str(tmp_path / "wt"))
+    monkeypatch.setenv("ARK_FORGE", "local")
+    monkeypatch.setenv("ARK_CLAUDE", str(CODE / "tests" / "fake_claude.py"))
+    (tmp_path / "fake").mkdir()
+    monkeypatch.setenv("FAKE_STATE", str(tmp_path / "fake"))
+    for k in ("FAKE_FAIL", "FAKE_OUTSIDE", "FAKE_FIX", "ANTHROPIC_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+
+    def seed(name="demo"):
+        repo = make_repo(name)
+        (repo / "README.md").write_text(f"{name}\n")
+        git("add", "-A", cwd=repo)
+        git("commit", "-q", "-m", "init", cwd=repo)
+        git("push", "-q", "origin", "master", cwd=repo)
+        git("remote", "set-head", "origin", "master", cwd=repo)
+        return repo
+    return seed
