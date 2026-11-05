@@ -50,7 +50,7 @@ echo "GH_PROMPT_DISABLED=$GH_PROMPT_DISABLED" >> "$FAKE_DIR/env"
 [ "$1 $2" = "pr create" ] && cp "$FAKE_DIR"/on_create/* "$FAKE_DIR/" 2>/dev/null
 mode=$(cat "$FAKE_DIR/mode_$1_$2" 2>/dev/null || echo ok)
 case "$mode" in
-  sleep) sleep 30 ;;
+  sleep) touch "$FAKE_DIR/hanging"; sleep 30 ;;
   stdin) cat ;;
   fail) echo "boom" >&2; exit 1 ;;
   exists) echo 'a pull request for branch "h" into branch "b" already exists:' >&2; exit 1 ;;
@@ -79,7 +79,36 @@ def gh(tmp_path, monkeypatch):
     exe.chmod(0o755)
     monkeypatch.setenv("PATH", f"{d / 'bin'}:/usr/bin:/bin")
     monkeypatch.setenv("FAKE_DIR", str(d))
-    monkeypatch.setattr(forge, "GH_TIMEOUT", 2)
+    # A load-proof clock. A call that is meant to finish gets a limit no loaded host can exceed.
+    # A call the fake is told to hang ("sleep") is raced on the timeout path alone: its short
+    # limit starts when the fake says it is hanging, not when the process was spawned, so a slow
+    # start of the shell script is not mistaken for the hang.
+    monkeypatch.setattr(forge, "GH_TIMEOUT", 120)
+    real_gh, real_popen = forge.GhForge._gh, subprocess.Popen
+
+    def gh_with_limit(self, repo, *args, **kw):
+        mode = d / f"mode_{args[0]}_{args[1]}"
+        if not (mode.exists() and mode.read_text() == "sleep"):
+            return real_gh(self, repo, *args, **kw)
+        (d / "hanging").unlink(missing_ok=True)
+
+        def popen(*a, **k):
+            p = real_popen(*a, **k)
+            real_wait = p.wait
+
+            def wait(timeout=None):
+                end = time.monotonic() + 120
+                while not (d / "hanging").exists() and p.poll() is None and time.monotonic() < end:
+                    time.sleep(0.02)
+                return real_wait(timeout=timeout)
+            p.wait = wait
+            return p
+        with monkeypatch.context() as m:
+            m.setattr(forge.subprocess, "Popen", popen)
+            m.setattr(forge, "GH_TIMEOUT", 2)
+            return real_gh(self, repo, *args, **kw)
+
+    monkeypatch.setattr(forge.GhForge, "_gh", gh_with_limit)
 
     class H:
         dir = d

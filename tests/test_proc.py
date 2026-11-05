@@ -26,7 +26,10 @@ def only_our_children():
     proc._children.clear()
     for p in _mine:
         if p.poll() is None:              # unreaped child of this test: the pid is still ours
-            os.killpg(p.pid, signal.SIGKILL)
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except OSError:               # its group already emptied; only the zombie is left to reap
+                pass
             p.wait()
     _mine.clear()
     for pid in _extra_pids:               # read from a pid file its own child of this test wrote
