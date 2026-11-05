@@ -1,4 +1,9 @@
+import os
+import shutil
+import signal
 import subprocess
+import sys
+import time
 
 import pytest
 
@@ -294,9 +299,289 @@ def test_remote_sha_ignores_suffix_matches(runner, tmp_path):
 
 def test_git_times_out_and_does_not_prompt(runner):
     repo = runner()
-    import time
     t = time.time()
     with pytest.raises(gitops.GitError, match="timed out"):
         gitops.git(repo, "-c", "core.sshCommand=sleep 5 #", "ls-remote", "ssh://localhost/x", timeout=1)
     assert time.time() - t < 4
     assert gitops.GIT_TIMEOUT == 300
+
+
+# ---- second round (quality re-review of task 4): whole classes, not single values ----
+
+def _branch_x(runner):
+    repo = runner()
+    gitops.push_ref(repo, gitops.rev(repo, "HEAD"), "ark/x")
+    return repo
+
+
+def _objects(repo):
+    """Real object ids that are not commits."""
+    subprocess.run(["git", "-C", str(repo), "tag", "-a", "-m", "t", "v1"], check=True)
+    out = {}
+    for name, spec in (("tag", "refs/tags/v1"), ("tree", "HEAD^{tree}"), ("blob", "HEAD:README.md")):
+        out[name] = subprocess.run(["git", "-C", str(repo), "rev-parse", spec], check=True, capture_output=True,
+                                   text=True).stdout.strip()
+    return out
+
+
+def test_push_ref_only_takes_the_sha_of_a_real_commit(runner):
+    repo = _branch_x(runner)
+    before = _origin_refs(repo)
+    assert "refs/heads/ark/x" in before
+    bad = ["0" * 40, "0" * 64, "f" * 40, "f" * 64, "0" * 41, *_objects(repo).values()]
+    for sha in bad:
+        with pytest.raises(gitops.GitError):
+            gitops.push_ref(repo, sha, "ark/x")
+    with pytest.raises(gitops.GitError):  # same value, branch that does not exist on origin yet
+        gitops.push_ref(repo, "0" * 40, "ark/new")
+    assert _origin_refs(repo) == before
+
+
+def test_push_ref_null_sha_in_a_sha256_repo(tmp_path):
+    bare, repo = tmp_path / "o.git", tmp_path / "r"
+    subprocess.run(["git", "init", "-q", "--bare", "--object-format=sha256", str(bare)], check=True)
+    subprocess.run(["git", "init", "-q", "-b", "master", "--object-format=sha256", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", str(bare)], check=True)
+    _commit(repo, "a.txt", "a\n")
+    sha = gitops.rev(repo, "HEAD")
+    assert len(sha) == 64
+    gitops.push_ref(repo, sha, "ark/x")
+    for bad in ("0" * 64, "0" * 40):
+        with pytest.raises(gitops.GitError):
+            gitops.push_ref(repo, bad, "ark/x")
+    assert gitops.remote_sha(repo, "ark/x") == sha
+
+
+# A process that leaves git's group and keeps its stderr open: a daemon started by a hook.
+DAEMON = """import os, sys, time
+os.setsid()
+with open(sys.argv[1], "w") as f:
+    f.write(str(os.getpid()))
+time.sleep(float(sys.argv[2]))
+"""
+
+
+@pytest.fixture
+def daemon_hook(tmp_path):
+    """Install a pre-push hook that starts such a daemon, then runs `after`. Kills the daemon at the end."""
+    pidfile = tmp_path / "daemon.pid"
+    script = tmp_path / "daemon.py"
+    script.write_text(DAEMON)
+
+    def install(repo, after=""):
+        hook = repo / ".git" / "hooks" / "pre-push"
+        hook.write_text(f'#!/bin/sh\n"{sys.executable}" "{script}" "{pidfile}" 30 &\n'
+                        f'while [ ! -s "{pidfile}" ]; do sleep 0.05; done\n{after}\n')
+        hook.chmod(0o755)
+
+    yield install
+    if pidfile.exists():
+        try:
+            os.kill(int(pidfile.read_text()), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def test_git_that_finished_is_not_held_by_a_daemon_on_its_pipes(runner, daemon_hook, monkeypatch):
+    repo = runner()
+    monkeypatch.setattr(gitops, "GIT_TIMEOUT", 10)
+    daemon_hook(repo)
+    sha = gitops.rev(repo, "HEAD")
+    t = time.time()
+    gitops.push_ref(repo, sha, "ark/x")  # git's real outcome: a success, right away
+    assert time.time() - t < 5
+    assert gitops.remote_sha(repo, "ark/x") == sha
+
+
+def test_timeout_is_bounded_with_a_daemon_on_the_pipes(runner, daemon_hook, tmp_path, monkeypatch):
+    repo = runner()
+    monkeypatch.setattr(gitops, "GIT_TIMEOUT", 1)
+    hook_pid = tmp_path / "hook.pid"
+    daemon_hook(repo, f'echo $$ > "{hook_pid}"\nsleep 30')
+    t = time.time()
+    with pytest.raises(gitops.GitError, match="timed out"):
+        gitops.push_ref(repo, gitops.rev(repo, "HEAD"), "ark/x")
+    assert time.time() - t < 5
+    assert gitops.remote_sha(repo, "ark/x") is None
+    deadline = time.time() + 3  # what stayed in git's group is dead
+    while time.time() < deadline and _alive(int(hook_pid.read_text())):
+        time.sleep(0.05)
+    assert not _alive(int(hook_pid.read_text()))
+
+
+def _alive(pid):
+    r = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True)
+    return bool(r.stdout.strip()) and not r.stdout.strip().startswith("Z")
+
+
+STALL = ("-c", "core.sshCommand=sleep 5 #", "ls-remote", "ssh://localhost/x")
+
+
+@pytest.mark.parametrize("error", [PermissionError, ProcessLookupError, OSError])
+def test_timeout_when_killpg_fails_is_still_a_git_error(runner, monkeypatch, error):
+    repo = runner()
+
+    def refuse(pid, sig):
+        raise error(1, "refused")
+
+    monkeypatch.setattr(os, "killpg", refuse)
+    t = time.time()
+    with pytest.raises(gitops.GitError, match="timed out"):
+        gitops.git(repo, *STALL, timeout=1)
+    assert time.time() - t < 4
+
+
+def test_timeout_is_bounded_when_git_cannot_be_killed(runner, monkeypatch):
+    repo = runner()
+    monkeypatch.setattr(gitops, "_KILL_WAIT", 0.2)
+    monkeypatch.setattr(os, "killpg", lambda pid, sig: None)
+    monkeypatch.setattr(subprocess.Popen, "kill", lambda self: None)
+    t = time.time()
+    with pytest.raises(gitops.GitError, match="timed out"):
+        gitops.git(repo, *STALL, timeout=1)
+    assert time.time() - t < 3
+
+
+def test_git_that_cannot_start_is_a_git_error(runner, monkeypatch):
+    repo = runner()
+    monkeypatch.setenv("PATH", "/nonexistent")
+    with pytest.raises(gitops.GitError):
+        gitops.git(repo, "status")
+
+
+def test_big_output_and_exit_code_survive(runner):
+    repo = runner()
+    _commit(repo, "big.txt", "x" * 300_000 + "\n")
+    assert len(gitops.git(repo, "show", "HEAD:big.txt")) == 300_000
+    assert gitops._run(repo, "rev-parse", "--verify", "nope").returncode != 0
+
+
+def _link_on_branch(repo, tmp_path, name, target):
+    """Commit a symlink on ark/x, the way a worker's commit would bring it."""
+    wt = tmp_path / "linker"
+    gitops.fetch(repo)
+    gitops.add_worktree(repo, wt, "ark/link", "origin/ark/x")
+    (wt / "docs").mkdir(exist_ok=True)
+    (wt / "docs" / "real.md").write_text("real\n")
+    link = wt / name
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(target)
+    subprocess.run(["git", "-C", str(wt), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(wt), "commit", "-q", "-m", "link"], check=True)
+    gitops.push_ref(repo, gitops.rev(wt, "HEAD"), "ark/x")
+
+
+@pytest.mark.parametrize("name,target,rel", [
+    ("link.md", "OUT/victim.txt", "link.md"),                # file outside
+    ("link.md", "OUT/not-yet.txt", "link.md"),               # dangling, would be created
+    ("linkdir", "OUT/outdir", "linkdir/new.md"),             # directory outside
+    ("linkdir", "OUT/outdir", "linkdir/deep/er/new.md"),     # below it, parents would be created
+    ("linkdir", "OUT/missing", "linkdir/new.md"),            # dangling directory
+    ("sub/linkdir", "OUT/outdir", "sub/linkdir/new.md"),     # deeper in the tree
+    ("link.md", "docs/real.md", "link.md"),                  # inside: writes elsewhere, commits nothing
+    ("linkdir", "docs", "linkdir/new.md"),                   # inside: writes elsewhere, git refuses after
+])
+def test_commit_file_never_writes_through_a_committed_symlink(runner, tmp_path, name, target, rel):
+    repo = _branch_x(runner)
+    out = tmp_path / "out"
+    (out / "outdir").mkdir(parents=True)
+    (out / "victim.txt").write_text("safe\n")
+    _link_on_branch(repo, tmp_path, name, target.replace("OUT", str(out)))
+    before = gitops.remote_sha(repo, "ark/x")
+    scratch = tmp_path / "wt" / "s"
+    with pytest.raises(gitops.GitError, match="symlink"):
+        gitops.commit_file(repo, "ark/x", rel, "OVERWRITTEN\n", "m", scratch)
+    assert (out / "victim.txt").read_text() == "safe\n"
+    assert sorted(p.name for p in out.rglob("*")) == ["outdir", "victim.txt"]
+    assert gitops.remote_sha(repo, "ark/x") == before
+    assert not scratch.exists()
+
+
+@pytest.mark.parametrize("rel", [".git", ".git/hooks/x", ".git/config", ".GIT", ".Git/config", "sub/.git/config",
+                                 "", ".", "a/..", "a/../b.md", "a\0b"])
+def test_commit_file_refuses_git_dir_and_non_paths(runner, tmp_path, rel):
+    repo = _branch_x(runner)
+    before = _origin_refs(repo)
+    config = (repo / ".git" / "config").read_text()
+    scratch = tmp_path / "wt" / "s"
+    with pytest.raises(gitops.GitError):
+        gitops.commit_file(repo, "ark/x", rel, "x\n", "m", scratch)
+    assert _origin_refs(repo) == before
+    assert (repo / ".git" / "config").read_text() == config
+    assert not scratch.exists()
+    gitops.remove_worktree(repo, scratch)
+    assert gitops.git(repo, "worktree", "list", "--porcelain").count("worktree ") == 1
+
+
+@pytest.mark.parametrize("rel,content", [("README.md/x.md", "x\n"), ("adir", "x\n"), ("bad.md", "\udc80")])
+def test_commit_file_write_failures_are_git_errors(runner, tmp_path, rel, content):
+    repo = _branch_x(runner)
+    wt = tmp_path / "w"
+    gitops.fetch(repo)
+    gitops.add_worktree(repo, wt, "ark/d", "origin/ark/x")
+    _commit(wt, "adir/f.txt", "f\n")
+    gitops.push_ref(repo, gitops.rev(wt, "HEAD"), "ark/x")
+    before = gitops.remote_sha(repo, "ark/x")
+    scratch = tmp_path / "wt" / "s"
+    with pytest.raises(gitops.GitError):
+        gitops.commit_file(repo, "ark/x", rel, content, "m", scratch)
+    assert gitops.remote_sha(repo, "ark/x") == before
+    assert not scratch.exists()
+
+
+@pytest.mark.parametrize("rel", [":(top)x.md", ":/x.md", "*.md", "[a].md"])
+def test_commit_file_takes_rel_literally_not_as_a_pathspec(runner, tmp_path, rel):
+    repo = _branch_x(runner)
+    before = gitops.remote_sha(repo, "ark/x")
+    sha = gitops.commit_file(repo, "ark/x", rel, "x\n", "m", tmp_path / "wt" / "s")
+    assert sha != before and gitops.remote_sha(repo, "ark/x") == sha
+    gitops.fetch(repo)
+    assert gitops.changed_files(repo, before, sha) == [rel]
+
+
+# ---- minors from the same re-review ----
+
+def test_remove_worktree_turns_os_errors_into_git_errors(runner, tmp_path):
+    repo = runner()
+    stale = tmp_path / "wt" / "stale"
+    (stale / "ro").mkdir(parents=True)
+    (stale / "ro" / "f").write_text("x")
+    (stale / "ro").chmod(0o555)
+    try:
+        with pytest.raises(gitops.GitError):
+            gitops.remove_worktree(repo, stale)
+    finally:
+        (stale / "ro").chmod(0o755)
+
+
+def test_changed_files_keeps_whitespace_in_the_first_path(runner):
+    repo = runner()
+    base = gitops.rev(repo, "HEAD")
+    _commit(repo, " src/x.txt", "x\n")
+    _commit(repo, "zz.txt", "z\n")
+    assert gitops.changed_files(repo, base, gitops.rev(repo, "HEAD")) == [" src/x.txt", "zz.txt"]
+
+
+def test_changed_files_survives_a_non_utf8_path(runner):
+    repo = runner()
+    base = gitops.rev(repo, "HEAD")
+    g = ["git", "-C", str(repo)]
+
+    def run(*args, **kw):
+        return subprocess.run([*g, *args], check=True, capture_output=True, **kw).stdout.decode().strip()
+
+    blob = run("hash-object", "-w", "--stdin", input=b"x\n")
+    run("update-index", "--add", "--cacheinfo", f"100644,{blob},".encode() + b"caf\xe9.txt")
+    head = run("commit-tree", run("write-tree"), "-p", base, "-m", "m")
+    run("read-tree", base)
+    assert gitops.changed_files(repo, base, head) == [b"caf\xe9.txt".decode("utf-8", "surrogateescape")]
+
+
+def test_add_worktree_after_its_directory_was_deleted(runner, tmp_path):
+    repo = runner()
+    base = gitops.rev(repo, "HEAD")
+    p = tmp_path / "wt" / "job"
+    gitops.add_worktree(repo, p, "ark/a", base)
+    shutil.rmtree(p)
+    gitops.add_worktree(repo, p, "ark/a", base)
+    assert gitops.rev(p, "HEAD") == base

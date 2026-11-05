@@ -6,40 +6,69 @@ import re
 import shutil
 import signal
 import subprocess
-from pathlib import Path
+import tempfile
+from pathlib import Path, PurePosixPath
 
 from . import paths
 
 GIT_TIMEOUT = 300  # seconds; override per call with git(..., timeout=)
+_KILL_WAIT = 5  # seconds to wait for git to die after SIGKILL
 
 
 class GitError(Exception):
     pass
 
 
+def _kill(p: subprocess.Popen) -> None:
+    """SIGKILL git's process group, and wait for git a bounded time. Never raises: the caller is
+    already reporting the timeout."""
+    try:
+        os.killpg(p.pid, signal.SIGKILL)
+    except OSError:  # group gone; on macOS also EPERM when it holds only the zombie leader
+        pass
+    try:
+        p.kill()  # in case killpg did not reach it
+        p.wait(timeout=_KILL_WAIT)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def _text(f, errors: str) -> str:
+    # pread: the file offset is shared with any process that outlived git and still holds the file
+    return os.pread(f.fileno(), os.fstat(f.fileno()).st_size, 0).decode("utf-8", errors)
+
+
 def _run(cwd, *args, timeout=None) -> subprocess.CompletedProcess:
-    """git with no stdin, no terminal prompts and a timeout (the whole process group is killed)."""
+    """git with no stdin, no terminal prompts and a timeout (the whole process group is killed).
+    Output goes to files, not pipes: only git's own exit is waited for, so a daemon that a hook or
+    helper left holding stdout or stderr can neither delay the result nor outlast the timeout.
+    Paths in stdout that are not UTF-8 stay as surrogate escapes. Failing to run git is a GitError."""
     timeout = GIT_TIMEOUT if timeout is None else timeout
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
-    p = subprocess.Popen(["git", "-C", str(cwd), *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                         stderr=subprocess.PIPE, text=True, env=env, start_new_session=True)
     try:
-        out, err = p.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(p.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        p.communicate()
-        raise GitError(f"git {' '.join(args)}: timed out after {timeout}s") from None
-    return subprocess.CompletedProcess(p.args, p.returncode, out, err)
+        with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+            p = subprocess.Popen(["git", "-C", str(cwd), *args], stdin=subprocess.DEVNULL, stdout=out,
+                                 stderr=err, env=env, start_new_session=True)
+            try:
+                p.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                _kill(p)
+                raise GitError(f"git {' '.join(args)}: timed out after {timeout}s") from None
+            return subprocess.CompletedProcess(p.args, p.returncode, _text(out, "surrogateescape"),
+                                               _text(err, "replace"))
+    except OSError as e:
+        raise GitError(f"git {' '.join(args)}: {e}") from e
 
 
-def git(cwd, *args, check: bool = True, timeout=None) -> str:
+def _checked(cwd, *args, check: bool = True, timeout=None) -> str:
     r = _run(cwd, *args, timeout=timeout)
     if check and r.returncode:
         raise GitError(f"git {' '.join(args)}: {(r.stderr or r.stdout).strip()}")
-    return r.stdout.strip()
+    return r.stdout
+
+
+def git(cwd, *args, check: bool = True, timeout=None) -> str:
+    return _checked(cwd, *args, check=check, timeout=timeout).strip()
 
 
 def fetch(repo) -> None:
@@ -81,8 +110,9 @@ def _ark_only(branch: str) -> None:
 
 def push_ref(repo, sha: str, branch: str) -> None:
     _ark_only(branch)
-    if not re.fullmatch(r"[0-9a-f]{40,64}", sha or ""):
-        raise GitError(f"push_ref needs a full commit sha, not {sha!r}")
+    # The shape alone is not enough: git reads a null sha as "delete the branch".
+    if not re.fullmatch(r"[0-9a-f]{40,64}", sha or "") or rev(repo, sha) != sha:
+        raise GitError(f"push_ref needs the full sha of a commit, not {sha!r}")
     git(repo, "push", "-q", "origin", f"{sha}:refs/heads/{branch}")
 
 
@@ -111,6 +141,7 @@ def add_worktree(repo, path: Path, branch: str, start: str) -> None:
             raise GitError(f"{path} exists but is not a worktree of this repo on {branch!r}")
         return
     path.parent.mkdir(parents=True, exist_ok=True)
+    git(repo, "worktree", "prune", check=False)  # a registered worktree whose directory is gone blocks the add
     if git(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}", check=False):
         git(repo, "worktree", "add", "-q", str(path), branch)
     else:
@@ -124,7 +155,10 @@ def remove_worktree(repo, path: Path) -> None:
     if path.exists() or path.is_symlink():
         root = _abs(paths.worktrees_dir())
         if root in _abs(path).parents:
-            shutil.rmtree(path) if path.is_dir() and not path.is_symlink() else path.unlink()
+            try:
+                shutil.rmtree(path) if path.is_dir() and not path.is_symlink() else path.unlink()
+            except OSError as e:
+                raise GitError(f"cannot remove {path}: {e}") from e
             git(repo, "worktree", "prune", check=False)
         else:
             raise GitError(f"{path} is left over and is outside {root}: remove it by hand")
@@ -145,7 +179,7 @@ def is_clean(worktree) -> bool:
 
 def changed_files(repo, base: str, head: str) -> list[str]:
     """Every path touched between base and head, both sides of a rename, unquoted."""
-    out = git(repo, "diff", "--no-renames", "--name-only", "-z", "--end-of-options", f"{base}...{head}")
+    out = _checked(repo, "diff", "--no-renames", "--name-only", "-z", "--end-of-options", f"{base}...{head}")
     return [p for p in out.split("\0") if p]
 
 
@@ -175,22 +209,43 @@ def squash(repo, base_ref: str, head_ref: str, message: str, scratch: Path) -> s
         _cleanup(repo, scratch)
 
 
+def _check_rel(rel: str) -> None:
+    """A plain relative path, judged by its text alone: nothing above it, nothing in a .git."""
+    parts = PurePosixPath(rel).parts
+    if (not parts or PurePosixPath(rel).is_absolute() or "\0" in rel or ".." in parts
+            or any(p.casefold() == ".git" for p in parts)):  # casefold: .GIT is .git on macOS
+        raise GitError(f"{rel!r} is not a plain path inside the scratch worktree")
+
+
+def _refuse_symlinks(scratch: Path, rel: str) -> None:
+    """The branch's content comes from workers. A symlink anywhere along `rel` would send the write
+    elsewhere, outside the repo or to another file, and git would commit nothing of it."""
+    here = scratch
+    for part in PurePosixPath(rel).parts:
+        here = here / part
+        if here.is_symlink():
+            raise GitError(f"{rel!r} goes through the symlink {part!r} on the branch")
+
+
 def commit_file(repo, branch: str, rel: str, content: str, message: str, scratch: Path) -> str:
     """Commit one file on top of origin/<branch> and push it there. When the file is already
     that content on the branch (a retry after a crash), nothing is committed or pushed."""
     _ark_only(branch)
     scratch = Path(scratch)
-    if not rel or _abs(scratch) not in _abs(scratch / rel).parents:
-        raise GitError(f"{rel!r} is not a path inside the scratch worktree")
+    _check_rel(rel)
     fetch(repo)
     remove_worktree(repo, scratch)
     scratch.parent.mkdir(parents=True, exist_ok=True)
     git(repo, "worktree", "add", "-q", "--detach", str(scratch), f"origin/{branch}")
     try:
+        _refuse_symlinks(scratch, rel)
         f = scratch / rel
-        f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(content, encoding="utf-8")
-        git(scratch, "add", "--", rel)
+        try:
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(content, encoding="utf-8")
+        except (OSError, ValueError) as e:  # a file or directory in the way; content that is not text
+            raise GitError(f"cannot write {rel!r}: {e}") from e
+        git(scratch, "--literal-pathspecs", "add", "--", rel)
         if _run(scratch, "diff", "--cached", "--quiet").returncode:
             git(scratch, "commit", "-q", "-m", message)
             push_branch(scratch, branch)
