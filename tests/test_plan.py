@@ -54,3 +54,16 @@ def test_sha256_changes_with_content(tmp_path):
     first = sha256_file(p)
     p.write_text("b")
     assert first != sha256_file(p)
+
+
+from ark.plan import load_plan, task_texts
+
+
+def test_task_texts_by_id(tmp_path):
+    p = tmp_path / "plan.md"
+    p.write_text("---\nstatus: draft\n---\n# X\n\n## Tasks\n\nintro\n\n### T1 — first\n\nDo one.\n\n"
+                 "### T2 — second\n\nDo two.\n\n## PR plan\n\nx\n")
+    t = task_texts(load_plan(p))
+    assert list(t) == ["T1", "T2"]
+    assert t["T1"] == "### T1 — first\n\nDo one."
+    assert t["T2"].startswith("### T2 — second") and "Do two." in t["T2"]

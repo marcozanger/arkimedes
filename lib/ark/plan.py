@@ -106,3 +106,12 @@ def set_status(path, status: str) -> None:
 
 def sha256_file(path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+TASK_SPLIT = re.compile(r"^(### (T\d+)\b[^\n]*)\n?", re.M)
+
+
+def task_texts(plan: Plan) -> dict[str, str]:
+    """Each `### T<n>` section of `## Tasks`, heading included, by task id."""
+    parts = TASK_SPLIT.split(plan.sections.get("Tasks", ""))
+    return {parts[i + 1]: (parts[i] + "\n" + parts[i + 2]).strip() for i in range(1, len(parts), 3)}
