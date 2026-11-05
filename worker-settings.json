@@ -1,0 +1,28 @@
+{
+  "env": { "ARKIMEDES": "1" },
+  "permissions": {
+    "allow": [
+      "Read", "Edit", "Write", "MultiEdit", "Grep", "Glob",
+      "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)",
+      "Bash(git add:*)", "Bash(git commit:*)", "Bash(git fetch:*)", "Bash(git merge:*)",
+      "Bash(git restore:*)", "Bash(git rm:*)", "Bash(git mv:*)"
+    ],
+    "deny": [
+      "Bash(git push:*)", "Bash(gh pr merge:*)", "Bash(gh pr create:*)",
+      "Bash(gh pr review:*)", "Bash(gh api:*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "Write|Edit|MultiEdit|NotebookEdit",
+        "hooks": [{ "type": "command", "command": "python3 \"/Users/marcozanger/.claude/arkimedes/hooks/area-guard.py\"" }] },
+      { "matcher": "Read|Grep|Glob|Bash",
+        "hooks": [{ "type": "command", "command": "python3 \"/Users/marcozanger/.claude/arkimedes/hooks/read-guard.py\"" }] },
+      { "matcher": "Bash",
+        "hooks": [{ "type": "command", "command": "python3 \"/Users/marcozanger/.claude/arkimedes/hooks/merge-guard.py\"" }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "bash \"/Users/marcozanger/.claude/arkimedes/hooks/done-gate.sh\"" }] }
+    ]
+  }
+}
