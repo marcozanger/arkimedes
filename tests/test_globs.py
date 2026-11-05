@@ -48,3 +48,27 @@ def test_literal_folder_matches_files_inside():
 def test_match_any():
     assert match_any("src/ui/a.tsx", ["src/shell/**", "src/ui/**"])
     assert not match_any("x", [])
+
+
+def test_match_normalizes_path_before_matching():
+    assert not match("src/../x", "src/**")
+    assert match("src/../x", "x")
+    assert match("src/a/../b.py", "src/**")
+    assert match("src/./a.py", "src/*.py")
+    assert not match("src/../x", "src")
+
+
+def test_match_path_leaving_the_root_matches_nothing():
+    assert not match("../x", "**")
+    assert not match("../x", "**/x")
+    assert not match("a/../../x", "**")
+    assert not match("../x", "..")
+    assert match("a/../x", "**")
+
+
+def test_dot_matches_newlines_in_file_names():
+    assert match("secrets/a\nb", "secrets/**")
+    assert match("secrets/a\nb", "secrets")
+    assert match("a\nb/c.test.ts", "**/*.test.ts")
+    assert not match("other/a\nb", "secrets/**")
+    assert not match("secrets/a\nb/c", "secrets/*")

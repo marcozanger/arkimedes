@@ -6,6 +6,7 @@ is its own prefix, so two different files never overlap.
 """
 from __future__ import annotations
 
+import posixpath
 import re
 
 WILDCARDS = set("*?[{")
@@ -46,13 +47,15 @@ def _regex(glob: str) -> re.Pattern:
             out, i = out + "[^/]", i + 1
         else:
             out, i = out + re.escape(g[i]), i + 1
-    return re.compile(out + r"\Z")
+    return re.compile(out + r"\Z", re.S)
 
 
 def match(path: str, glob: str) -> bool:
     """Does a repo-relative file path match an area glob? `**` crosses folders, `*` does not.
     A glob without wildcards also matches every file under it (a folder)."""
-    path = path.removeprefix("./")
+    path = posixpath.normpath(path)
+    if path == ".." or path.startswith("../"):
+        return False
     if not any(c in WILDCARDS for c in glob):
         folder = glob.strip().removeprefix("./").rstrip("/")
         if path == folder or path.startswith(folder + "/"):
