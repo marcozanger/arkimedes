@@ -278,3 +278,93 @@ def test_pr_body_does_not_notify_people(tmp_path):
 
 def test_parse_json_line_deep_nesting_is_none():
     assert brief.parse_json_line('{"a": ' + "[" * 200000 + "}") is None
+
+
+@pytest.mark.parametrize("message, expected", [
+    ("STATUS: FAILED — gate red\nthe brief's format:\nSTATUS: DONE", ("FAILED", "gate red")),
+    ("STATUS: BLOCKED — which store?\nSTATUS: DONE", ("BLOCKED", "which store?")),
+    ("STATUS: BLOCKED — which store?\n\nSTATUS: DONE", ("BLOCKED", "which store?")),
+    ("    STATUS: FAILED — red\nSTATUS: DONE", ("FAILED", "red")),
+    ("STATUS: BLOCKED — first?\r\nSTATUS: FAILED — second\r\nSTATUS: DONE\r\n", ("FAILED", "second")),
+])
+def test_worker_status_an_earlier_failure_beats_a_last_done(message, expected):
+    assert brief.worker_status(message) == expected
+
+
+@pytest.mark.parametrize("message", [
+    "I saw STATUS: FAILED in the old log, fixed it.\nSTATUS: DONE",
+    "STATUS: DONE\nSTATUS: DONE",
+    "The status: failed run is gone.\nSTATUS: DONE",
+])
+def test_worker_status_a_mention_of_failure_is_still_done(message):
+    assert brief.worker_status(message) == ("DONE", "")
+
+
+@pytest.mark.parametrize("message", [
+    '{"verdict":"FIX","findings":["a"],"verdict":"CLEAN"}',
+    '{"verdict":"CLEAN","findings":["must change"],"findings":[]}',
+    '{"verdict":"CLEAN","findings":[],"meta":{"a":1,"a":2}}',
+])
+def test_parse_json_line_duplicate_keys_are_none(message):
+    assert brief.parse_json_line(message) is None
+
+
+@pytest.mark.parametrize("earlier", [
+    "{'verdict': 'FIX', 'findings': ['a']}",
+    "{verdict: FIX, findings: [a]}",
+    "{note: x, verdict: FIX}",
+    '{\\"verdict\\": \\"FIX\\"}',
+    '{"Verdict": "FIX", "Findings": ["a"]}',
+    '{"verdict: "FIX"}',
+    '  "verdict": "FIX",',
+])
+def test_parse_json_line_an_earlier_verdict_in_any_form_is_none(earlier):
+    assert brief.parse_json_line(earlier + "\nShape:\n" + CLEAN) is None
+
+
+FIX = '{"verdict": "FIX", "findings": ["a.py:3 bug"]}'
+
+
+@pytest.mark.parametrize("message, key, value", [
+    ('The "findings" list in report.py is built correctly.\n' + CLEAN, "verdict", "CLEAN"),
+    ('Checked the `"verdict"` column migration.\n' + FIX, "verdict", "FIX"),
+    ('a.py defines "findings"; b.py reads it.\n' + FIX, "verdict", "FIX"),
+    ('Note "note" is unused.\n{"action": "retry", "note": "fix it"}', "action", "retry"),
+    ("Verdict: CLEAN\n" + CLEAN, "verdict", "CLEAN"),
+    ("No findings: the diff does what the tasks ask.\n" + CLEAN, "verdict", "CLEAN"),
+    ("Read a.py and b.py, findings: none.\n" + CLEAN, "verdict", "CLEAN"),
+    ('The old "findings: none" line in a.py is gone.\n' + CLEAN, "verdict", "CLEAN"),
+])
+def test_parse_json_line_prose_naming_a_key_keeps_the_answer(message, key, value):
+    assert brief.parse_json_line(message)[key] == value
+
+
+def test_a_done_with_a_tail_is_warned_against(tmp_path):
+    st, plan, mj = setup(tmp_path)
+    b = brief.worker_brief(st, "shell", mj["shell"], plan, worktree="/wt", report="/r")
+    role = (Path(__file__).parent.parent / "agents" / "ark-dev.md").read_text()
+    for text in (b, role):
+        assert "nothing after DONE, not even a period" in text
+
+
+def test_judge_prompt_with_nothing_allowed_offers_block(tmp_path):
+    st, plan, mj = setup(tmp_path)
+    j = st["jobs"]["shell"]
+    p = brief.judge_prompt(st, "shell", j, mj["shell"], [], "x")
+    assert "Actions allowed now: block" in p and '{"action": "block", "note":' in p
+    assert "- block —" in p and "- retry —" not in p
+
+
+def test_final_pr_body_reason_is_one_short_line_without_mentions(tmp_path):
+    st, plan, mj = setup(tmp_path)
+    st["jobs"]["ui"].update(status="blocked", reason="ask @octocat\n\n# heading\n" + "x" * 5000)
+    body = brief.final_pr_body(st)
+    line = next(ln for ln in body.splitlines() if ln.startswith("- `ui`:"))
+    assert "@octocat" not in body and "octocat" in line and "# heading" in line
+    assert len(line) < 1000 and "\n# heading" not in body
+
+
+@pytest.mark.parametrize("text", ["`@octocat", "_@octocat", "é@octocat", "`@octocat` in a span"])
+def test_pr_body_defuses_a_mention_after_any_non_alphanumeric(tmp_path, text):
+    st, plan, mj = setup(tmp_path)
+    assert "@octocat" not in brief.pr_body(st, "shell", mj["shell"], text)

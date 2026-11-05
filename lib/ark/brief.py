@@ -4,8 +4,13 @@ Prompts are built from the plan and the run state: a worker sees only its job (n
 file) and a tick sees only what its one decision needs (§10). The runner's own text holds no
 triple-backtick fence; task text and reports are copied as they are, so they may.
 
-Text a worker can influence reaches a model only inside `_untrusted`. The parsers fail closed: an
-answer that breaks its contract reads as a failure, never as success."""
+Reports, failures, reasons and events go to the judge and decisions ticks inside `_untrusted`. Not
+everything a worker can influence is fenced: findings, gate output and the judge's note reach the
+worker raw, and the reviewer reads the diff with its tools.
+
+Each parser reads the last non-empty line as the whole answer and refuses a message holding a second
+answer in a form it recognises (see `worker_status` and `parse_json_line`). Plain prose above the
+answer is not read, so `verdict: FIX` as a sentence above a CLEAN line still reads CLEAN."""
 from __future__ import annotations
 
 import json
@@ -17,8 +22,9 @@ from .plan import Plan, task_texts
 
 STATUS = re.compile(r"STATUS:[ \t]*(DONE|FAILED|BLOCKED)\b")
 CLOSING_FENCE = re.compile(r"`{3,}")
-MENTION = re.compile(r"(?<![\w`])@(?=[\w-])")
+MENTION = re.compile(r"(?<![a-zA-Z0-9])@(?=[\w-])")  # after a letter or digit it is an email
 PR_REPORT_CHARS = 20000  # GitHub rejects a body over 65536 characters
+PR_REASON_CHARS = 500
 
 JUDGE_ACTIONS = {
     "retry": "retry — same tier, same session: a mistake the worker can fix (a red test, a missed step).",
@@ -106,7 +112,8 @@ def worker_brief(st: dict, job_id: str, mj: dict, plan: Plan, *, worktree, repor
         ]),
         "## How to finish",
         "The last line of your final message is exactly one of:\n"
-        "STATUS: DONE\nSTATUS: FAILED — <one line: why>\nSTATUS: BLOCKED — <one concrete question for Marco>",
+        "STATUS: DONE\nSTATUS: FAILED — <one line: why>\nSTATUS: BLOCKED — <one concrete question for Marco>\n"
+        "STATUS: DONE stands alone: nothing after DONE, not even a period.",
     ]
     if note:
         parts += ["## Note from the judge of the previous attempt",
@@ -221,13 +228,17 @@ def fallback_decisions(st: dict, reports: dict[str, str]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _no_mentions(text: str) -> str:
+    return MENTION.sub("@\u200b", text)
+
+
 def _pr_report(st: dict, job_id: str, report: str | None) -> str:
     """The report for a PR body: short enough for GitHub, and no @name that would notify someone."""
     text = (report or "(no report)").strip()
     if len(text) > PR_REPORT_CHARS:
         text = (f"(start truncated; full report: `runs/{st['repo']}/{st['slug']}/{job_id}.report.md`)\n\n"
                 + text[-PR_REPORT_CHARS:])
-    return MENTION.sub("@\u200b", text)
+    return _no_mentions(text)
 
 
 def pr_body(st: dict, job_id: str, mj: dict, report: str | None) -> str:
@@ -248,9 +259,14 @@ def pr_body(st: dict, job_id: str, mj: dict, report: str | None) -> str:
     ]) + "\n"
 
 
+def _pr_reason(reason: str | None) -> str:
+    """A blocked job's reason for one list item: it may hold a judge's note of any shape."""
+    return _no_mentions(" ".join((reason or "").split())[:PR_REASON_CHARS])
+
+
 def final_pr_body(st: dict) -> str:
     rows = [f"| {jid} | {j['status']} | {j['pr']['url'] if j.get('pr') else '-'} |" for jid, j in st["jobs"].items()]
-    blocked = [f"- `{jid}`: {j['reason']}" for jid, j in st["jobs"].items() if j["status"] == "blocked"]
+    blocked = [f"- `{jid}`: {_pr_reason(j['reason'])}" for jid, j in st["jobs"].items() if j["status"] == "blocked"]
     parts = [f"**Decisions:** `docs/decisions/{st['slug']}.md` (in this PR)", "",
              f"Arkimedes run of the plan `{st['slug']}`, approved {st['approved_at'][:10]}.", "",
              "| job | status | PR |", "|---|---|---|", *rows]
@@ -264,24 +280,52 @@ def _lines(text: str | None) -> list[str]:
     return [line for line in (text or "").split("\n") if line.strip()]
 
 
+def _status_detail(tail: str) -> str:
+    return tail.lstrip(" \t:—–-").strip()
+
+
 def worker_status(result: str) -> tuple[str, str]:
-    """The status on the last non-empty line, which must start at its first column. Anything else is FAILED."""
+    """The status on the last non-empty line, which must start at its first column. Anything else is FAILED.
+
+    A last DONE loses to an earlier line that starts with a FAILED or BLOCKED status: the message
+    holds two answers, and the failure's detail may be the question for Marco."""
     lines = _lines(result)
     last = lines[-1].rstrip() if lines else ""
     m = STATUS.match(last)
     if not m:
         return "FAILED", "no STATUS line in the final message"
     status, tail = m.group(1), last[m.end():]
-    if status == "DONE" and tail:
+    if status != "DONE":
+        return status, _status_detail(tail)
+    if tail:
         return "FAILED", f"text after STATUS: DONE: {tail.strip()}"
-    return status, tail.lstrip(" \t:—–-").strip()
+    for line in map(str.strip, reversed(lines[:-1])):
+        m = STATUS.match(line)
+        if m and m.group(1) != "DONE":
+            return m.group(1), _status_detail(line[m.end():])
+    return "DONE", ""
+
+
+def _no_duplicates(pairs: list) -> dict:
+    keys = [key for key, _ in pairs]
+    if len(set(keys)) != len(keys):
+        raise ValueError("duplicate key")
+    return dict(pairs)
+
+
+def _uses_key(key: str, line: str) -> bool:
+    """Does the line use `key` as an object key: quoted and followed by a colon, or unquoted inside
+    braces? Prose that only names it (`the "findings" list`, `findings: none`) does not count."""
+    k = re.escape(key)
+    return bool(re.search(rf"""\\?["']{k}\\?["']\s*:|\{{[^{{}}]*\b{k}\s*:""", line, re.I))
 
 
 def parse_json_line(text: str) -> dict | None:
     """The JSON object on the last non-empty line, or None.
 
-    Backticks around it and one closing fence after it are ignored. None too when an earlier line
-    names one of its keys: the message holds two answers, and the last may be a quoted example."""
+    Backticks around it and one closing fence after it are ignored. None for a duplicate key, and
+    when an earlier line uses one of its keys as a key: the message holds two answers, and the last
+    may be a quoted example."""
     lines = _lines(text)
     if lines and CLOSING_FENCE.fullmatch(lines[-1].strip()):
         lines.pop()
@@ -291,9 +335,9 @@ def parse_json_line(text: str) -> dict | None:
     if not (line.startswith("{") and line.endswith("}")):
         return None
     try:
-        d = json.loads(line)
+        d = json.loads(line, object_pairs_hook=_no_duplicates)
     except (ValueError, RecursionError):
         return None
-    if any(f'"{key}"' in earlier for key in d for earlier in lines[:-1]):
+    if any(_uses_key(key, earlier) for key in d for earlier in lines[:-1]):
         return None
     return d
