@@ -407,35 +407,49 @@ def _model_unreachable(c: Ctx, job: str, kind: str) -> None:
     run.event(c.st, f"{job}: its {kind} got no answer from the model; try {n}")
 
 
+def _save_now(st: dict) -> None:
+    """Progress on disk before the next step pays for anything. A failure here costs at most a repeated
+    process; the save at the end of the cycle tries again, and that one tells Marco."""
+    try:
+        run.save(st)
+    except Exception:
+        pass
+
+
 def consume_receipts(c: Ctx) -> None:
     proc.reap(c.dir)
     for name in proc.finished(c.dir):
         r = proc.consume(c.dir, name)
         if r is None:
             continue
-        job, _, kind = name.rpartition(".")
-        j = c.st["jobs"].get(job)
-        if j is not None:  # spent and alive whether or not anything still waits for the answer
-            j["usd"] = round(j["usd"] + _usd(r.get("usd")), 4)
-        if r.get("survivors"):
-            run.alert(c.st, f"{_clean(job)}: processes of its {_clean(kind)} outlived it ({r['reason'] or 'it ended'}): "
-                            "look for leftovers before they touch its worktree")
-        if j is None or kind not in HANDLERS or RUNNING.get(j["status"]) != kind:
-            run.event(c.st, f"ignored the result of {_clean(name)}: nothing was waiting for it")
-            continue
-        if r["reason"] == "stopped by Marco":
-            block(c, job, "stopped by Marco")
-            continue
-        if kind in MODEL_KINDS:
-            if _learned_nothing(r):
-                _model_unreachable(c, job, kind)
-                continue
-            j.pop("infra_tries", None)
-            j.pop("not_before", None)
-        try:
-            HANDLERS[kind](c, job, r)
-        except Exception as e:  # the receipt is gone: never leave the job waiting for it
-            fail(c, job, f"runner error after {kind}: {type(e).__name__}: {e}")
+        _on_receipt(c, name, r)
+        _save_now(c.st)  # the receipt is gone: a crash now must not run this process again
+
+
+def _on_receipt(c: Ctx, name: str, r: dict) -> None:
+    job, _, kind = name.rpartition(".")
+    j = c.st["jobs"].get(job)
+    if j is not None:  # spent and alive whether or not anything still waits for the answer
+        j["usd"] = round(j["usd"] + _usd(r.get("usd")), 4)
+    if r.get("survivors"):
+        run.alert(c.st, f"{_clean(job)}: processes of its {_clean(kind)} outlived it ({r['reason'] or 'it ended'}): "
+                        "look for leftovers before they touch its worktree")
+    if j is None or kind not in HANDLERS or RUNNING.get(j["status"]) != kind:
+        run.event(c.st, f"ignored the result of {_clean(name)}: nothing was waiting for it")
+        return
+    if r["reason"] == "stopped by Marco":
+        block(c, job, "stopped by Marco")
+        return
+    if kind in MODEL_KINDS:
+        if _learned_nothing(r):
+            _model_unreachable(c, job, kind)
+            return
+        j.pop("infra_tries", None)
+        j.pop("not_before", None)
+    try:
+        HANDLERS[kind](c, job, r)
+    except Exception as e:  # the receipt is gone: never leave the job waiting for it
+        fail(c, job, f"runner error after {kind}: {type(e).__name__}: {e}")
 
 
 # ---- starting processes -----------------------------------------------------------------------
@@ -692,8 +706,10 @@ def reconcile(st: dict) -> None:
 def step(st: dict, states: list[dict], forge, slots: Slots) -> None:
     if st["status"] in ("done", "blocked"):
         return
-    if st["status"] == "waiting" and not try_start(st, states):
-        return
+    if st["status"] == "waiting":
+        if not try_start(st, states):
+            return
+        _save_now(st)  # the jobs exist now: a crash below finds its worker by them, not by chance
     d = paths.run_dir(st["repo"], st["slug"])
     if not plan_ok(st):
         if st["status"] != "held":

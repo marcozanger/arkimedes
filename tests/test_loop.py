@@ -1436,3 +1436,77 @@ def test_a_receipt_of_no_known_job_warns_of_survivors_and_charges_nobody(tmp_pat
     c = bare(tmp_path)
     consume_one(monkeypatch, c, "ghost.worker", receipt(usd=0.5, survivors=[123]))
     assert c.st["jobs"]["shell"]["usd"] == 0 and any("ghost" in a and "outlived" in a for a in c.st["alerts"])
+
+
+# -- progress is on disk before the next step pays for anything
+
+def _crash_after_schedule(monkeypatch):
+    """The loop dies right after this cycle's scheduling, before the save at its end."""
+    real = loop.schedule
+    def dies(c, slots):
+        real(c, slots)
+        raise KeyboardInterrupt
+    monkeypatch.setattr(loop, "schedule", dies)
+
+
+def test_a_crash_right_after_a_receipt_does_not_pay_for_the_worker_again(feature, monkeypatch, tmp_path):
+    feature()
+    loop.cycle()
+    def finished():
+        return bool(proc.finished(paths.run_dir("demo", SLUG)))
+    for _ in range(100):
+        if finished():
+            break
+        time.sleep(0.05)
+    assert state()["jobs"]["shell"]["status"] == "working" and finished()
+    with monkeypatch.context() as m:
+        m.setattr(loop, "schedule", lambda c, slots: (_ for _ in ()).throw(KeyboardInterrupt()))
+        with pytest.raises(KeyboardInterrupt):
+            loop.cycle()
+    assert state()["jobs"]["shell"]["status"] == "needs_push"
+    drive(jobs_settled)
+    assert state()["jobs"]["shell"]["status"] == "merged" and _worker_runs(tmp_path) == 1
+
+
+def test_a_stop_is_not_forgotten_by_a_crash_right_after_it(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_SLEEP", "30")
+    feature()
+    loop.cycle()
+    d = paths.run_dir("demo", SLUG)
+    assert proc.stop(d, "shell.worker", "stopped by Marco")
+    with monkeypatch.context() as m:
+        m.setattr(loop, "schedule", lambda c, slots: (_ for _ in ()).throw(KeyboardInterrupt()))
+        with pytest.raises(KeyboardInterrupt):
+            loop.cycle()
+    j = state()["jobs"]["shell"]
+    assert j["status"] == "blocked" and j["reason"] == "stopped by Marco"
+
+
+def test_a_crash_in_the_first_cycle_does_not_start_the_worker_twice(feature, monkeypatch, tmp_path):
+    feature()
+    with monkeypatch.context() as m:
+        _crash_after_schedule(m)
+        with pytest.raises(KeyboardInterrupt):
+            loop.cycle()
+    d = paths.run_dir("demo", SLUG)
+    for _ in range(100):  # the worker ends during the downtime
+        if proc.finished(d):
+            break
+        time.sleep(0.05)
+    drive(jobs_settled)
+    assert state()["jobs"]["shell"]["status"] == "merged" and _worker_runs(tmp_path) == 1
+
+
+def test_a_save_that_fails_between_receipts_loses_none_of_them(feature, monkeypatch):
+    feature(manifest(jobs=[job("shell", ["T1", "T2"], ["src/shell/**"]), job("ui", ["T3"], ["src/ui/**"])]))
+    loop.cycle()
+    d = paths.run_dir("demo", SLUG)
+    for _ in range(100):
+        if len(proc.finished(d)) == 2:
+            break
+        time.sleep(0.05)
+    assert len(proc.finished(d)) == 2
+    with monkeypatch.context() as m:
+        m.setattr(run, "save", lambda st: (_ for _ in ()).throw(OSError("disk full")))
+        loop.cycle()
+    assert proc.finished(d) == []
