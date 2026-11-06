@@ -801,6 +801,31 @@ def _guarded(st: dict, key: str, fn) -> None:
             run.alert(st, f"runner error: {text}")
 
 
+def _orphans(known, alerts: list[str]) -> None:
+    """A live run with no valid approval takes no step, but Marco hears about it and what it left
+    running keeps its deadlines. Only a state that says it finished is taken for finished."""
+    root = paths.runs_dir()
+    for f in root.glob("**/state.json"):
+        rel = f.parent.relative_to(root)
+        key = (str(rel.parent), rel.name)
+        if key in known:
+            _said.discard((str(paths.ark_home()), "no_approval", *key))
+            continue
+        try:
+            st = _load(*key)
+            if st and st["status"] in ("done", "blocked"):
+                continue
+        except Exception:
+            pass
+        _once(("no_approval", *key), f"{key[0]}/{key[1]}: this run has no valid approval: it takes no new step "
+                                     "until the approval is back. Its processes keep their time limits.", alerts)
+        try:
+            proc.reap(paths.run_dir(*key))
+        except Exception as e:
+            _once(("no_approval_reap", *key), f"{key[0]}/{key[1]}: cannot check its processes: "
+                                              f"{type(e).__name__}: {e}", alerts)
+
+
 def cycle(forge=None) -> tuple[str, list[str], bool]:
     """One pass. Returns (status line, alerts to show, whether any run state changed)."""
     forge = forge or forge_mod.get()
@@ -819,6 +844,7 @@ def cycle(forge=None) -> tuple[str, list[str], bool]:
         states[key] = st or run.new_state(a)
         if states[key]["status"] == "waiting":  # nothing started yet: a newer approval simply replaces the older
             states[key].update(plan=a["plan"], plan_sha=a["sha256"], approved_at=a["approved_at"])
+    _orphans(approved, alerts)
     for key, st in states.items():
         _guarded(st, "reapprove_error", lambda st=st, a=approved[key]: _adopt_reapproval(st, a, list(states.values())))
     for st in states.values():

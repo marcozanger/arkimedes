@@ -1524,3 +1524,55 @@ def test_a_run_whose_repo_is_gone_keeps_enforcing_the_time_limits(feature, monke
     monkeypatch.setattr(proc, "reap", lambda d: (reaped.append(d), real(d))[1])
     alerts = loop.cycle()[1]
     assert reaped == [paths.run_dir("demo", SLUG)] and any("runner error" in a for a in alerts)
+
+
+# -- a run with no valid approval does not vanish
+
+def _spy_reap(monkeypatch):
+    reaped, real = [], proc.reap
+    monkeypatch.setattr(proc, "reap", lambda d: (reaped.append(d), real(d))[1])
+    return reaped
+
+
+def test_a_live_run_that_lost_its_approval_alerts_once_and_keeps_its_deadlines(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_SLEEP", "1")
+    feature()
+    loop.cycle()
+    good = paths.approval_file("demo", SLUG).read_text()
+    paths.approval_file("demo", SLUG).unlink()
+    reaped = _spy_reap(monkeypatch)
+    alerts = loop.cycle()[1]
+    assert [a for a in alerts if "no valid approval" in a and f"demo/{SLUG}" in a] == alerts and len(alerts) == 1
+    assert reaped == [paths.run_dir("demo", SLUG)]
+    assert loop.cycle()[1] == [] and len(reaped) == 2  # said once, reaped always
+    paths.approval_file("demo", SLUG).write_text(good)
+    assert not [a for a in loop.cycle()[1] if "no valid approval" in a]
+    paths.approval_file("demo", SLUG).write_text("not json")  # back, and lost again: Marco hears again
+    assert [a for a in loop.cycle()[1] if "no valid approval" in a]
+
+
+def test_a_finished_run_needs_no_approval(feature):
+    feature()
+    loop.cycle()
+    st = state()
+    st["status"] = "done"
+    run.save(st)
+    paths.approval_file("demo", SLUG).unlink()
+    assert loop.cycle()[1] == []
+
+
+def test_a_damaged_run_with_no_approval_is_not_taken_for_finished(feature, monkeypatch):
+    feature()
+    loop.cycle()
+    run.state_file("demo", SLUG).write_text("not json")
+    paths.approval_file("demo", SLUG).unlink()
+    reaped = _spy_reap(monkeypatch)
+    assert [a for a in loop.cycle()[1] if "no valid approval" in a] and reaped == [paths.run_dir("demo", SLUG)]
+
+
+def test_a_run_in_a_nested_repo_is_found_when_it_loses_its_approval(ark_home):
+    d = paths.run_dir("group/demo", SLUG)
+    d.mkdir(parents=True)
+    st = run.new_state({"repo": "group/demo", "slug": SLUG, "plan": "/p", "sha256": "0" * 64, "approved_at": "t"})
+    run.save(st)
+    assert [a for a in loop.cycle(forge.LocalForge())[1] if f"group/demo/{SLUG}" in a]
