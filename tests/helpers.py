@@ -40,3 +40,19 @@ def plan_text(m=None, *, tasks=("T1", "T2", "T3"), drop=(), **fm):
     }
     body = "\n\n".join(f"## {k}\n\n{v}" for k, v in sections.items() if k not in drop)
     return "---\n" + yaml.safe_dump(front, sort_keys=False) + "---\n# Notes edit\n\n" + body + "\n"
+
+
+import json
+from pathlib import Path
+
+
+def approve(path, repo="demo", slug="notes-edit", at="2026-11-05T10:00:00+00:00"):
+    """What the approve command leaves behind, without the terminal prompt."""
+    from ark import paths
+    from ark.plan import set_status, sha256_file
+    set_status(path, "closed")
+    f = paths.approval_file(repo, slug)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps({"repo": repo, "slug": slug, "plan": str(Path(path).resolve()),
+                             "sha256": sha256_file(path), "approved_at": at}))
+    return f

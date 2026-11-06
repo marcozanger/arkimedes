@@ -20,3 +20,55 @@ def test_overlap(a, b, expected):
 def test_areas_overlap_any_pair():
     assert areas_overlap(["a/**", "b/x"], ["c/**", "b/x"])
     assert not areas_overlap(["a/**"], ["b/**"])
+
+
+from ark.globs import match, match_any
+
+
+def test_match_double_star():
+    assert match("src/shell/a.py", "src/shell/**")
+    assert match("src/shell/deep/b.py", "src/shell/**")
+    assert not match("src/ui/a.py", "src/shell/**")
+    assert match("a/b/c.test.ts", "**/*.test.ts")
+    assert match("c.test.ts", "**/*.test.ts")
+
+
+def test_match_single_star_stays_in_one_segment():
+    assert match("lib/x.dart", "lib/*.dart")
+    assert not match("lib/sub/x.dart", "lib/*.dart")
+
+
+def test_literal_folder_matches_files_inside():
+    assert match("docs/a.md", "docs")
+    assert match("docs/a.md", "docs/")
+    assert not match("docsx/a.md", "docs")
+    assert match("README.md", "./README.md")
+
+
+def test_match_any():
+    assert match_any("src/ui/a.tsx", ["src/shell/**", "src/ui/**"])
+    assert not match_any("x", [])
+
+
+def test_match_normalizes_path_before_matching():
+    assert not match("src/../x", "src/**")
+    assert match("src/../x", "x")
+    assert match("src/a/../b.py", "src/**")
+    assert match("src/./a.py", "src/*.py")
+    assert not match("src/../x", "src")
+
+
+def test_match_path_leaving_the_root_matches_nothing():
+    assert not match("../x", "**")
+    assert not match("../x", "**/x")
+    assert not match("a/../../x", "**")
+    assert not match("../x", "..")
+    assert match("a/../x", "**")
+
+
+def test_dot_matches_newlines_in_file_names():
+    assert match("secrets/a\nb", "secrets/**")
+    assert match("secrets/a\nb", "secrets")
+    assert match("a\nb/c.test.ts", "**/*.test.ts")
+    assert not match("other/a\nb", "secrets/**")
+    assert not match("secrets/a\nb/c", "secrets/*")

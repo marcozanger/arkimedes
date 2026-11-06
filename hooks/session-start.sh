@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Arkimedes SessionStart: hand the orchestrator its state so it doesn't read files to find it.
+# Runner processes (workers, reviewers, ticks) get no session context: their brief is all they need (§10).
+[ -n "$ARK_ROLE" ] && exit 0
 . "$HOME/.claude/coach/lib.sh"
 A="$HOME/.claude/arkimedes"
 input=$(cat)

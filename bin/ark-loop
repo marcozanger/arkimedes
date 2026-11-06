@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# ark-loop — the always-on runner. Leave it running in a terminal; Ctrl-C stops it (running
+# workers keep going and are picked up when it starts again). --once: one cycle, then exit.
+set -euo pipefail
+CODE="$(cd "$(dirname "$(realpath "$0")")/.." && pwd)"
+cd "$CODE"   # `python -m` imports from the cwd first, and a loop must not hold a worktree open
+export PYTHONPATH="$CODE/lib${PYTHONPATH:+:$PYTHONPATH}"
+exec "$CODE/.venv/bin/python" -m ark.loop "$@"
