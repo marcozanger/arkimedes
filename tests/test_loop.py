@@ -1933,6 +1933,30 @@ def test_an_overlap_is_a_normal_wait_and_alerts_nothing(feature, make_feature, m
     assert "overlaps" in state(slug="second")["reason"] and not [a for a in alerts if "overlap" in a]
 
 
+def test_a_plan_overlapping_a_held_run_alerts_once_and_names_it(feature, make_feature, monkeypatch):
+    monkeypatch.setenv("FAKE_SLEEP", "1")
+    _, p = feature()
+    loop.cycle()
+    p.write_text(p.read_text() + "\n<!-- edited -->\n")
+    loop.cycle()
+    assert state()["status"] == "held"
+    _second_plan(make_feature)
+    alerts = [a for a in turn(5, 0) if "overlap" in a]
+    assert state(slug="second")["status"] == "waiting" and f"held plan {SLUG}" in state(slug="second")["reason"]
+    assert len(alerts) == 1 and alerts[0].startswith("demo/second: ") and f"held plan {SLUG}" in alerts[0]
+
+
+def test_a_plan_waiting_on_a_run_that_gets_held_alerts_once(feature, make_feature, monkeypatch):
+    monkeypatch.setenv("FAKE_SLEEP", "1")
+    _, p = feature()
+    _second_plan(make_feature)
+    assert not [a for a in turn(2, 0) if "overlap" in a]
+    p.write_text(p.read_text() + "\n<!-- edited -->\n")
+    alerts = [a for a in turn(5, 0) if "overlap" in a]
+    assert state()["status"] == "held" and state(slug="second")["status"] == "waiting"
+    assert len(alerts) == 1 and f"held plan {SLUG}" in alerts[0]
+
+
 # -- errors, saves, rework
 
 def test_a_non_git_error_after_many_git_errors_still_blocks(tmp_path):

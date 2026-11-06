@@ -123,7 +123,7 @@ def try_start(st: dict, others: list[dict]) -> bool:
         for o in others:
             if o is not st and o["repo"] == st["repo"] and o["status"] in ("running", "held") \
                     and areas_overlap(area, o.get("area") or []):
-                reason, normal = f"its area overlaps the running plan {o['slug']}", True
+                reason, normal = f"its area overlaps the {o['status']} plan {o['slug']}", o["status"] == "running"
                 break
     if not reason:
         try:
@@ -141,7 +141,7 @@ def try_start(st: dict, others: list[dict]) -> bool:
             reason = str(e)
     if reason:
         if reason != st["reason"]:
-            st["reason"] = reason  # remembered, so he hears each reason once; only an overlap ends by itself
+            st["reason"] = reason  # remembered, so he hears each reason once; only a running plan's overlap ends by itself
             (run.event if normal else run.alert)(st, f"waiting: {reason}")
         return False
     if existing:  # this run pushed it and died before saving "running"
