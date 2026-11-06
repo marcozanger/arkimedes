@@ -1576,3 +1576,26 @@ def test_a_run_in_a_nested_repo_is_found_when_it_loses_its_approval(ark_home):
     st = run.new_state({"repo": "group/demo", "slug": SLUG, "plan": "/p", "sha256": "0" * 64, "approved_at": "t"})
     run.save(st)
     assert [a for a in loop.cycle(forge.LocalForge())[1] if f"group/demo/{SLUG}" in a]
+
+
+# -- a worktree is checked before a worker is paid for
+
+def test_a_worktree_left_on_another_branch_gets_no_worker(feature, monkeypatch, tmp_path):
+    repo, _ = feature()
+    with monkeypatch.context() as m:
+        m.setattr(loop, "schedule", lambda c, slots: None)
+        loop.cycle()
+    wt = loop.Ctx(state(), forge.LocalForge()).wt("shell")
+    gitops.add_worktree(repo, wt, "somebody-elses", "HEAD")
+    loop.cycle()
+    j = state()["jobs"]["shell"]
+    assert j["status"] == "pending" and j["attempts"] == 0 and "not a worktree" in j["error"]
+    assert not (tmp_path / "fake" / "shell.worker.count").exists()
+
+
+def test_a_second_attempt_resumes_in_the_worktree_it_has(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_FAIL", "shell:1")
+    feature()
+    drive(jobs_settled)
+    j = state()["jobs"]["shell"]
+    assert j["status"] == "merged" and j["attempts"] == 2 and j["base"]

@@ -478,9 +478,11 @@ def start_worker(c: Ctx, job: str) -> bool:
     if not _worktree_free(c, job):
         return False
     j, mj, wt = c.st["jobs"][job], c.mjobs[job], c.wt(job)
-    if not wt.exists():
+    fresh = not wt.exists()
+    if fresh:
         gitops.fetch(c.repo)
-        gitops.add_worktree(c.repo, wt, c.branch(job), f"origin/{c.base}")
+    gitops.add_worktree(c.repo, wt, c.branch(job), f"origin/{c.base}")  # refuses a path left on another branch
+    if fresh:
         j["base"] = gitops.rev(wt, "HEAD")
     pre = [] if j["setup_done"] else list(c.plan.manifest.get("setup") or [])
     (c.dir / f"{job}.doneblocks").unlink(missing_ok=True)
