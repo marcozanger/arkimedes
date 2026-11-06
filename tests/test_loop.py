@@ -1,6 +1,7 @@
 import json
 import os
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -233,7 +234,8 @@ def test_a_held_job_gives_its_writer_slot_to_the_next(feature, monkeypatch, ark_
     drive(jobs_settled)
 
 
-def test_the_writer_limit_holds_across_jobs(feature, ark_home, tmp_path):
+def test_the_writer_limit_holds_across_jobs(feature, ark_home, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_SLEEP", "0.3")  # or the workers never overlap, limit or no limit
     limits(ark_home, writers_per_repo=1)
     feature(manifest(jobs=[job("shell", ["T1", "T2"], ["src/shell/**"]), job("ui", ["T3"], ["src/ui/**"])]))
     drive(jobs_settled)
@@ -1095,3 +1097,326 @@ def test_an_approval_whose_file_differs_is_not_adopted(feature, monkeypatch):
         loop.cycle()
     st = state()
     assert st["status"] == "held" and st["plan_sha"] == old
+
+
+# -- the guards, one by one: each test fails when its guard is removed
+
+def test_a_red_job_gate_goes_to_the_judge_and_is_recorded_red(tmp_path):
+    c = bare(tmp_path, status="gating")
+    loop.on_gate(c, "shell", receipt("assert failed", exit=1))
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "needs_judge" and j["tier_attempts"] == 1 and "job gate red" in j["failure"]
+    rec = merge.read_record(tmp_path, "shell", "gate")
+    assert rec["ok"] is False and rec["exit"] == 1 and "assert failed" in rec["tail"]
+
+
+def test_a_job_whose_gate_stays_red_gets_no_pr_and_never_merges(feature):
+    red = job("shell", ["T1", "T2"], ["src/shell/**"], gate="exit 1")
+    repo, _ = feature(manifest(jobs=[red, job("ui", ["T3"], ["src/ui/**"], after=["shell"])]))
+    drive(jobs_settled)
+    st = state()
+    assert st["jobs"]["shell"]["status"] == "blocked" and st["jobs"]["shell"]["pr"] is None
+    assert st["jobs"]["ui"]["status"] == "blocked" and forge.LocalForge().list(repo) == []
+    assert merge.read_record(paths.run_dir("demo", SLUG), "shell", "gate")["ok"] is False
+
+
+def test_a_gate_stopped_by_its_time_limit_is_red_even_with_exit_zero(tmp_path):
+    c = bare(tmp_path, status="gating")
+    loop.on_gate(c, "shell", receipt(exit=0, reason="timeout: over its time limit"))
+    assert c.st["jobs"]["shell"]["status"] == "needs_judge"
+    assert merge.read_record(tmp_path, "shell", "gate")["ok"] is False
+
+
+def test_a_green_gate_opens_the_way_to_the_pr(tmp_path):
+    c = bare(tmp_path, status="gating")
+    loop.on_gate(c, "shell", receipt("ok"))
+    assert c.st["jobs"]["shell"]["status"] == "needs_pr" and merge.read_record(tmp_path, "shell", "gate")["ok"] is True
+
+
+def test_records_name_the_commit_the_process_saw_not_the_jobs_latest(tmp_path):
+    c = bare(tmp_path, status="gating", head="moved-since")
+    loop.on_gate(c, "shell", receipt("ok"))
+    assert merge.read_record(tmp_path, "shell", "gate")["head"] == "abc"
+    c.st["jobs"]["shell"]["status"] = "reviewing"
+    loop.on_review(c, "shell", receipt(json.dumps({"verdict": "CLEAN", "findings": []})))
+    assert merge.read_record(tmp_path, "shell", "verdict")["head"] == "abc"
+
+
+def test_an_integration_record_prefers_the_head_the_check_reports(tmp_path):
+    line = {"ok": True, "base": "b" * 40, "head": "checked", "reason": "", "tail": ""}
+    c = bare(tmp_path, status="integrating")
+    loop.on_integrate(c, "shell", receipt(json.dumps(line)))
+    assert merge.read_record(tmp_path, "shell", "integrate")["head"] == "checked"
+
+
+def test_a_good_last_commit_does_not_hide_an_earlier_one_outside_the_area(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_EARLY_OUTSIDE", "shell")
+    feature()
+    drive(jobs_settled)
+    j = state()["jobs"]["shell"]
+    assert j["status"] == "blocked" and "outside/shell.txt" in j["reason"] and j["pr"] is None
+
+
+def test_done_with_uncommitted_changes_is_a_failure(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_DIRTY", "shell:1")
+    feature()
+    drive(jobs_settled)
+    st = state()
+    assert st["jobs"]["shell"]["status"] == "merged" and st["jobs"]["shell"]["attempts"] == 2
+    assert any("uncommitted" in e for e in st["events"])
+
+
+def test_done_with_no_change_is_a_failure(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_EMPTY", "shell:1")
+    feature()
+    drive(jobs_settled)
+    st = state()
+    assert st["jobs"]["shell"]["status"] == "merged" and st["jobs"]["shell"]["attempts"] == 2
+    assert any("without any change" in e for e in st["events"])
+
+
+def test_review_rounds_have_a_limit(tmp_path):
+    fix = json.dumps({"verdict": "FIX", "findings": ["again"]})
+    c = bare(tmp_path, status="reviewing", review_rounds=1)
+    loop.on_review(c, "shell", receipt(fix))
+    assert c.st["jobs"]["shell"]["status"] == "needs_worker"
+    c.st["jobs"]["shell"]["status"] = "reviewing"
+    loop.on_review(c, "shell", receipt(fix))
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "needs_judge" and "3 review rounds" in j["failure"] and j["tier_attempts"] == 1
+
+
+def test_a_verdict_that_is_neither_clean_nor_fix_is_no_verdict(tmp_path):
+    c = bare(tmp_path, status="reviewing")
+    loop.on_review(c, "shell", receipt(json.dumps({"verdict": "MAYBE", "findings": ["x"]})))
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "needs_review" and j["review_errors"] == 1 and j["review_rounds"] == 0
+
+
+def test_an_escalation_starts_its_review_rounds_over(tmp_path):
+    c = bare(tmp_path, status="judging", review_rounds=2, session="s", failure="red")
+    loop.on_judge(c, "shell", receipt(json.dumps({"action": "escalate", "note": "harder"})))
+    j = c.st["jobs"]["shell"]
+    assert j["tier"] == "T2" and j["review_rounds"] == 0 and j["session"] is None
+
+
+def test_a_check_stopped_by_a_reason_is_not_believed_even_with_a_green_line(tmp_path):
+    c = bare(tmp_path, status="integrating")
+    line = json.dumps({"ok": True, "base": "b" * 40, "head": "abc", "reason": "", "tail": ""})
+    loop.on_integrate(c, "shell", receipt(line, reason="stopped: timeout"))
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "needs_integrate" and j["integrate_lost"] == 1
+    assert merge.read_record(tmp_path, "shell", "integrate") is None
+
+
+def test_green_needs_a_base_that_is_a_string(tmp_path):
+    c = bare(tmp_path, status="integrating")
+    loop.on_integrate(c, "shell", receipt(json.dumps({"ok": True, "base": 123, "head": "abc", "reason": "", "tail": ""})))
+    assert c.st["jobs"]["shell"]["status"] == "needs_worker"
+    assert merge.read_record(tmp_path, "shell", "integrate")["ok"] is False
+
+
+def _second_plan(make_feature, m=None, at="2026-11-05T11:00:00+00:00"):
+    p = make_feature(plan_text(m, slug="second"), repo="demo", slug="second", create_repo=False)
+    approve(p, "demo", "second", at=at)
+    return p
+
+
+def test_a_plan_overlapping_a_running_one_waits(feature, make_feature, monkeypatch):
+    monkeypatch.setenv("FAKE_SLEEP", "1")
+    repo, _ = feature()
+    _second_plan(make_feature)
+    loop.cycle()
+    st = state(slug="second")
+    assert state()["status"] == "running" and st["status"] == "waiting" and "overlaps" in st["reason"]
+    assert gitops.remote_sha(repo, "ark/second") is None
+
+
+def test_a_held_plan_still_owns_its_area(feature, make_feature, monkeypatch):
+    monkeypatch.setenv("FAKE_SLEEP", "1")
+    _, p = feature()
+    loop.cycle()
+    p.write_text(p.read_text() + "\n<!-- edited -->\n")
+    loop.cycle()
+    assert state()["status"] == "held"
+    _second_plan(make_feature)
+    loop.cycle()
+    assert state(slug="second")["status"] == "waiting" and "overlaps" in state(slug="second")["reason"]
+
+
+def test_a_plan_that_no_longer_validates_never_starts(feature):
+    repo, p = feature()
+    (p.parent / "spec.md").unlink()
+    loop.cycle()
+    st = state()
+    assert st["status"] == "waiting" and "does not validate" in st["reason"]
+    assert gitops.remote_sha(repo, f"ark/{SLUG}") is None
+
+
+SLOT_LIMITS = {"writers_per_repo": 1, "writers_total": 2, "heavy_gates": 1}
+
+
+def _slot_state(status, heavy=False, repo="a"):
+    return {"repo": repo, "jobs": {"j": {"status": status, "heavy": heavy}}}
+
+
+def test_slots_hold_the_writers_of_one_repo():
+    s = loop.Slots([], SLOT_LIMITS)
+    assert s.writer("a") and not s.writer("a") and s.writer("b")
+
+
+def test_slots_hold_the_writers_in_total():
+    s = loop.Slots([], {**SLOT_LIMITS, "writers_per_repo": 9})
+    assert s.writer("a") and s.writer("a") and not s.writer("b")
+
+
+def test_slots_hold_the_heavy_gates_and_never_the_light_ones():
+    s = loop.Slots([], SLOT_LIMITS)
+    assert s.gate(False) and s.gate(True) and not s.gate(True) and s.gate(False)
+
+
+@pytest.mark.parametrize("status", ["gating", "integrating"])
+def test_slots_count_the_heavy_gates_already_running(status):
+    assert not loop.Slots([_slot_state(status, heavy=True)], SLOT_LIMITS).gate(True)
+    assert loop.Slots([_slot_state(status)], SLOT_LIMITS).gate(True)
+
+
+def test_slots_count_the_workers_already_running():
+    assert not loop.Slots([_slot_state("working")], SLOT_LIMITS).writer("a")
+    assert loop.Slots([_slot_state("needs_worker")], SLOT_LIMITS).writer("a")
+
+
+def test_a_pr_is_created_once(tmp_path):
+    c = bare(tmp_path, status="needs_pr", pr={"number": 1, "url": "u"})
+    c.forge = SimpleNamespace(create=lambda *a, **k: pytest.fail("a second PR"))
+    loop.ensure_pr(c, "shell")
+    assert c.st["jobs"]["shell"]["status"] == "needs_review"
+
+
+def test_the_base_is_on_disk_before_the_branch_exists(feature, monkeypatch):
+    feature()
+    real, seen = gitops.push_ref, []
+    def spy(repo, sha, branch):
+        if branch == f"ark/{SLUG}":
+            seen.append((sha, run.load("demo", SLUG)["base_sha"]))
+        return real(repo, sha, branch)
+    monkeypatch.setattr(gitops, "push_ref", spy)
+    loop.cycle()
+    assert len(seen) == 1 and seen[0][0] == seen[0][1]
+
+
+def _advance_from_elsewhere(repo, tmp_path, branch):
+    """Someone else moves the branch: nothing in `repo` knows until it fetches."""
+    other = tmp_path / "elsewhere"
+    subprocess.run(["git", "clone", "-q", "-b", branch, gitops.origin_url(repo), str(other)], check=True)
+    subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "moved"], cwd=other, check=True)
+    subprocess.run(["git", "push", "-q", "origin", branch], cwd=other, check=True)
+
+
+@pytest.fixture
+def at_merge(feature, monkeypatch):
+    """A job with every check green, one step from its merge."""
+    repo, _ = feature()
+    with monkeypatch.context() as m:
+        m.setattr(loop, "do_merge", lambda c, job: None)
+        drive(lambda: state() and state()["jobs"].get("shell", {}).get("status") == "needs_merge")
+    st = state()
+    return repo, st, loop.Ctx(st, forge.LocalForge())
+
+
+def test_a_base_that_moved_since_the_check_goes_back_to_the_check(at_merge, tmp_path):
+    repo, st, c = at_merge
+    _advance_from_elsewhere(repo, tmp_path, f"ark/{SLUG}")
+    loop.do_merge(c, "shell")
+    assert st["jobs"]["shell"]["status"] == "needs_integrate"
+
+
+def test_a_refused_merge_blocks_and_never_reaches_the_judge(at_merge, monkeypatch):
+    _, st, c = at_merge
+    def refused(*a):
+        raise merge.MergeRefused("the PR head moved")
+    monkeypatch.setattr(merge, "merge", refused)
+    loop.do_merge(c, "shell")
+    j = st["jobs"]["shell"]
+    assert j["status"] == "blocked" and "the PR head moved" in j["reason"] and j["tier_attempts"] == 0
+
+
+@pytest.mark.parametrize("field", ["events", "alerts"])
+def test_a_state_with_the_wrong_list_is_damage(feature, field):
+    feature()
+    loop.cycle()
+    st = state()
+    st[field] = "not a list"
+    run.state_file("demo", SLUG).write_text(json.dumps(st))
+    with pytest.raises(run.StateCorrupt):
+        loop._load("demo", SLUG)
+
+
+def test_a_state_of_another_run_is_damage(feature):
+    feature()
+    loop.cycle()
+    st = state()
+    st["slug"] = "somebody-else"
+    run.state_file("demo", SLUG).write_text(json.dumps(st))
+    with pytest.raises(run.StateCorrupt):
+        loop._load("demo", SLUG)
+
+
+@pytest.mark.parametrize("bad", [{"approved_at": 5}, {"plan": None}, {"sha256": ["x"]}])
+def test_an_approval_with_a_field_of_the_wrong_type_is_no_approval(ark_home, bad):
+    good = {"repo": "demo", "slug": SLUG, "plan": "/p", "sha256": "0" * 64, "approved_at": "t"}
+    d = paths.approvals_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "good.json").write_text(json.dumps(good))
+    (d / "bad.json").write_text(json.dumps({**good, "slug": "other", **bad}))
+    assert [a["slug"] for a in loop.approvals()] == [SLUG]
+
+
+def test_a_held_run_keeps_enforcing_the_time_limits(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_SLEEP", "1")
+    _, p = feature()
+    loop.cycle()
+    p.write_text(p.read_text() + "\n<!-- edited -->\n")
+    reaped, real = [], proc.reap
+    monkeypatch.setattr(proc, "reap", lambda d: (reaped.append(d), real(d))[1])
+    loop.cycle()
+    assert state()["status"] == "held" and reaped == [paths.run_dir("demo", SLUG)]
+
+
+@pytest.fixture
+def worker_starts(feature, monkeypatch):
+    """A run whose worker starts are recorded instead of run."""
+    feature(manifest(setup=["echo set up"], jobs=[job("shell", ["T1", "T2", "T3"], ["src/shell/**"])]))
+    starts = []
+    monkeypatch.setattr(proc, "start", lambda d, name, cmd, **k: starts.append({"name": name, "cmd": cmd, **k}))
+    loop.cycle()
+    st = state()
+    return st, loop.Ctx(st, forge.LocalForge()), starts
+
+
+def test_setup_runs_until_it_is_done(worker_starts):
+    st, c, starts = worker_starts
+    assert starts[-1]["pre"] == ["echo set up"]
+    st["jobs"]["shell"].update(status="needs_worker", setup_done=True)
+    loop.start_worker(c, "shell")
+    assert starts[-1]["pre"] == []
+
+
+def test_a_new_attempt_does_not_inherit_the_last_ones_done_blocks(worker_starts):
+    st, c, _ = worker_starts
+    f = c.dir / "shell.doneblocks"
+    f.write_text("3")
+    loop.start_worker(c, "shell")
+    assert not f.exists()
+
+
+def test_a_session_resumes_only_with_something_to_say(worker_starts):
+    st, c, starts = worker_starts
+    j = st["jobs"]["shell"]
+    j.update(session="s1", resume_msg=None)
+    loop.start_worker(c, "shell")
+    assert "--resume" not in starts[-1]["cmd"] and j["session"] != "s1"
+    j.update(session="s1", resume_msg="fix this")
+    loop.start_worker(c, "shell")
+    cmd = starts[-1]["cmd"]
+    assert cmd[cmd.index("--resume") + 1] == "s1" and cmd[cmd.index("-p") + 1] == "fix this"

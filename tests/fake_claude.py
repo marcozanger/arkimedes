@@ -8,6 +8,9 @@ worker    appends "attempt <n>" to <area[0] with ** -> <job>.txt> (or outside/<j
 reviewer  FIX on the first review of a job in FAKE_FIX, CLEAN otherwise.
 tick      the decisions file when asked for one, else a judge answer `retry`.
 
+FAKE_EARLY_OUTSIDE=job makes a first commit outside the area, under a last commit inside it.
+FAKE_DIRTY=job:n leaves attempt n's file uncommitted; FAKE_EMPTY=job:n changes nothing. Both end DONE.
+
 FAKE_DOWN=1 makes every role end at once with exit 1 and no result line, as an unreachable model
 does; FAKE_STATE/down.count counts those.
 """
@@ -76,12 +79,24 @@ if ROLE == "worker":
         if f"{job}:{n}" in os.environ.get("FAKE_FAIL", "").split(","):
             emit("tests are red\nSTATUS: FAILED — tests are red")
             sys.exit(0)
+        if f"{job}:{n}" in os.environ.get("FAKE_EMPTY", "").split(","):
+            emit("nothing to do\nSTATUS: DONE")
+            sys.exit(0)
         area = json.loads(os.environ["ARK_AREA"])
         rel = f"outside/{job}.txt" if listed("FAKE_OUTSIDE", job) else area[0].replace("**", f"{job}.txt")
         f = wt / rel
         f.parent.mkdir(parents=True, exist_ok=True)
         with open(f, "a") as h:
             h.write(f"attempt {n}\n")
+        if f"{job}:{n}" in os.environ.get("FAKE_DIRTY", "").split(","):
+            emit("done\nSTATUS: DONE")
+            sys.exit(0)
+        if listed("FAKE_EARLY_OUTSIDE", job):
+            early = wt / "outside" / f"{job}.txt"
+            early.parent.mkdir(parents=True, exist_ok=True)
+            early.write_text("early\n")
+            subprocess.run(["git", "add", str(early)], cwd=wt, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", f"{job} early"], cwd=wt, check=True)
         subprocess.run(["git", "add", "-A"], cwd=wt, check=True)
         subprocess.run(["git", "commit", "-q", "-m", f"{job} attempt {n}"], cwd=wt, check=True)
         Path(os.environ["ARK_REPORT"]).write_text(
