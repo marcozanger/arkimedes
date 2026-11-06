@@ -1,13 +1,16 @@
 import fcntl
 import json
 import os
+import signal
 import subprocess
+import sys
+import threading
 import time
 
 import pytest
 from helpers import approve, manifest, plan_text
 
-from ark import forge, gitops, integrate, merge, paths, run
+from ark import forge, gitops, integrate, merge, paths, proc, run
 from ark.plan import load_plan
 
 SLUG = "notes-edit"
@@ -830,3 +833,263 @@ def test_m5_a_cleanup_failure_does_not_replace_the_outcome(ready, monkeypatch):
         return sha
     monkeypatch.setattr(gitops, "squash_keep", keep)
     assert integrate.integrate("demo", SLUG, "shell", st["jobs"]["shell"]["head"])["ok"] is True
+
+
+# --- Stopping ark-integrate stops its gate ----------------------------------------------------------
+
+CHECK = "shell.integrate"
+SETUP = 'sleep 30 >/dev/null 2>&1 & echo $! > "$MARK.setup"'
+# Started once, then green at once for the check that follows. It ignores what a polite stop sends.
+GATE = ('[ -e "$MARK" ] && exit 0; trap "" TERM INT HUP; sleep 30 & echo $! > "$MARK.daemon"; '
+        'echo $PPID > "$MARK.parent"; echo $$ > "$MARK"; sleep 30')
+
+
+def scratch_left():
+    return list((paths.worktrees_dir() / "demo" / SLUG).glob("_integrate-*"))
+
+
+def step_env():
+    return {**os.environ, "PYTHONPATH": str(paths.code_dir() / "lib")}
+
+
+class Check:
+    """A real ark-integrate with its real gate, waiting in that gate. Every pid is a child of this test."""
+    def __init__(self, ready, mark, gate):
+        self.mark = mark
+        self.st, self.f, self.repo, self.d, *_ = ready(manifest(setup=[SETUP], integration_gate=gate))
+        self.head = self.st["jobs"]["shell"]["head"]
+        self.argv = [sys.executable, "-m", "ark.integrate", f"demo/{SLUG}", "shell", self.head]
+        self.popen = self.pids = None
+
+    def wait_for_gate(self):
+        end = time.monotonic() + 20
+        while not self.mark.exists():
+            assert time.monotonic() < end, f"the gate never started: {self.output()}"
+            time.sleep(0.05)
+        self.parent = int(self.mark.with_name(self.mark.name + ".parent").read_text())
+        self.gate = int(self.mark.read_text())
+        self.pids = [self.gate] + [int(self.mark.with_name(f"{self.mark.name}.{s}").read_text())
+                                   for s in ("setup", "daemon")]
+
+    def output(self):
+        log = self.d / f"{CHECK}.log"
+        return log.read_text(errors="replace") if log.exists() else "no log"
+
+    def under_proc(self):
+        self.info = proc.start(self.d, CHECK, self.argv, cwd=self.repo, env=step_env(), minutes=5)
+        self.wait_for_gate()
+        return self
+
+    def in_a_terminal(self):
+        self.popen = subprocess.Popen(self.argv, cwd=self.repo, env=step_env(), start_new_session=True,
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.wait_for_gate()
+        return self
+
+    def all_gone(self):
+        return [pid for pid in self.pids if not is_gone(pid)] == []
+
+    def receipt(self):
+        return json.loads((self.d / f"{CHECK}.receipt.json").read_text())
+
+    def clean_up(self):
+        for pid in self.pids or ():
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+        child = proc._children.pop(str(self.d / CHECK), None)
+        for p in (child, self.popen):
+            if p is not None:
+                try:
+                    os.killpg(p.pid, signal.SIGKILL)
+                except OSError:
+                    pass
+                p.wait()
+
+
+@pytest.fixture
+def check(ready, tmp_path, monkeypatch):
+    mark = tmp_path / "gate"
+    monkeypatch.setenv("MARK", str(mark))
+    made = []
+
+    def make(gate=GATE):
+        made.append(Check(ready, mark, gate))
+        return made[-1]
+    yield make
+    for c in made:
+        c.clean_up()
+
+
+def past_its_deadline(c):
+    path = c.d / f"{CHECK}.proc"
+    proc._atomic(path, {**json.loads(path.read_text()), "deadline": 0})
+    assert proc.reap(c.d) == [CHECK]
+
+
+STOPS = {
+    "proc_stop": lambda c: proc.stop(c.d, CHECK, "stopped by Marco"),
+    "deadline": past_its_deadline,
+    "sigterm_to_group": lambda c: os.killpg(c.info["pid"], signal.SIGTERM),
+    "sigint_to_group": lambda c: os.killpg(c.info["pid"], signal.SIGINT),
+    "sighup_to_group": lambda c: os.killpg(c.info["pid"], signal.SIGHUP),
+    "sigterm_to_integrate_only": lambda c: os.kill(c.parent, signal.SIGTERM),
+}
+
+
+@pytest.mark.parametrize("how", sorted(STOPS))
+def test_stopping_the_check_kills_its_gate_and_what_setup_started_and_removes_the_worktree(check, how):
+    c = check().under_proc()
+    assert c.parent != c.info["pid"]  # the gate's parent is ark-integrate, under the wrapper
+    STOPS[how](c)
+    assert c.all_gone()
+    assert is_gone(c.parent)
+    assert proc._group_ended(c.info["pid"], proc.KILL_WAIT)
+    assert not scratch_left()
+    if how in ("proc_stop", "deadline"):
+        assert c.receipt().get("survivors") is None
+        assert c.receipt()["reason"] == ("stopped by Marco" if how == "proc_stop" else "timeout: over its time limit")
+
+
+@pytest.mark.parametrize("victim", ["integrate", "group"])
+def test_a_sigkill_gives_no_chance_to_clean_up_and_still_kills_the_gate(check, victim):
+    c = check().under_proc()
+    if victim == "integrate":
+        os.kill(c.parent, signal.SIGKILL)
+    else:
+        os.killpg(c.info["pid"], signal.SIGKILL)
+    assert c.all_gone()
+    out = integrate.integrate("demo", SLUG, "shell", c.head)  # the leftover worktree does not wedge the next check
+    assert out["ok"] is True, out
+    assert not scratch_left()
+
+
+def test_repeated_signals_do_not_interrupt_the_cleanup(check):
+    """A stop delivers SIGTERM twice: from proc.stop, then from the watcher once the wrapper is gone.
+    The read-only directory makes git's removal fail, so the cleanup must get as far as its own rmtree."""
+    c = check(f"{READ_ONLY}; {GATE}").in_a_terminal()
+    for _ in range(25):
+        os.kill(c.popen.pid, signal.SIGTERM)
+        time.sleep(0.02)
+    assert c.popen.wait(timeout=20) == 128 + signal.SIGTERM
+    assert c.all_gone()
+    assert not scratch_left()
+
+
+def test_a_step_interrupted_kills_its_group_before_returning(tmp_path):
+    """Before integrate's `finally` removes the worktree. The pipe stays open: the kill is the step's own."""
+    mark = tmp_path / "pid"
+    r, w = os.pipe()
+
+    def interrupt(signum, frame):
+        raise SystemExit(1)
+    before = signal.signal(signal.SIGALRM, interrupt)
+    signal.setitimer(signal.ITIMER_REAL, 0.5)
+    try:
+        with pytest.raises(SystemExit):
+            integrate._step(f'echo $$ > "{mark}"; sleep 30', tmp_path, 20, r)
+        assert proc._group_members(int(mark.read_text())) == set()
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, before)
+        os.close(r)
+        os.close(w)
+
+
+def test_a_check_stopped_during_a_setup_step_kills_that_step(ready, tmp_path, monkeypatch):
+    mark = tmp_path / "gate"
+    monkeypatch.setenv("MARK", str(mark))
+    st, f, repo, d, *_ = ready(manifest(setup=['echo $$ > "$MARK"; sleep 30'], integration_gate="true"))
+    argv = [sys.executable, "-m", "ark.integrate", f"demo/{SLUG}", "shell", st["jobs"]["shell"]["head"]]
+    proc.start(d, CHECK, argv, cwd=repo, env=step_env(), minutes=5)
+    try:
+        end = time.monotonic() + 20
+        while not mark.exists() or not mark.read_text().strip():
+            assert time.monotonic() < end
+            time.sleep(0.05)
+        proc.stop(d, CHECK, "stopped by Marco")
+        assert is_gone(int(mark.read_text()))
+        assert not scratch_left()
+    finally:
+        if mark.exists() and mark.read_text().strip():
+            try:
+                os.kill(int(mark.read_text()), signal.SIGKILL)
+            except OSError:
+                pass
+        proc._children.pop(str(d / CHECK)).wait()
+
+
+def test_a_finished_check_leaves_nothing_in_the_gates_group(ready, tmp_path, monkeypatch):
+    monkeypatch.setenv("MARK", str(tmp_path / "pid"))
+    st, f, repo, d, *_ = ready(manifest(integration_gate='echo $$ > "$MARK"'))
+    assert integrate.integrate("demo", SLUG, "shell", st["jobs"]["shell"]["head"])["ok"] is True
+    assert proc._group_ended(int((tmp_path / "pid").read_text()), 5)
+
+
+def test_a_gate_that_waits_for_its_own_jobs_is_not_held_up_by_what_watches_it(ready, monkeypatch):
+    monkeypatch.setattr(integrate, "GATE_TIMEOUT", 20)
+    st, f, repo, d, *_ = ready(manifest(integration_gate="sleep 0.1 & wait"))
+    t = time.monotonic()
+    assert integrate.integrate("demo", SLUG, "shell", st["jobs"]["shell"]["head"])["ok"] is True
+    assert time.monotonic() - t < 15
+
+
+def test_main_gives_back_the_signal_handlers(ready):
+    st, f, repo, d, *_ = ready()
+    before = [signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)]
+    assert integrate.main([f"demo/{SLUG}", "shell", st["jobs"]["shell"]["head"]]) == 0
+    assert [signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)] == before
+
+
+# --- The merge lock ---------------------------------------------------------------------------------
+
+def test_a_stuck_holder_of_the_lock_is_a_retryable_error_not_a_hang(ready, monkeypatch):
+    monkeypatch.setattr(merge, "LOCK_WAIT", 0.2)
+    st, f, repo, d, *_ = ready()
+    wrapped = Wrapped(f, fails_with(AssertionError("must not merge without the lock")))
+    with open(d / "merge.lock", "a") as holder:
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        t = time.monotonic()
+        with pytest.raises(forge.ForgeError, match="merge lock"):
+            merge.merge(st, "shell", wrapped, repo)
+        assert time.monotonic() - t < 5
+    assert wrapped.merges == 0
+    merge.merge(st, "shell", f, repo)  # released: the retry goes through
+
+
+def test_a_holder_that_finishes_within_the_wait_does_not_fail_the_merge(ready, monkeypatch):
+    monkeypatch.setattr(merge, "LOCK_WAIT", 20)
+    st, f, repo, d, *_ = ready()
+    holder = open(d / "merge.lock", "a")
+    fcntl.flock(holder, fcntl.LOCK_EX)
+    timer = threading.Timer(0.3, holder.close)
+    timer.start()
+    try:
+        merge.merge(st, "shell", f, repo)
+    finally:
+        timer.join()
+    assert f.view(repo, st["jobs"]["shell"]["pr"]["number"])["state"] == "MERGED"
+
+
+def test_m1_the_lock_also_covers_the_checks_before_the_merge(ready):
+    st, f, repo, d, *_ = ready()
+    seen = []
+
+    class Probing(Wrapped):
+        def view(self, r, number):
+            with open(d / "merge.lock") as other, pytest.raises(BlockingIOError):
+                fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            seen.append("held")
+            return super().view(r, number)
+    merge.merge(st, "shell", Probing(f, lambda real, r, n, subject, head_sha:
+                                     real.merge(r, n, subject=subject, head_sha=head_sha)), repo)
+    assert seen
+
+
+def test_m5_a_gate_that_leaves_the_top_of_the_worktree_read_only_stays_green_and_cleans_up(ready):
+    st, f, repo, d, *_ = ready(manifest(integration_gate="chmod a-w ."))
+    head = st["jobs"]["shell"]["head"]
+    assert integrate.integrate("demo", SLUG, "shell", head)["ok"] is True
+    assert not scratch_left()
+    assert integrate.integrate("demo", SLUG, "shell", head)["ok"] is True  # no wedge

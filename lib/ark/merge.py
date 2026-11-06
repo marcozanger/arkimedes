@@ -11,6 +11,7 @@ import fcntl
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 from . import forge as forge_mod, gitops, paths, run
@@ -19,6 +20,7 @@ from .plan import PlanError, load_plan, sha256_file
 
 
 NOT_ACTIVE = ("waiting", "held", "done")  # a run marked `blocked` is active: §5, "the rest continues"
+LOCK_WAIT = 30  # seconds merge() waits for another merge of the same run
 
 
 class MergeRefused(Exception):
@@ -174,6 +176,20 @@ def _merge_locked(st: dict, job: str, forge, repo) -> None:
                                f"not merged at {head}")
 
 
+def _take_lock(lock) -> None:
+    """A holder that is stopped (Ctrl-Z on a terminal ark-merge) holds the lock with no time limit, and
+    the loop calls merge() in-process: wait a bounded time, then let the next call retry."""
+    end = time.monotonic() + LOCK_WAIT
+    while True:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            if time.monotonic() >= end:
+                raise forge_mod.ForgeError(f"another process has held the merge lock for {LOCK_WAIT}s") from None
+            time.sleep(0.1)
+
+
 def merge(st: dict, job: str, forge, repo) -> None:
     """Merge the job's PR, or confirm an earlier merge of it. Returns only when the forge shows it
     merged at the job's head; raises MergeRefused, ForgeError or GitError otherwise. A per-run lock
@@ -188,7 +204,7 @@ def merge(st: dict, job: str, forge, repo) -> None:
     except OSError as e:
         raise MergeRefused(f"cannot take the merge lock: {e}") from e
     with lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)  # every step inside has a timeout, so the wait is bounded
+        _take_lock(lock)
         _merge_locked(st, job, forge, repo)
 
 
