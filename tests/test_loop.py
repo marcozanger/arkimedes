@@ -973,3 +973,39 @@ def test_a_huge_report_is_cut(tmp_path):
     f = tmp_path / "r.md"
     f.write_bytes(b"x" * (loop.REPORT_MAX + 1000))
     assert _report_at(f) == "x" * loop.REPORT_MAX
+
+
+# -- a state that cannot be saved
+
+def _worker_runs(tmp_path, name="shell"):
+    f = tmp_path / "fake" / f"{name}.worker.count"
+    return int(f.read_text()) if f.exists() else 0
+
+
+def test_a_save_that_keeps_failing_stops_the_spending(feature, tmp_path, monkeypatch):
+    feature()
+    loop.cycle()  # saved: the worker is on record
+
+    def broken(st):
+        raise OSError("read-only")
+
+    reaped, alerts, real_reap = [], [], proc.reap
+    monkeypatch.setattr(proc, "reap", lambda d: (reaped.append(d), real_reap(d))[1])
+    with monkeypatch.context() as m:
+        m.setattr(run, "save", broken)
+        for _ in range(20):
+            alerts += loop.cycle()[1]
+            time.sleep(0.05)
+    assert _worker_runs(tmp_path) <= 2
+    assert sum("cannot be saved" in a for a in alerts) == 1
+    assert len(reaped) >= 19  # still enforcing deadlines while it does nothing else
+    drive(jobs_settled)
+    assert all(j["status"] == "merged" for j in state()["jobs"].values())
+    assert _worker_runs(tmp_path) <= 2
+
+
+def test_a_failed_save_does_not_stop_the_cycle(feature, monkeypatch):
+    feature()
+    monkeypatch.setattr(run, "save", lambda st: (_ for _ in ()).throw(KeyError("x")))
+    line, alerts, changed = loop.cycle()
+    assert changed and any("cannot be saved" in a for a in alerts)

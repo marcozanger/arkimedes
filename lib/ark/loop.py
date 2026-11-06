@@ -772,18 +772,23 @@ def cycle(forge=None) -> tuple[str, list[str], bool]:
     for st in states.values():
         _guarded(st, "reconcile_error", lambda st=st: reconcile(st))
     slots = Slots(states.values(), paths.load_workspace()["limits"])
-    for st in states.values():
-        _guarded(st, "error", lambda st=st: step(st, list(states.values()), forge, slots))
+    home = str(paths.ark_home())
+    for key, st in states.items():
+        if (home, "unsaved", *key) in _said:  # moving it on would pay again for work it cannot remember
+            _guarded(st, "error", lambda d=paths.run_dir(*key): proc.reap(d))
+        else:
+            _guarded(st, "error", lambda st=st: step(st, list(states.values()), forge, slots))
     changed = False
     for key, st in states.items():
         alerts += st["alerts"]
         st["alerts"] = []
-        if json.dumps(st, sort_keys=True) != before[key]:
-            changed = True
+        dirty = json.dumps(st, sort_keys=True) != before[key]
+        changed = changed or dirty
+        if dirty or (home, "unsaved", *key) in _said:
             try:
                 run.save(st)
-                _said.discard((str(paths.ark_home()), "unsaved", *key))
-            except Exception as e:  # the next cycle reloads the last saved state and reconcile() catches up
+                _said.discard((home, "unsaved", *key))
+            except Exception as e:  # until a save works this run only reaps; then reconcile() catches up
                 _once(("unsaved", *key), f"{key[0]}/{key[1]}: the run state cannot be saved: "
                                          f"{type(e).__name__}: {e}", alerts)
     return status_line(list(states.values())), alerts, changed
