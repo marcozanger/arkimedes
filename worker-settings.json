@@ -1,5 +1,11 @@
 {
-  "env": { "ARKIMEDES": "1" },
+  "env": {
+    "ARKIMEDES": "1",
+    "GIT_CONFIG_COUNT": "1",
+    "GIT_CONFIG_KEY_0": "remote.origin.pushurl",
+    "GIT_CONFIG_VALUE_0": "/dev/null/no-push-from-workers"
+  },
+  "disableAllHooks": false,
   "permissions": {
     "allow": [
       "Read", "Edit", "Write", "MultiEdit", "Grep", "Glob",
@@ -9,20 +15,20 @@
     ],
     "deny": [
       "Bash(git push:*)", "Bash(gh pr merge:*)", "Bash(gh pr create:*)",
-      "Bash(gh pr review:*)", "Bash(gh api:*)"
+      "Bash(gh pr review:*)", "Bash(gh api:*)", "Monitor"
     ]
   },
   "hooks": {
     "PreToolUse": [
       { "matcher": "Write|Edit|MultiEdit|NotebookEdit",
-        "hooks": [{ "type": "command", "command": "python3 \"/Users/marcozanger/.claude/arkimedes/hooks/area-guard.py\"" }] },
+        "hooks": [{ "type": "command", "onFailure": "block", "command": "python3 \"/Users/marcozanger/.claude/arkimedes/hooks/area-guard.py\" || exit 2" }] },
       { "matcher": "Read|Grep|Glob|Bash",
-        "hooks": [{ "type": "command", "command": "python3 \"/Users/marcozanger/.claude/arkimedes/hooks/read-guard.py\"" }] },
+        "hooks": [{ "type": "command", "onFailure": "block", "command": "python3 \"/Users/marcozanger/.claude/arkimedes/hooks/read-guard.py\" || exit 2" }] },
       { "matcher": "Bash",
-        "hooks": [{ "type": "command", "command": "python3 \"/Users/marcozanger/.claude/arkimedes/hooks/merge-guard.py\"" }] }
+        "hooks": [{ "type": "command", "onFailure": "block", "command": "python3 \"/Users/marcozanger/.claude/arkimedes/hooks/merge-guard.py\" || exit 2" }] }
     ],
     "Stop": [
-      { "hooks": [{ "type": "command", "command": "bash \"/Users/marcozanger/.claude/arkimedes/hooks/done-gate.sh\"" }] }
+      { "hooks": [{ "type": "command", "timeout": 7200, "command": "bash \"/Users/marcozanger/.claude/arkimedes/hooks/done-gate.sh\"" }] }
     ]
   }
 }

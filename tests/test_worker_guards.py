@@ -3,7 +3,10 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 CODE = Path(__file__).resolve().parents[1]
+SYSTEM_PYTHON = "/usr/bin/python3"   # 3.9 on macOS: what `python3` is with the default PATH
 
 
 def hook(name, payload, **env_over):
@@ -127,7 +130,7 @@ def test_merge_guard_option_forms_and_nesting():
     for c in ["git -c k=v push", "git -C '/a b' push", "git --git-dir /x push", "git --git-dir=/x push origin",
               "/usr/bin/git push", "command git push", "gh -R o/r pr merge 3", "gh --repo o/r pr create",
               "gh -R o/r api x", "bash -c 'git push'", "sh -c \"cd x && git push\"", "echo hi; git push",
-              "echo $(git push)", "echo `git push`", "git 'push'", "eval 'gh pr merge 3'", "git commit -m 'unclosed"]:
+              "echo $(git push)", "echo `git push`", "git 'push'", "eval 'gh pr merge 3'", "git commit -m 'unclosed push"]:
         assert m(c) == "deny", c
     for c in ["git commit -m 'git push (later)'", "git -C /wt log", "gh pr view 3 --json state",
               "echo 'gh pr merge' > /dev/null"]:
@@ -140,13 +143,18 @@ def test_merge_guard_fails_closed():
         assert decision(hook("merge-guard.py", payload, ARK_ROLE="worker")) == "deny", payload
 
 
+def assistant_line(text):
+    return json.dumps({"type": "assistant", "message": {"role": "assistant",
+                                                        "content": [{"type": "text", "text": text}]}}) + "\n"
+
+
 def test_done_gate(tmp_path):
     wt = tmp_path / "wt"
     wt.mkdir()
     rd = tmp_path / "run"
     rd.mkdir()
     transcript = tmp_path / "t.jsonl"
-    transcript.write_text('{"text": "working"}\n')
+    transcript.write_text(assistant_line("working"))
     env = {"ARK_ROLE": "worker", "ARK_WORKTREE": str(wt), "ARK_RUN_DIR": str(rd), "ARK_JOB": "shell",
            "ARK_GATE": "test -f ok || (echo gate is red; exit 1)"}
     stop = lambda **e: hook("done-gate.sh", {"transcript_path": str(transcript)}, **{**env, **e})
@@ -155,9 +163,9 @@ def test_done_gate(tmp_path):
         assert out["decision"] == "block" and "gate is red" in out["reason"]
     assert stop() is None                                   # 3 blocks: it may end FAILED
     (rd / "shell.doneblocks").unlink()
-    transcript.write_text('{"text": "STATUS: FAILED — cannot"}\n')
+    transcript.write_text(assistant_line("STATUS: FAILED — cannot"))
     assert stop() is None                                   # it already says FAILED
-    transcript.write_text('{"text": "done"}\n')
+    transcript.write_text(assistant_line("done"))
     (wt / "ok").write_text("")
     assert stop() is None                                   # green
     assert stop(ARK_ROLE="reviewer") is None
@@ -172,3 +180,308 @@ def test_session_start_is_silent_for_runner_roles():
     r = subprocess.run(["bash", str(CODE / "hooks" / "session-start.sh")], input="{}", capture_output=True,
                        text=True, env={**os.environ, "ARK_ROLE": "worker"})
     assert r.returncode == 0 and r.stdout == ""
+
+
+P = "origin HEAD:main"
+
+
+def merge_decisions(commands, role="worker", python="python3"):
+    out = {}
+    for c in commands:
+        r = subprocess.run([python, str(CODE / "hooks/merge-guard.py")], capture_output=True, text=True,
+                           input=json.dumps({"tool_name": "Bash", "tool_input": {"command": c}}),
+                           env={**os.environ, "ARK_ROLE": role})
+        assert r.returncode == 0, (c, r.stderr)
+        out[c] = decision(json.loads(r.stdout) if r.stdout.strip() else None)
+    return out
+
+
+def assert_all(commands, expected):
+    wrong = [c for c, d in merge_decisions(commands).items() if d != expected]
+    assert not wrong, f"should be {expected}: {wrong}"
+
+
+def test_merge_guard_review_table_is_denied():
+    assert_all([
+        # newlines
+        f"true\ngit push {P}", "true\ngh pr merge 3", f"sh -c 'true\ngit push {P}'", f"bash <<E\ngit push {P}\nE",
+        # '#' inside a word
+        f"echo a#b; git push {P}", f"git log -1 --format=%h# ; git push {P}", "echo a#b; gh pr merge 3",
+        # substitutions inside double quotes
+        f'echo "$(git push {P})"', f'x="$(git push {P})"', f'echo "`git push {P}`"',
+        f'git commit --allow-empty -m "$(git push {P})"', 'echo "$(gh pr merge 3)"',
+        # reserved words
+        f"{{ git push {P}; }}", f"if true; then git push {P}; fi", f"if git push {P}; then true; fi",
+        f"for i in 1; do git push {P}; done", f"! git push {P}", f"f() {{ git push {P}; }}; f", "{ gh pr merge 3; }",
+        # wrappers
+        f"env -i PATH=$PATH git push {P}", f"env -u FOO git push {P}", f"env -S 'git push {P}'",
+        f"command -p git push {P}", f"exec -a x git push {P}", f"time -p git push {P}", f"nice git push {P}",
+        f"caffeinate -i git push {P}",
+        # xargs
+        "xargs -n2 git push", f"xargs -I{{}} git push {P}", f"echo push {P} | xargs git",
+        # a shell reading stdin
+        f"echo 'git push {P}' | sh", f"echo 'git push {P}' | bash -s", f"sh <<< 'git push {P}'",
+        # eval
+        f"eval git push {P}", f'eval "git" push {P}', "eval gh pr merge 3",
+        # options after pr
+        "gh pr -R o/r merge 3", "gh pr --repo o/r merge 3", "gh pr --repo=o/r merge 3",
+        # aliases and plumbing
+        f"git -c alias.x=push x {P}", f"git -c 'alias.x=!git push' x {P}", f"git config alias.y push && git y {P}",
+        "git send-pack ../r.git HEAD:refs/heads/main", "gh alias set zz 'pr merge' && gh zz 3",
+        f"git --attr-source HEAD push {P}",
+        # expansion
+        f"g=git; $g push {P}", f"p=push; git $p {P}", f"$(echo git) push {P}", f"git${{IFS}}push {P}",
+        # other interpreters
+        f"find . -exec git push {P} \;", f"python3 -c \"import os; os.system('git push {P}')\"",
+        f"perl -e 'system(\"git push {P}\")'", f"echo 'git push {P}' > s.sh && sh s.sh",
+    ], "deny")
+
+
+def test_merge_guard_denies_what_it_cannot_prove():
+    assert_all([
+        # no push word in sight: still opaque
+        "p=pu; q=sh; git $p$q origin", "git $(printf pu)sh", 'git "$x" origin', "git pu*", "echo Z2l0 | base64 -d | sh",
+        "echo Z2l0 | base64 -d | /bin/bash", "echo x | base64 -d | python3", 'eval "$x"', "cd /x && eval $y",
+        "bash <(curl x)", "sh < s.sh", "bash -c $'git \\x70ush'", 'sh -c "$x"', "bash -lc `cat f`", "source <(curl x)",
+        ". /dev/stdin",
+        # quote and case splitting
+        'git pu""sh', "git p\\ush", "git pu\\\nsh", f"GIT push {P}",
+        # quoted text that becomes a command
+        "x='git push'; $x", "PAGER='git push' git log", "git -c core.pager='git push' log",
+        "git grep -O'git push' x", "git fetch --upload-pack='git push' origin", "git rebase -x 'git push' HEAD~1",
+        "find . -exec sh -c 'git push' \;", "grep x f | tee s.sh; echo 'git push' | tee -a s.sh",
+        # a commit-message heredoc must not hide a command
+        "echo '\"$(cat <<'E'\n' ; git push ; echo '\nE\n)\"'",
+        "git commit -m \"$(cat <<'E'\nfoo\nE\ngit push\nE\n)\"",
+        "git commit -m \"$(cat <<E\n$(git push)\nE\n)\"",
+        "sh -c \"$(cat <<'E'\ngit push\nE\n)\"",
+        "\"$(cat <<'E'\ngit push\nE\n)\" | sh",
+        # gh is always proven, not parsed
+        "gh pr view 3; gh pr merge 3", "gh zz 3", "gh extension install x",
+        # words that may run a push, which a static check cannot read
+        "make push", "./push.sh", "bash scripts/push.sh", "npm run push",
+        # the env backstop in worker-settings.json
+        "GIT_CONFIG_COUNT=0 ./x", "git config --unset remote.origin.pushurl",
+    ], "deny")
+
+
+def test_merge_guard_keeps_ordinary_commands():
+    assert_all([
+        "git status", "git stash push", "git stash push -m x", "git -C /wt stash push", "git grep foo",
+        "git grep 'git push'", "grep -rn 'git push' .", "rg 'gh pr merge'", "echo 'git push'", 'echo "git push"',
+        "git log --grep='git push'", "git log --format='%h#%s'", "git config push.default", "git help push",
+        "git commit -m 'push the button'", 'git commit -m "feat: push notifications"',
+        "git commit -m 'git push (later)'", "git commit -m \"$(cat <<'EOF'\nfix: don't git push\n\nCo-Authored-By: x\nEOF\n)\"",
+        "git add a && git commit -m \"$(cat <<'EOF'\nmerge it, then | sh\nEOF\n)\" 2>&1 | tail -5",
+        "git commit -m \"$(cat <<EOF\nfix it's\nEOF\n)\"",
+        "xargs grep 'git push'", "find . -name '*.py' | xargs grep 'git push'", "find . -name '*.py' -exec wc -l {} \;",
+        "cat > f <<'EOF'\nit's fine\nEOF", "cat > f <<EOF\nit's fine\nEOF", "python3 - <<'PY'\nprint(\"it's\")\nPY",
+        "gh pr view 3", "gh pr list", "gh pr checks 3", "gh pr view 3 --json title | jq .title", "gh -R o/r pr view 3",
+        "gh pr -R o/r view 3", "sed -E 's/(a|b)/c/' f", "awk '$1 ~ /#/' f",
+        "git merge origin/main", "git merge --no-edit origin/main 2>&1 | tail -20", "git add .\ngit commit -m 'push it'",
+        "cd /wt && git status", 'git -C "$WT" status', "git -C '/a b' status", "git --no-pager log", "git log $x",
+        "pushd x", "git fetch origin && git status", "bash scripts/test.sh", "sh -c 'make test'", "eval_results.sh", "bash -c 'echo $HOME'", "source .venv/bin/activate",
+        'git commit -m "eval fix"', "pytest -k 'a and not b' && ruff check .", "curl -s x | python3 -m json.tool",
+        # a path with the word in it is not a push
+        "flutter test test/push/x_test.dart", ".venv/bin/python -m pytest tests/merge/ -q", "cat lib/push.py",
+        "grep -rn merge lib | head -3", "ls .github", "cat lib/ark/merge.py",
+    ], "allow")
+
+
+def test_merge_guard_reason_says_how_to_retry():
+    r = subprocess.run(["python3", str(CODE / "hooks/merge-guard.py")], capture_output=True, text=True,
+                       input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "pytest -k push"}}),
+                       env={**os.environ, "ARK_ROLE": "worker"})
+    reason = json.loads(r.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "Write tool" in reason and "not a stop signal" in reason
+
+
+@pytest.mark.parametrize("name", ["merge-guard.py", "area-guard.py", "read-guard.py"])
+def test_guards_deny_a_missing_tool_name(name, tmp_path):
+    env = {**worker_env(tmp_path, tmp_path / "r.md"), "ARK_HOME": str(tmp_path)}
+    for payload in [{}, {"tool_input": {"command": "git push"}}, {"tool_name": None}, {"tool_name": 5}]:
+        assert decision(hook(name, payload, **env)) == "deny", payload
+
+
+@pytest.mark.skipif(not Path(SYSTEM_PYTHON).exists(), reason="no system python")
+def test_guards_work_on_the_system_python(tmp_path):
+    assert merge_decisions([f"git push {P}", "git commit -m 'push'", "true\ngh pr merge 3"], python=SYSTEM_PYTHON) == {
+        f"git push {P}": "deny", "git commit -m 'push'": "allow", "true\ngh pr merge 3": "deny"}
+    env = {**os.environ, **worker_env(tmp_path, tmp_path / "r.md"), "ARK_HOME": str(tmp_path / "ark")}
+    def run(name, payload):
+        r = subprocess.run([SYSTEM_PYTHON, str(CODE / "hooks" / name)], input=json.dumps(payload), capture_output=True,
+                           text=True, env=env)
+        assert r.returncode == 0, r.stderr
+        return decision(json.loads(r.stdout) if r.stdout.strip() else None)
+    write = lambda p: {"tool_name": "Write", "tool_input": {"file_path": str(tmp_path / p)}, "cwd": str(tmp_path)}
+    assert run("area-guard.py", write("src/shell/a.py")) == "allow"
+    assert run("area-guard.py", write("src/ui/a.py")) == "deny"
+    read = lambda p: {"tool_name": "Read", "tool_input": {"file_path": str(tmp_path / p)}, "cwd": str(tmp_path)}
+    assert run("read-guard.py", read("src/a.py")) == "allow"
+    assert run("read-guard.py", read("ark/desk/a/plan.md")) == "deny"
+
+
+def settings():
+    return json.loads((CODE / "worker-settings.json").read_text())
+
+
+def pretool_hooks():
+    return [h for g in settings()["hooks"]["PreToolUse"] for h in g["hooks"]]
+
+
+def run_form(command, script, payload, path=None):
+    """A hook's command exactly as the settings write it, pointed at `script`."""
+    for name in ("area-guard.py", "read-guard.py", "merge-guard.py"):
+        command = command.replace(f"/Users/marcozanger/.claude/arkimedes/hooks/{name}", str(script))
+    env = {**os.environ, "ARK_ROLE": "worker"}
+    if path is not None:
+        env["PATH"] = str(path)
+    return subprocess.run(["/bin/sh", "-c", command], input=json.dumps(payload), capture_output=True, text=True, env=env)
+
+
+def test_a_failing_guard_blocks_in_the_settings_form(tmp_path):
+    crash = tmp_path / "crash.py"
+    crash.write_text("raise TypeError('boom')\n")
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    payload = {"tool_name": "Bash", "tool_input": {"command": "git push"}}
+    hooks = pretool_hooks()
+    assert len(hooks) == 3
+    for h in hooks:
+        assert h["onFailure"] == "block", h
+        assert run_form(h["command"], crash, payload).returncode == 2, h      # crash
+        assert run_form(h["command"], crash, payload, path=empty).returncode == 2, h   # no python3 on PATH
+        assert run_form(h["command"], tmp_path / "gone.py", payload).returncode == 2, h
+
+
+def test_the_settings_form_keeps_a_json_deny_and_an_allow():
+    h = next(h for h in pretool_hooks() if "merge-guard" in h["command"])
+    guard = CODE / "hooks/merge-guard.py"
+    denied = run_form(h["command"], guard, {"tool_name": "Bash", "tool_input": {"command": "git push"}})
+    assert denied.returncode == 0 and decision(json.loads(denied.stdout)) == "deny"
+    allowed = run_form(h["command"], guard, {"tool_name": "Bash", "tool_input": {"command": "git status"}})
+    assert allowed.returncode == 0 and allowed.stdout == ""
+
+
+def test_worker_settings_close_the_side_doors():
+    s = settings()
+    assert s["disableAllHooks"] is False
+    assert "Monitor" in s["permissions"]["deny"]
+    stop = s["hooks"]["Stop"][0]["hooks"][0]
+    assert stop["timeout"] >= 7200      # a gate may run longer than the default 600 s
+
+
+def test_worker_settings_env_stops_a_plain_push(tmp_path):
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+           "GIT_COMMITTER_EMAIL": "t@t"}
+    def git(*a, cwd=tmp_path, e=env):
+        return subprocess.run(["git", *a], cwd=cwd, env=e, capture_output=True, text=True)
+    git("init", "-q", "--bare", "-b", "main", "r.git")
+    git("clone", "-q", "r.git", "c")
+    clone = tmp_path / "c"
+    git("commit", "-q", "--allow-empty", "-m", "0", cwd=clone)
+    assert git("push", "-q", "origin", "HEAD:main", cwd=clone).returncode == 0     # without the layer it works
+    git("commit", "-q", "--allow-empty", "-m", "1", cwd=clone)
+    head = lambda: git("rev-parse", "main", cwd=tmp_path / "r.git").stdout
+    before = head()
+    worker = {**env, **settings()["env"]}
+    assert git("push", "origin", "HEAD:main", cwd=clone, e=worker).returncode != 0
+    assert git("-c", "alias.x=push", "x", "origin", "HEAD:main", cwd=clone, e=worker).returncode != 0
+    assert head() == before
+    assert git("fetch", "origin", cwd=clone, e=worker).returncode == 0
+
+
+def done_gate_env(tmp_path):
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    rd = tmp_path / "run"
+    rd.mkdir()
+    return {"ARK_ROLE": "worker", "ARK_WORKTREE": str(wt), "ARK_RUN_DIR": str(rd), "ARK_JOB": "shell",
+            "ARK_GATE": "echo gate is red; exit 1"}
+
+
+BRIEF = "End with exactly one of:\nSTATUS: DONE\nSTATUS: FAILED — <one line: why>\nSTATUS: BLOCKED — <question>\n"
+
+
+def test_done_gate_ignores_status_text_earlier_in_the_session(tmp_path):
+    env = done_gate_env(tmp_path)
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(
+        json.dumps({"type": "user", "message": {"role": "user", "content": BRIEF}}) + "\n"
+        + json.dumps({"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "content": "denied, end with STATUS: BLOCKED."}]}}) + "\n"
+        + assistant_line("STATUS: FAILED — an old answer, then I went on")
+        + json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "All done."}, {"type": "tool_use", "name": "Bash", "input": {}}]}}) + "\n"
+        + json.dumps({"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "content": "or end with STATUS: FAILED — <why>."}]}}) + "\n")
+    out = hook("done-gate.sh", {"transcript_path": str(transcript)}, **env)
+    assert out["decision"] == "block"
+
+
+def test_done_gate_wants_the_status_as_the_last_line(tmp_path):
+    env = done_gate_env(tmp_path)
+    for text in ["I would say STATUS: FAILED — maybe, but no", "STATUS: FAILED — x\nactually, more text",
+                 " STATUS: BLOCKED — indented", "STATUS: FAILEDISH", "STATUS: DONE"]:
+        out = hook("done-gate.sh", {"last_assistant_message": text}, **env)
+        assert out["decision"] == "block", text
+        (tmp_path / "run/shell.doneblocks").unlink()
+    for text in ["STATUS: FAILED — cannot", "report written.\n\nSTATUS: BLOCKED — which?\n\n", "STATUS:FAILED"]:
+        assert hook("done-gate.sh", {"last_assistant_message": text}, **env) is None, text
+
+
+def test_done_gate_prefers_the_stop_input_over_the_transcript(tmp_path):
+    env = done_gate_env(tmp_path)
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(assistant_line("STATUS: FAILED — lagging entry"))     # the transcript may lag
+    out = hook("done-gate.sh", {"transcript_path": str(transcript), "last_assistant_message": "All good"}, **env)
+    assert out["decision"] == "block"
+
+
+def test_done_gate_reads_a_broken_transcript_as_no_status(tmp_path):
+    env = done_gate_env(tmp_path)
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text("not json\n5\n" + assistant_line("STATUS: BLOCKED — which?") + "{broken")
+    assert hook("done-gate.sh", {"transcript_path": str(transcript)}, **env) is None
+    transcript.write_text("not json\n")
+    assert hook("done-gate.sh", {"transcript_path": str(transcript)}, **env)["decision"] == "block"
+
+
+def test_area_guard_always_protects_git_and_claude_settings(tmp_path):
+    env = worker_env(tmp_path, tmp_path / "r.md", ARK_AREA=json.dumps(["**", "*", "**/*.json"]))
+    w = lambda p, **ti: decision(hook("area-guard.py", {"tool_name": "Write", "tool_input": {"file_path": p, **ti},
+                                                        "cwd": str(tmp_path)}, **env))
+    for p in [".git", ".git/config", ".git/hooks/pre-push", ".GIT/config", ".claude/settings.json",
+              ".claude/settings.local.json", "sub/.git/config"]:
+        assert w(p) == "deny", p
+    for p in ["a.py", ".gitignore", ".claude/agents/x.md", "src/settings.json"]:
+        assert w(p) == "allow", p
+
+
+def test_area_guard_checks_every_path_in_the_call(tmp_path):
+    env = worker_env(tmp_path, tmp_path / "r.md")
+    ti = {"file_path": str(tmp_path / "src/shell/a.py"), "notebook_path": str(tmp_path / "src/ui/n.ipynb")}
+    assert decision(hook("area-guard.py", {"tool_name": "NotebookEdit", "tool_input": ti, "cwd": str(tmp_path)}, **env)) == "deny"
+    ti = {"notebook_path": str(tmp_path / "src/shell/n.ipynb")}
+    assert decision(hook("area-guard.py", {"tool_name": "NotebookEdit", "tool_input": ti, "cwd": str(tmp_path)}, **env)) == "allow"
+
+
+def test_read_guard_denies_searching_a_parent_of_the_closed_folders(tmp_path):
+    home = tmp_path / "ark"
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    env = {"ARK_ROLE": "worker", "ARK_HOME": str(home)}
+    r = lambda tool, inp, cwd=wt: decision(hook("read-guard.py", {"tool_name": tool, "tool_input": inp, "cwd": str(cwd)},
+                                                **env))
+    assert r("Grep", {"pattern": "x", "path": str(home)}) == "deny"
+    assert r("Grep", {"pattern": "x", "path": str(tmp_path)}) == "deny"
+    assert r("Grep", {"pattern": "x"}, cwd=home) == "deny"
+    assert r("Glob", {"pattern": f"{home}/**/*.md"}) == "deny"
+    assert r("Glob", {"pattern": "../ark/desk/**"}) == "deny"
+    assert r("Glob", {"pattern": "../**/plan.md"}) == "deny"
+    assert r("Grep", {"pattern": "x", "path": str(wt), "glob": "../ark/desk/**"}) == "deny"
+    assert r("Grep", {"pattern": "x", "path": str(wt), "glob": "*.py"}) == "allow"
+    assert r("Grep", {"pattern": "x"}) == "allow"
+    assert r("Glob", {"pattern": "**/*.py"}) == "allow"
+    assert r("Glob", {"pattern": "src/*.py", "path": str(wt)}) == "allow"
+    assert r("Read", {"file_path": str(home / "runs/x.md")}) == "allow"

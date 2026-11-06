@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """PreToolUse (Read|Grep|Glob|Bash) for workers and reviewers: no reading plans or approvals.
 
-The brief is the whole plan a worker gets (§6). Fails closed for those roles; nothing for others."""
+The brief is the whole plan a worker gets (§6). Fails closed for those roles; nothing for others.
+Searching a parent of the closed folders is denied too: it would reach them."""
+from __future__ import annotations  # the hook may run on the system python, 3.9 on macOS
+
 import json
 import os
 import re
@@ -28,6 +31,8 @@ def check(raw: str) -> None:
     if not isinstance(data, dict):
         deny("read-guard: unreadable input.")
     tool, ti = data.get("tool_name"), data.get("tool_input") or {}
+    if not isinstance(tool, str):
+        deny("read-guard: no tool name.")
     if tool == "Bash":
         cmd = ti.get("command")
         if not isinstance(cmd, str):
@@ -41,14 +46,21 @@ def check(raw: str) -> None:
         return
     if tool not in ("Read", "Grep", "Glob"):
         return
-    p = ti.get("file_path") or ti.get("path")
-    if p is None:
-        return
-    if not isinstance(p, str):
+    cwd = data.get("cwd") or os.getcwd()
+    given = [ti[k] for k in ("file_path", "path") if ti.get(k) is not None]
+    if not all(isinstance(p, str) for p in given):
         deny("read-guard: bad path.")
-    target = Path(os.path.realpath(os.path.join(data.get("cwd") or os.getcwd(), os.path.expanduser(p))))
-    if any(target == c or c in target.parents for c in closed):
-        deny()
+    if tool == "Read":
+        roots = given
+    else:   # the search root, plus the literal folder a glob starts with, which may climb out of it
+        base = os.path.join(cwd, given[0]) if given else cwd
+        globs = [ti.get("pattern") if tool == "Glob" else ti.get("glob")]
+        roots = [base] + [os.path.join(base, os.path.dirname(re.split(r"[*?\[{]", g)[0]))
+                          for g in globs if isinstance(g, str)]
+    for p in roots:
+        target = Path(os.path.realpath(os.path.join(cwd, os.path.expanduser(p))))
+        if any(target == c or c in target.parents or target in c.parents for c in closed):
+            deny()
 
 
 def main() -> None:

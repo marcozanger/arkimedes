@@ -1,13 +1,23 @@
 #!/bin/bash
 # Stop hook for runner workers (§6): while the job gate is red the worker may not stop; the gate
-# output goes back to it. After 3 blocks, or when its last message already says FAILED/BLOCKED,
-# it may end. Does nothing outside ARK_ROLE=worker.
+# output goes back to it. After 3 blocks, or when its last message ends with STATUS: FAILED or
+# BLOCKED (as lib/ark/brief.py reads it), it may end. Earlier text does not count: the brief and
+# the guards' own messages quote those lines. Does nothing outside ARK_ROLE=worker.
 [ "$ARK_ROLE" = "worker" ] || exit 0
 [ -n "$ARK_GATE" ] && [ -d "$ARK_WORKTREE" ] && [ -n "$ARK_RUN_DIR" ] || exit 0
 input=$(cat)
-transcript=$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/dev/null)
-if [ -n "$transcript" ] && [ -f "$transcript" ] &&
-   tail -c 20000 "$transcript" | grep -Eq 'STATUS: (FAILED|BLOCKED)'; then
+last=$(printf '%s' "$input" | jq -r '.last_assistant_message | strings' 2>/dev/null)
+if [ -z "$last" ]; then   # older input: the last assistant text in the transcript
+  transcript=$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/dev/null)
+  if [ -n "$transcript" ] && [ -f "$transcript" ]; then
+    last=$(tail -c 1000000 "$transcript" | jq -Rrs '[split("\n")[] | fromjson? | objects | select(.type == "assistant")
+      | .message.content | if type == "array" then [.[] | objects | select(.type == "text") | .text] | join("\n")
+                           elif type == "string" then . else "" end
+      | select(length > 0)] | last // empty' 2>/dev/null)
+  fi
+fi
+if printf '%s\n' "$last" | awk 'NF { l = $0 } END { print l }' |
+   grep -Eq '^STATUS:[[:blank:]]*(FAILED|BLOCKED)([^[:alnum:]_]|$)'; then
   exit 0
 fi
 count_file="$ARK_RUN_DIR/$ARK_JOB.doneblocks"

@@ -3,16 +3,20 @@
 
 Workers may write only inside the job's area (ARK_AREA, globs relative to ARK_WORKTREE) and their
 report (ARK_REPORT); reviewers write nothing. Fails closed for those roles: what it cannot check
-is denied. Any role other than worker may not write. Without ARK_ROLE (Marco's sessions) it does
-nothing."""
+is denied. Any role other than worker may not write, and .git and .claude/settings*.json are never
+writable, whatever the area says. Without ARK_ROLE (Marco's sessions) it does nothing."""
+from __future__ import annotations  # the hook may run on the system python, 3.9 on macOS
+
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 
 WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
+CLAUDE_SETTINGS = re.compile(r"\.claude/settings[^/]*\.json")
 
 
 def deny(reason: str) -> None:
@@ -27,6 +31,8 @@ def check(raw: str) -> None:
     if not isinstance(data, dict):
         deny("area-guard: unreadable input.")
     tool = data.get("tool_name")
+    if not isinstance(tool, str):
+        deny("area-guard: no tool name.")
     if tool not in WRITE_TOOLS:
         return
     if role == "reviewer":
@@ -34,11 +40,16 @@ def check(raw: str) -> None:
     if role != "worker":
         deny(f"area-guard: role {role!r} may not write files.")
     ti = data.get("tool_input") or {}
-    p = ti.get("file_path") or ti.get("notebook_path")
-    if not isinstance(p, str) or not p:
+    given = [ti[k] for k in ("file_path", "notebook_path") if k in ti]
+    if not given or not all(isinstance(p, str) and p for p in given):
         deny("area-guard: no file path in this call.")
     if not os.environ.get("ARK_WORKTREE"):
         deny("area-guard: no worktree set.")
+    for p in given:
+        check_path(p, data)
+
+
+def check_path(p: str, data: dict) -> None:
     wt = Path(os.path.realpath(os.environ["ARK_WORKTREE"]))
     target = Path(os.path.realpath(os.path.join(data.get("cwd") or wt, os.path.expanduser(p))))
     report = os.environ.get("ARK_REPORT")
@@ -48,6 +59,8 @@ def check(raw: str) -> None:
         rel = target.relative_to(wt).as_posix()
     except ValueError:
         deny(f"{target} is outside your worktree {wt}. Work only there.")
+    if ".git" in rel.lower().split("/") or CLAUDE_SETTINGS.fullmatch(rel.lower()):
+        deny(f"{rel} is never writable by a worker. Note what you need under Open issues in your report.")
     from ark.globs import match_any
     area = json.loads(os.environ["ARK_AREA"])
     if not isinstance(area, list) or not area or not all(isinstance(g, str) and g for g in area):

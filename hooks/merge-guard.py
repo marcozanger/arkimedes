@@ -3,82 +3,202 @@
 editing PRs, no `gh api`, no `git push`. Only ark-loop does those, in code, after ark-merge's
 checks (§7). Fails closed for runner roles; nothing for Marco's sessions.
 
-The command is tokenized like a shell would (quotes respected, operators split it into simple
-commands), so `git -c k=v push`, `git --git-dir x push`, `gh -R o/r pr merge` and
-`bash -c 'git push'` are caught, while `git commit -m 'push the button'` is not. A command that
-cannot be tokenized is denied."""
+It does not parse shell, because a list of forms always misses some. It asks for proof instead:
+1. ALWAYS_DENY: text sent to a shell or a git subcommand no static check can read. Denied as is.
+2. No MENTION of a push, a merge or gh anywhere in the raw text: allowed.
+3. FORBIDDEN: the plain regex on the raw text, with only literal quoted strings blanked.
+4. Otherwise a mention is allowed only if every byte is accounted for (_scan) and every simple
+   command is on a short list of programs that treat their arguments as data (_harmless).
+A false denial costs the worker one retry; a false allow can move main.
+
+Static checks have limits: a command with no mention at all (`./script.sh`, a base64 payload for
+`python3 -c`) passes. worker-settings.json's pushurl and branch protection are the backstops."""
+from __future__ import annotations  # the hook may run on the system python, 3.9 on macOS
+
 import json
 import os
-import shlex
+import re
 import sys
 
-PR_ACTIONS = {"merge", "review", "create", "edit", "close", "ready", "comment"}
-GIT_OPT_WITH_VALUE = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--super-prefix",
-                      "--config-env"}
-GH_OPT_WITH_VALUE = {"-R", "--repo", "--hostname"}
-SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
-WRAPPERS = {"command", "exec", "env", "sudo", "nohup", "time", "builtin"}
-OPERATORS = set(";&|()<>\n")
+PR_VERBS = "merge|review|create|edit|close|ready|comment"
+SHELL = r"(?:\S*/)?(?:ba|z|da|k|fi|c|tc)?sh"
+_VALUE_OPT = "-C|-c|--git-dir|--work-tree|--namespace|--exec-path|--super-prefix|--config-env|--attr-source"
+GIT_OPTIONS = (rf"(?:\s+(?:{_VALUE_OPT})\s+(?:\"[^\"]*\"|'[^']*'|\S+)"
+               rf"|\s+(?!(?:{_VALUE_OPT})\s)-\S+)*")
+
+ALWAYS_DENY = re.compile("|".join([
+    # a shell or an interpreter reading its program from stdin
+    rf"\|&?\s*(?:(?:sudo|env|command|exec|nohup|nice|time|builtin)\s+)*{SHELL}(?=[\s;&|)]|$)",
+    r"\|&?\s*(?:\S*/)?(?:python[\d.]*|perl|ruby|node|php)(?:\s+-)?\s*(?:[;&|)\n]|$)",
+    rf"(?:^|[\s;&|(])(?:{SHELL}(?:\s+-\S+)*|source|\.)\s*(?:<|/dev/stdin)",
+    # a shell whose whole program is an expansion
+    rf"(?:^|[\s;&|(]){SHELL}(?:\s+-\S+)*\s+-\w*c\w*\s+[\"]?[$`]",
+    # eval where a command starts
+    r"(?:^|[;&|({\n!]|\b(?:then|do|else|command|builtin|exec|env|time|nohup|nice)\s)\s*eval(?=[\s;]|$)",
+    # a git subcommand decided at run time: expansion or glob
+    rf"\bgit{GIT_OPTIONS}\s+(?!-)[\"']?\S*[$`*?\[]",
+]))
+MENTION = re.compile(r"(?<![\w-])(?:push|merge)(?![\w/-])|\bgh(?![\w-])|git-push|http-push|send-pack|receive-pack"
+                     r"|pushurl|GIT_CONFIG_|alias\.", re.I)
+FORBIDDEN = [
+    (re.compile(rf"\bgh\b[^;&|\n]*\bpr\b[^;&|\n]*\b(?:{PR_VERBS})\b", re.I), "PRs are the runner's job"),
+    (re.compile(r"\bgh\b[^;&|\n]*\bapi\b", re.I), "gh api is not available to runner processes"),
+    (re.compile(rf"\bgit{GIT_OPTIONS}\s+push\b|git-push|http-push|send-pack|receive-pack", re.I),
+     "pushing is the runner's job"),
+]
+
+# `git commit -m "$(cat <<'EOF' ... EOF\n)"`: the delimiter is quoted, so the body is literal
+COMMIT_MESSAGE = r"\"\$\(cat <<'(?P<d>\w+)'\n(?:(?!(?P=d)\n)[^\n]*\n)*(?P=d)\n\s*\)\""
+PLAIN_DOUBLE_QUOTED = r"\"[^\"$`\\]*\""
+_COMMIT_MESSAGE_RX = re.compile(COMMIT_MESSAGE)
+_PLAIN_DOUBLE_RX = re.compile(PLAIN_DOUBLE_QUOTED)
+_LITERALS = re.compile(rf"'[^']*'|{COMMIT_MESSAGE}|{PLAIN_DOUBLE_QUOTED}")
+_NULL_REDIRECT = re.compile(r"(?<!\S)(?:2>&1|[12]?>\s*/dev/null)(?!\S)")
+OPAQUE = set("$`\\<>(){}#")
+MAX_MENTION_LENGTH = 100_000
+
+READERS = {"cat", "cd", "popd", "pushd", "pwd", "ls", "head", "tail", "wc", "sort", "uniq", "cut", "tr", "diff", "jq",
+           "grep", "egrep", "fgrep", "rg", "ag", "ack", "echo", "printf", "true", "false", "test", "find", "stat",
+           "file", "basename", "dirname"}
+READER_BAD_ARGS = ("-exec", "-ok", "-delete", "-fprint", "-fls", "--pre", "--compress-program")
+XARGS_FLAGS = {"-0", "-r", "--null", "--no-run-if-empty"}
+GIT_SUBCOMMANDS = {"status", "log", "show", "diff", "grep", "blame", "shortlog", "rev-parse", "rev-list", "ls-files",
+                   "ls-tree", "cat-file", "describe", "branch", "reflog", "help", "version", "merge-base", "show-ref",
+                   "for-each-ref", "name-rev", "check-ignore", "add", "commit", "stash", "restore", "rm", "mv",
+                   "checkout", "switch", "merge", "fetch", "reset", "revert", "cherry-pick", "apply", "clean"}
+# options of those subcommands that run a program or a pager
+GIT_BAD_ARGS = ("-O", "--open-files-in-pager", "--upload-pack", "--receive-pack", "--exec", "-x", "--ext-diff")
+GH_READS = {("pr", "view"), ("pr", "list"), ("pr", "checks"), ("pr", "diff"), ("pr", "status"), ("run", "view"),
+            ("run", "list"), ("issue", "view"), ("issue", "list"), ("repo", "view"), ("auth", "status")}
 
 
 def deny(reason: str) -> None:
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
-                                             "permissionDecisionReason": reason + ". Commit and finish; "
-                                             "the runner pushes, opens and merges the PR."}}))
+                                             "permissionDecisionReason": reason}}))
     sys.exit(0)
 
 
-def _simple_commands(cmd: str) -> list[list[str]]:
-    lex = shlex.shlex(cmd.replace("`", " ; "), posix=True, punctuation_chars=True)
-    lex.whitespace_split = True
-    out: list[list[str]] = [[]]
-    for tok in lex:
-        if tok and set(tok) <= OPERATORS:
-            out.append([])
+def _scan(cmd: str) -> list[list[str]] | None:
+    """The simple commands of `cmd` as lists of words, or None if a byte is not plainly accounted
+    for: only separators (space, tab, newline, ; & |), literal quotes and ordinary characters."""
+    commands: list[list[str]] = [[]]
+    word = None
+    i = 0
+    while i < len(cmd):
+        c = cmd[i]
+        if c == "'":
+            end = cmd.find("'", i + 1)
+            if end < 0:
+                return None
+            word = (word or "") + cmd[i + 1:end]
+            i = end + 1
+        elif c == '"':
+            m = _COMMIT_MESSAGE_RX.match(cmd, i)
+            if m:
+                word = (word or "") + "MESSAGE"
+            else:
+                m = _PLAIN_DOUBLE_RX.match(cmd, i)
+                if not m:
+                    return None
+                word = (word or "") + m.group()[1:-1]
+            i = m.end()
+        elif c in " \t\n;&|":
+            if word is not None:
+                commands[-1].append(word)
+                word = None
+            if c not in " \t" and commands[-1]:
+                commands.append([])
+            i += 1
+        elif c in OPAQUE:
+            return None
         else:
-            out[-1].append(tok)
-    return [c for c in out if c]
+            word = (word or "") + c
+            i += 1
+    if word is not None:
+        commands[-1].append(word)
+    return [c for c in commands if c]
 
 
-def _subcommand(args: list[str], with_value: set[str]) -> list[str]:
-    """The args from the first non-option word on (options and their values skipped)."""
+def _reader_ok(words: list[str]) -> bool:
+    return words[0] in READERS and not any(w.startswith(READER_BAD_ARGS) for w in words[1:])
+
+
+def _xargs_ok(args: list[str]) -> bool:
+    i = 0
+    while i < len(args) and args[i] in XARGS_FLAGS:
+        i += 1
+    return i < len(args) and _reader_ok(args[i:])
+
+
+def _git_ok(args: list[str]) -> bool:
     i = 0
     while i < len(args) and args[i].startswith("-"):
-        i += 2 if args[i] in with_value else 1
-    return args[i:]
-
-
-def forbidden(cmd: str, depth: int = 0) -> str | None:
-    if depth > 4:
-        return "commands nested too deep"
-    for words in _simple_commands(cmd):
-        i = 0   # skip env assignments and wrappers, to reach the program
-        while i < len(words) and (("=" in words[i] and not words[i].startswith("-")) or words[i] in WRAPPERS):
+        if args[i] in ("-C", "--git-dir", "--work-tree"):
+            i += 2
+        elif args[i] in ("--no-pager", "-P") or args[i].startswith(("--git-dir=", "--work-tree=")):
             i += 1
-        if i >= len(words):
-            continue
-        prog, args = os.path.basename(words[i]), words[i + 1:]
-        if prog == "git":
-            sub = _subcommand(args, GIT_OPT_WITH_VALUE)
-            if sub and sub[0] == "push":
-                return "pushing is the runner's job"
-        elif prog == "gh":
-            sub = _subcommand(args, GH_OPT_WITH_VALUE)
-            if sub and sub[0] == "api":
-                return "gh api is not available to runner processes"
-            if sub and sub[0] == "pr" and len(sub) > 1 and sub[1] in PR_ACTIONS:
-                return "PRs are the runner's job"
-        elif prog in SHELLS or prog in ("eval", "xargs"):
-            for a in args:
-                if any(c in a for c in " ;&|"):
-                    why = forbidden(a, depth + 1)
-                    if why:
-                        return why
-            if prog == "xargs":
-                why = forbidden(" ".join(shlex.quote(a) if " " in a else a for a in args), depth + 1)
-                if why:
-                    return why
-    return None
+        else:
+            return False
+    if i >= len(args):
+        return False
+    sub, rest = args[i], args[i + 1:]
+    if sub == "config":     # reading one key is fine; writing one is not
+        return (len(rest) == 1 and (rest[0] in ("-l", "--list") or not rest[0].startswith("-"))
+                or len(rest) == 2 and rest[0] in ("--get", "--get-all"))
+    return sub in GIT_SUBCOMMANDS and not any(a.startswith(GIT_BAD_ARGS) for a in rest)
+
+
+def _gh_ok(args: list[str]) -> bool:
+    positional: list[str] = []
+    i = 0
+    while i < len(args) and len(positional) < 2:
+        if args[i] in ("-R", "--repo", "--hostname"):
+            i += 2
+        elif args[i].startswith(("--repo=", "--hostname=")):
+            i += 1
+        elif args[i].startswith("-"):
+            return False
+        else:
+            positional.append(args[i])
+            i += 1
+    return tuple(positional) in GH_READS
+
+
+def _harmless(words: list[str]) -> bool:
+    prog, args = words[0], words[1:]
+    if prog == "git":
+        return _git_ok(args)
+    if prog == "gh":
+        return _gh_ok(args)
+    if prog == "xargs":
+        return _xargs_ok(args)
+    return _reader_ok(words)
+
+
+def _without_commit_messages(cmd: str) -> str:
+    return _LITERALS.sub(lambda m: '"MESSAGE"' if m.group().startswith('"$(cat') else m.group(), cmd)
+
+
+def forbidden(cmd: str) -> str | None:
+    if ALWAYS_DENY.search(_without_commit_messages(cmd)):
+        return ("this runs text no check can read (eval, a shell or interpreter reading stdin, a git subcommand "
+                "built at run time). Write the command out plainly. Commit and finish; the runner pushes, opens "
+                "and merges the PR")
+    plain = re.sub(r"['\"\\]", "", cmd.replace("\\\n", ""))
+    if not MENTION.search(plain):
+        return None
+    if len(cmd) <= MAX_MENTION_LENGTH:
+        blanked = _LITERALS.sub("''", cmd)
+        for rx, why in FORBIDDEN:
+            if rx.search(blanked):
+                return why + ". Commit and finish; the runner pushes, opens and merges the PR"
+        commands = _scan(_NULL_REDIRECT.sub(" ", cmd))
+        if commands is not None and all(_harmless(c) for c in commands):
+            return None
+    return ("this command mentions push, merge or gh and merge-guard cannot prove it harmless. This is not a stop "
+            "signal: if you are not pushing, retry with one plain command (grep, cat, echo, git log, git commit, "
+            "gh pr view; literal quotes; no $(), redirects, env prefixes), put the text in a file with the Write "
+            "tool, or leave the word out. Pushing and merging are the runner's job")
 
 
 def main() -> None:
@@ -86,9 +206,9 @@ def main() -> None:
         return
     try:
         data = json.loads(sys.stdin.read())
-        if not isinstance(data, dict):
+        if not isinstance(data, dict) or not isinstance(data.get("tool_name"), str):
             deny("merge-guard: unreadable input")
-        if data.get("tool_name") != "Bash":
+        if data["tool_name"] != "Bash":
             return
         cmd = (data.get("tool_input") or {}).get("command")
         if not isinstance(cmd, str):
@@ -99,7 +219,7 @@ def main() -> None:
     except SystemExit:
         raise
     except Exception as e:
-        deny(f"merge-guard could not check this call ({type(e).__name__})")
+        deny(f"merge-guard could not check this call ({type(e).__name__}); it is denied, retry a simpler command")
 
 
 if __name__ == "__main__":

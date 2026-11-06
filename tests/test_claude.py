@@ -50,6 +50,6 @@ def test_worker_settings_register_the_guards():
     s = json.loads((CODE / "worker-settings.json").read_text())
     commands = [h["command"] for groups in s["hooks"].values() for g in groups for h in g["hooks"]]
     for name in ("area-guard.py", "read-guard.py", "merge-guard.py", "done-gate.sh"):
-        assert any(c.endswith(f"/hooks/{name}") or c.endswith(f"/hooks/{name}\"") for c in commands), name
+        assert any(f"/hooks/{name}" in c for c in commands), name
     assert "Bash(git push:*)" in s["permissions"]["deny"]
     assert s["env"]["ARKIMEDES"] == "1"
