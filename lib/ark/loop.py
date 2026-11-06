@@ -608,9 +608,10 @@ def start_worker(c: Ctx, job: str) -> bool:
                                     note=j["note"] or j["resume_msg"], previous_report=c.read_report(job))
     env = claude.runner_env("worker", origin_url=gitops.origin_url(c.repo), worktree=wt, area=json.dumps(mj["area"]),
                             report=report, gate=mj["gate"], run_dir=c.dir, job=job)
-    cmd = claude.agent_cmd("worker", claude.MODELS[j["tier"]], prompt, session=j["session"] or str(uuid.uuid4()), resume=resume,
-                           usd=mj["budget"]["usd"])
-    proc.start(c.dir, f"{job}.worker", cmd, cwd=wt, env=env, minutes=claude.TIER_MINUTES[j["tier"]], pre=pre)
+    sid = j["session"] or str(uuid.uuid4())  # the worker's id before it says so: a kill may come first
+    cmd = claude.agent_cmd("worker", claude.MODELS[j["tier"]], prompt, session=sid, resume=resume, usd=mj["budget"]["usd"])
+    proc.start(c.dir, f"{job}.worker", cmd, cwd=wt, env=env, minutes=claude.TIER_MINUTES[j["tier"]], pre=pre,
+               meta={"session": sid, "tier": j["tier"], "attempt": j["attempts"] + 1})
     j.update(status="working", attempts=j["attempts"] + 1, error=None)
     run.event(c.st, f"{job}: worker {j['tier']} attempt {j['attempts']}{' (resumed)' if resume else ''}")
     return True

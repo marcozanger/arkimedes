@@ -352,6 +352,13 @@ def finished(run_dir) -> list[str]:
     return [n for n in active(run_dir) if (Path(run_dir) / f"{n}.receipt.json").exists()]
 
 
+def job_processes(run_dir, job: str) -> list[dict]:
+    """What a job has started and not consumed yet, as `.proc` records. An unreadable one is not listed."""
+    run_dir = Path(run_dir)
+    found = (_read(run_dir / f"{n}.proc") for n in active(run_dir) if n.startswith(job + "."))
+    return [info for info in found if info]
+
+
 def overdue(run_dir) -> list[str]:
     run_dir, now = Path(run_dir), time.time()
     out = []

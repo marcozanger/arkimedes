@@ -13,6 +13,9 @@ FAKE_DIRTY=job:n leaves attempt n's file uncommitted; FAKE_EMPTY=job:n changes n
 
 FAKE_DOWN=1 makes every role end at once with exit 1 and no result line, as an unreachable model
 does; FAKE_STATE/down.count counts those.
+
+FAKE_USAGE=<n> makes a worker print an assistant line with n output tokens before it holds. Each worker attempt
+leaves <job>.worker.<n>.argv and .prompt in FAKE_STATE.
 """
 import fcntl
 import json
@@ -75,6 +78,13 @@ if ROLE == "worker":
     track(1)
     try:
         n = bump(f"{job}.worker")
+        (STATE / f"{job}.worker.{n}.argv").write_text(json.dumps(args))
+        (STATE / f"{job}.worker.{n}.prompt").write_text(PROMPT)
+        if os.environ.get("FAKE_USAGE"):
+            print(json.dumps({"type": "system", "subtype": "init", "session_id": SESSION}))
+            print(json.dumps({"type": "assistant", "message": {
+                "id": f"msg-{n}", "content": [{"type": "text", "text": "working on it"}],
+                "usage": {"input_tokens": 0, "output_tokens": int(os.environ["FAKE_USAGE"])}}}), flush=True)
         time.sleep(float(os.environ.get("FAKE_SLEEP", "0")))
         hold = os.environ.get("FAKE_HOLD")  # stays alive until this file exists (or a generous timeout)
         deadline = time.time() + 60
