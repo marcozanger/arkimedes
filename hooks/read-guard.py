@@ -55,6 +55,8 @@ def check(raw: str) -> None:
     else:   # the search root, plus the literal folder a glob starts with, which may climb out of it
         base = os.path.join(cwd, given[0]) if given else cwd
         globs = [ti.get("pattern") if tool == "Glob" else ti.get("glob")]
+        if any(isinstance(g, str) and re.search(r"\{(?:[^}]*,)?/|\{[^}]*\.\.", g) for g in globs):
+            deny()      # a brace alternative is no literal prefix, and it can climb out too
         roots = [base] + [os.path.join(base, os.path.dirname(re.split(r"[*?\[{]", g)[0]))
                           for g in globs if isinstance(g, str)]
     for p in roots:

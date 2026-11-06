@@ -1,9 +1,6 @@
 {
   "env": {
-    "ARKIMEDES": "1",
-    "GIT_CONFIG_COUNT": "1",
-    "GIT_CONFIG_KEY_0": "remote.origin.pushurl",
-    "GIT_CONFIG_VALUE_0": "/dev/null/no-push-from-workers"
+    "ARKIMEDES": "1"
   },
   "disableAllHooks": false,
   "permissions": {

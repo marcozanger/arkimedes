@@ -71,6 +71,12 @@ def git(cwd, *args, check: bool = True, timeout=None) -> str:
     return _checked(cwd, *args, check=check, timeout=timeout).strip()
 
 
+def origin_url(repo) -> str:
+    """origin's URL as configured. Not `git remote get-url`: that applies insteadOf, and the
+    push layer in claude.runner_env matches the configured text."""
+    return git(repo, "config", "--get", "remote.origin.url")
+
+
 def fetch(repo) -> None:
     git(repo, "fetch", "-q", "--prune", "origin")
 

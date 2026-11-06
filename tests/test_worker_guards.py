@@ -1,9 +1,12 @@
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
+
+from ark import claude, gitops
 
 CODE = Path(__file__).resolve().parents[1]
 SYSTEM_PYTHON = "/usr/bin/python3"   # 3.9 on macOS: what `python3` is with the default PATH
@@ -260,7 +263,7 @@ def test_merge_guard_denies_what_it_cannot_prove():
         "gh pr view 3; gh pr merge 3", "gh zz 3", "gh extension install x",
         # words that may run a push, which a static check cannot read
         "make push", "./push.sh", "bash scripts/push.sh", "npm run push",
-        # the env backstop in worker-settings.json
+        # the env backstop in claude.runner_env, and the config it reads
         "GIT_CONFIG_COUNT=0 ./x", "git config --unset remote.origin.pushurl",
     ], "deny")
 
@@ -286,6 +289,71 @@ def test_merge_guard_keeps_ordinary_commands():
         "flutter test test/push/x_test.dart", ".venv/bin/python -m pytest tests/merge/ -q", "cat lib/push.py",
         "grep -rn merge lib | head -3", "ls .github", "cat lib/ark/merge.py",
     ], "allow")
+
+
+def test_merge_guard_options_that_run_a_program():
+    x = "git push origin HEAD:main"
+    assert_all([
+        # abbreviated long options, joined or as the next word
+        f"git fetch --upload-pa='{x}; git-upload-pack .' .", f"git fetch --upload-pa '{x}; git-upload-pack .' .",
+        f"git fetch --up='{x}' .", f"git grep --open-files-in-pa='{x} #' -e x", f"git diff --ext-dif merge",
+        f"sort --compress-prog='{x}' -S1 /etc/hosts", f"sort --compress-prog '{x}' -S1 /etc/hosts",
+        f"xargs sort --compress-prog='{x}'",
+        # bundled short options, also behind one that looks like it takes text
+        f"git grep -nO'{x} #' -e x", f"git grep -GO'{x} #' -e x", f"git grep -iS'{x}' -e x",
+        # readers with a pager
+        f"ack --pager='{x}' y", f"ack --pag='{x}' y", f"ag --pager '{x}' y",
+        # any option holding the word, unless it is known to hold text
+        f"git log --foo='{x}'", f"grep --foo='{x}' f",
+    ], "deny")
+    assert_all([
+        f"git log --grep='{x}'", f"git log --format='{x}'", f"git log --pretty=format:'merge %h'",
+        f"git commit -m'{x}'", f"git commit -m '{x}'", f"git commit -am '{x}'", f"git commit --message='{x}'",
+        f"grep -e '{x}' f", f"grep -e'{x}' f", f"grep --regexp='{x}' f", "grep -rn --include='*push*' x .",
+        "git log -- push", "git log --all -- lib/merge", "sort - push", "git log --oneline --all merge",
+    ], "allow")
+
+
+def test_merge_guard_spelling_does_not_hide_a_shape_it_always_denies():
+    x = "origin HEAD:main"
+    assert_all([
+        f'p=pu; "git" ${{p}}sh {x}', f"p=pu; g\\it ${{p}}sh {x}", f"\"git\" $'\\x70ush' {x}",
+        f"echo $'git \\x70ush {x}' | s''h", f"\\eval $'git \\x70ush {x}'", f"e''val $'git \\x70ush {x}'",
+        f"git pu{{sh,}} {x}", f"git {{pu,}}sh {x}",
+    ], "deny")
+
+
+def test_merge_guard_filenames_are_not_mentions():
+    assert_all([
+        "dart test test/push.dart", "flutter analyze lib/push.dart", "touch lib/features/push.dart",
+        "mv lib/push.dart lib/notif.dart", "rm lib/merge.py", "sed -n 1,40p lib/push.dart", "python3 lib/merge.py",
+        "node scripts/merge.js", "git config push.default simple",
+    ], "allow")
+    # a shell script named after it is still a thing that may push, and a real push is still a push
+    assert_all(["./push.sh", "bash scripts/push.sh", "sh merge.sh", "git push", "git push. x", "git push .",
+                "git push origin ark/x.y"], "deny")
+
+
+def test_merge_guard_config_that_breaks_or_lifts_the_runners_push():
+    assert_all([
+        "git config remote.origin.url /x", "git config remote.origin.mirror true", "git remote set-url origin /x",
+        "git config url./x.insteadOf /dev/null/no-push-from-workers", "git config url./x.pushInsteadOf y",
+    ], "deny")
+    assert_all(["git config remote.origin.url", "git config --get remote.origin.url"], "allow")
+
+
+def test_merge_guard_always_deny_reason_is_not_a_stop_signal():
+    r = subprocess.run(["python3", str(CODE / "hooks/merge-guard.py")], capture_output=True, text=True,
+                       input=json.dumps({"tool_name": "Bash", "tool_input": {"command": 'eval "$(direnv export bash)"'}}),
+                       env={**os.environ, "ARK_ROLE": "worker"})
+    reason = json.loads(r.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "not a stop signal" in reason and "Commit and finish" not in reason
+
+
+def test_merge_guard_stays_quick_on_a_huge_mention():
+    start = time.monotonic()
+    assert_all(["gh " + "pr " * 33000], "deny")
+    assert time.monotonic() - start < 5
 
 
 def test_merge_guard_reason_says_how_to_retry():
@@ -371,7 +439,7 @@ def test_worker_settings_close_the_side_doors():
     assert stop["timeout"] >= 7200      # a gate may run longer than the default 600 s
 
 
-def test_worker_settings_env_stops_a_plain_push(tmp_path):
+def test_push_layer_stops_the_jobs_origin_and_nothing_else(tmp_path):
     env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
            "GIT_COMMITTER_EMAIL": "t@t"}
     def git(*a, cwd=tmp_path, e=env):
@@ -379,16 +447,53 @@ def test_worker_settings_env_stops_a_plain_push(tmp_path):
     git("init", "-q", "--bare", "-b", "main", "r.git")
     git("clone", "-q", "r.git", "c")
     clone = tmp_path / "c"
+    url = str(tmp_path / "r.git")
     git("commit", "-q", "--allow-empty", "-m", "0", cwd=clone)
     assert git("push", "-q", "origin", "HEAD:main", cwd=clone).returncode == 0     # without the layer it works
     git("commit", "-q", "--allow-empty", "-m", "1", cwd=clone)
+    git("remote", "add", "same", url, cwd=clone)
     head = lambda: git("rev-parse", "main", cwd=tmp_path / "r.git").stdout
     before = head()
-    worker = {**env, **settings()["env"]}
-    assert git("push", "origin", "HEAD:main", cwd=clone, e=worker).returncode != 0
-    assert git("-c", "alias.x=push", "x", "origin", "HEAD:main", cwd=clone, e=worker).returncode != 0
+    worker = {**env, **claude.runner_env("worker", origin_url=gitops.origin_url(clone))}
+    for args in (["push", "origin", "HEAD:main"], ["-c", "alias.x=push", "x", "origin", "HEAD:main"],
+                 ["push", url, "HEAD:main"], ["push", "same", "HEAD:main"]):
+        assert git(*args, cwd=clone, e=worker).returncode != 0, args
     assert head() == before
     assert git("fetch", "origin", cwd=clone, e=worker).returncode == 0
+    # a repo the code under test makes for itself: its gate must stay green
+    git("init", "-q", "--bare", "-b", "main", "fixture.git")
+    git("clone", "-q", "fixture.git", "fc")
+    git("commit", "-q", "--allow-empty", "-m", "0", cwd=tmp_path / "fc")
+    assert git("push", "-q", "origin", "HEAD:main", cwd=tmp_path / "fc", e=worker).returncode == 0
+
+
+@pytest.mark.parametrize("url", ["git@github.com:o/r.git", "https://github.com/o/r.git", "ssh://git@github.com/o/r"])
+def test_push_layer_matches_how_origin_is_spelled(url, tmp_path):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "remote", "add", "origin", url], check=True)
+    # no network: this prints where a push would go
+    push_url = lambda e: subprocess.run(["git", "-C", str(tmp_path), "remote", "get-url", "--push", "origin"], env=e,
+                                        capture_output=True, text=True).stdout.strip()
+    assert push_url(os.environ) == url
+    worker = claude.runner_env("worker", origin_url=gitops.origin_url(tmp_path))
+    assert push_url(worker) == "/dev/null/no-push-from-workers"
+
+
+def test_origin_url_is_the_spelling_the_layer_needs(tmp_path):
+    """`git remote get-url` applies insteadOf, and pushInsteadOf matches the configured text."""
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "remote", "add", "origin", "https://github.com/o/r.git"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "url.git@github.com:.insteadOf", "https://github.com/"],
+                   check=True)
+    assert gitops.origin_url(tmp_path) == "https://github.com/o/r.git"
+    worker = claude.runner_env("worker", origin_url=gitops.origin_url(tmp_path))
+    r = subprocess.run(["git", "-C", str(tmp_path), "remote", "get-url", "--push", "origin"], env=worker,
+                       capture_output=True, text=True)
+    assert r.stdout.strip() == "/dev/null/no-push-from-workers"
+
+
+def test_worker_settings_do_not_set_the_layer():
+    assert not [k for k in settings()["env"] if k.startswith("GIT_CONFIG_")]
 
 
 def done_gate_env(tmp_path):
@@ -485,3 +590,16 @@ def test_read_guard_denies_searching_a_parent_of_the_closed_folders(tmp_path):
     assert r("Glob", {"pattern": "**/*.py"}) == "allow"
     assert r("Glob", {"pattern": "src/*.py", "path": str(wt)}) == "allow"
     assert r("Read", {"file_path": str(home / "runs/x.md")}) == "allow"
+
+
+def test_read_guard_denies_a_brace_that_climbs_out(tmp_path):
+    home = tmp_path / "ark"
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    env = {"ARK_ROLE": "worker", "ARK_HOME": str(home)}
+    r = lambda inp: decision(hook("read-guard.py", {"tool_name": "Glob", "tool_input": inp, "cwd": str(wt)}, **env))
+    assert r({"pattern": "{../ark/desk,src}/**"}) == "deny"
+    assert r({"pattern": "src/{a,../../ark/desk}/**"}) == "deny"
+    assert r({"pattern": f"{{src,{home}/desk}}/**"}) == "deny"
+    assert r({"pattern": "{src,lib}/**/*.py"}) == "allow"
+    assert r({"pattern": "*.{py,md}"}) == "allow"
