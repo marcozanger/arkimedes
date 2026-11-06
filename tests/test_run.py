@@ -1,3 +1,8 @@
+import os
+import signal
+
+import pytest
+
 from ark import desk, paths, run
 
 APPROVAL = {"repo": "demo", "slug": "notes-edit", "plan": "/x/plan.md", "sha256": "ab" * 32,
@@ -89,3 +94,33 @@ def test_a_failed_write_leaves_no_tmp_behind(ark_home, monkeypatch):
     with pytest.raises(OSError, match="disk says no"):
         run._atomic(f, "text")
     assert list(f.parent.iterdir()) == []
+
+
+def test_a_state_that_is_not_a_regular_file_is_damage_not_a_hang(ark_home):
+    f = run.state_file("demo", "x")
+    f.parent.mkdir(parents=True)
+    os.mkfifo(f)
+    signal.signal(signal.SIGALRM, lambda *_: pytest.fail("hung on a FIFO"))
+    signal.setitimer(signal.ITIMER_REAL, 30)
+    try:
+        with pytest.raises(run.StateCorrupt):
+            run.load("demo", "x")
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, signal.SIG_DFL)
+
+
+@pytest.mark.parametrize("target_exists", [True, False])
+def test_a_state_that_is_a_link_is_damage_not_a_new_run(ark_home, tmp_path, target_exists):
+    f = run.state_file("demo", "x")
+    f.parent.mkdir(parents=True)
+    target = tmp_path / "elsewhere.json"
+    if target_exists:
+        target.write_text("{}")
+    f.symlink_to(target)
+    with pytest.raises(run.StateCorrupt):
+        run.load("demo", "x")
+
+
+def test_no_state_is_still_no_run(ark_home):
+    assert run.load("demo", "x") is None

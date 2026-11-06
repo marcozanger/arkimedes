@@ -1120,3 +1120,80 @@ def test_a_record_does_not_create_the_target_of_a_dangling_tmp_link(tmp_path):
     (d / "shell.gate.json.tmp").symlink_to(victim)
     merge.record(d, "shell", "gate", {"ok": True, "head": "abc"})
     assert not victim.exists()
+
+
+# ---- ark-integrate: a name from the command line deletes nothing ---------------------------------
+
+@pytest.mark.parametrize("job", ["nojob", "../nope", "../../shell", "../../../../victim", "", "shell/.", "."])
+def test_integrate_refuses_a_job_that_is_not_in_the_run_and_touches_nothing(ready, capsys, monkeypatch, job):
+    st, _, repo, _, _, _ = ready()
+    root = paths.worktrees_dir()
+    live, victim = root / "demo" / SLUG / "shell", root / "victim"
+    for d in (live, victim, root / "demo" / SLUG / "_integrate-.."):            # what an earlier call left
+        d.mkdir(parents=True)
+    (live / "unsaved").write_text("work")
+    (victim / "file").write_text("work")
+    monkeypatch.setattr(gitops, "fetch", lambda repo: pytest.fail("reached git"))
+    assert integrate.main([f"demo/{SLUG}", job, st["jobs"]["shell"]["head"]]) == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["ok"] is False and "not in the approved manifest" in out["reason"]
+    assert (live / "unsaved").read_text() == "work" and (victim / "file").read_text() == "work"
+    assert not list(root.glob(f"demo/{SLUG}/_integrate-[!.]*"))
+
+
+@pytest.mark.parametrize("where", ["state", "manifest"])
+def test_integrate_wants_the_job_in_both_the_state_and_the_manifest(ready, monkeypatch, where):
+    st, *_ = ready()
+    head = st["jobs"]["shell"]["head"]
+    if where == "state":
+        st["jobs"]["ghost"] = dict(st["jobs"]["shell"])
+        run.save(st)
+        job = "ghost"
+    else:
+        del st["jobs"]["shell"]
+        run.save(st)
+        job = "shell"
+    monkeypatch.setattr(gitops, "fetch", lambda repo: pytest.fail("reached git"))
+    out = integrate.integrate("demo", SLUG, job, head)
+    assert out["ok"] is False and "not in the approved manifest" in out["reason"]
+
+
+@pytest.mark.parametrize("spec", [f"demo/./{SLUG}", f"demo//{SLUG}", f"./demo/{SLUG}"])
+def test_integrate_refuses_another_spelling_of_the_run(ready, capsys, monkeypatch, spec):
+    st, *_ = ready()
+    monkeypatch.setattr(gitops, "fetch", lambda repo: pytest.fail("reached git"))
+    assert integrate.main([spec, "shell", st["jobs"]["shell"]["head"]]) == 1
+    assert json.loads(capsys.readouterr().out)["ok"] is False
+
+
+# ---- a FIFO in the run folder ---------------------------------------------------------------------
+
+@pytest.fixture
+def must_not_hang():
+    def alarm(*_):
+        raise AssertionError("hung on a FIFO")
+    before = signal.signal(signal.SIGALRM, alarm)
+    signal.setitimer(signal.ITIMER_REAL, 30)
+    yield
+    signal.setitimer(signal.ITIMER_REAL, 0)
+    signal.signal(signal.SIGALRM, before)
+
+
+def test_a_fifo_as_a_record_is_no_record(ready, must_not_hang):
+    d = ready()[3]
+    (d / "shell.gate.json").unlink()
+    os.mkfifo(d / "shell.gate.json")
+    assert merge.read_record(d, "shell", "gate") is None
+
+
+@pytest.mark.parametrize("how", ["fifo", "link"])
+def test_a_merge_lock_that_is_not_a_regular_file_refuses_the_merge(ready, must_not_hang, tmp_path, how):
+    st, f, repo, d, *_ = ready()
+    victim = tmp_path / "victim"
+    if how == "fifo":
+        os.mkfifo(d / "merge.lock")
+    else:
+        (d / "merge.lock").symlink_to(victim)
+    with pytest.raises(merge.MergeRefused, match="merge lock"):
+        merge.merge(st, "shell", f, repo)
+    assert not victim.exists()

@@ -10,6 +10,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import stat
 import sys
 import time
 from pathlib import Path
@@ -42,7 +43,7 @@ def drop_records(run_dir, job: str) -> None:
 
 def read_record(run_dir, job: str, kind: str) -> dict | None:
     try:
-        data = json.loads((Path(run_dir) / f"{job}.{kind}.json").read_text(encoding="utf-8"))
+        data = json.loads(paths.read_regular(Path(run_dir) / f"{job}.{kind}.json").decode("utf-8"))
     except (OSError, ValueError, RecursionError):
         return None
     return data if isinstance(data, dict) else None
@@ -201,6 +202,15 @@ def _take_lock(lock) -> None:
             time.sleep(0.1)
 
 
+def _open_lock(path: Path):
+    """Never through a link. A FIFO would block the open and then the whole loop."""
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o644)
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise OSError(f"{path} is not a regular file")
+    return os.fdopen(fd, "a")
+
+
 def merge(st: dict, job: str, forge, repo) -> None:
     """Merge the job's PR, or confirm an earlier merge of it. Returns only when the forge shows it
     merged at the job's head; raises MergeRefused, ForgeError or GitError otherwise. A per-run lock
@@ -211,7 +221,7 @@ def merge(st: dict, job: str, forge, repo) -> None:
     d = paths.run_dir(st["repo"], st["slug"])
     try:
         d.mkdir(parents=True, exist_ok=True)
-        lock = open(d / "merge.lock", "a")
+        lock = _open_lock(d / "merge.lock")
     except OSError as e:
         raise MergeRefused(f"cannot take the merge lock: {e}") from e
     with lock:

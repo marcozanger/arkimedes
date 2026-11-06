@@ -10,7 +10,7 @@ import hashlib
 import json
 import math
 import os
-import stat
+import signal
 import sys
 import tempfile
 import time
@@ -59,15 +59,9 @@ def _read_untrusted(path: Path) -> str | None:
     """A worker can write in the run folder and its bytes are not trusted: only a regular file counts (a
     symlink could read anything, a FIFO would hang the whole loop), and only its first REPORT_MAX bytes."""
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        return _clean(paths.read_regular(path, REPORT_MAX).decode("utf-8", "replace"))
     except OSError:
         return None
-    try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            return None
-        return _clean(os.read(fd, REPORT_MAX).decode("utf-8", "replace"))
-    finally:
-        os.close(fd)
 
 
 def approvals() -> list[dict]:
@@ -176,10 +170,14 @@ def fail(c: Ctx, job: str, why: str) -> None:
     run.event(c.st, f"{job} failed ({j['tier']}, attempt {j['tier_attempts']} at this tier): {why}")
 
 
-def block(c: Ctx, job: str, why: str) -> None:
+def _block(st: dict, job: str, why: str) -> None:
     why = _clean(why)
-    c.st["jobs"][job].update(status="blocked", reason=why)
-    run.alert(c.st, f"{job} blocked: {why}")
+    st["jobs"][job].update(status="blocked", reason=why)
+    run.alert(st, f"{job} blocked: {why}")
+
+
+def block(c: Ctx, job: str, why: str) -> None:
+    _block(c.st, job, why)
 
 
 def allowed_actions(j: dict) -> list[str]:
@@ -437,7 +435,10 @@ def consume_receipts(c: Ctx) -> bool:
         if r is None:
             continue
         _on_receipt(c, name, r)
-        saved = _save_now(c.st) and saved  # the receipt is gone: a crash now must not run this process again
+        if _save_now(c.st):  # the receipt is gone: a crash now must not run this process again
+            proc.forget_stop(c.dir, name)
+        else:
+            saved = False
     return saved
 
 
@@ -459,11 +460,11 @@ def _on_receipt(c: Ctx, name: str, r: dict) -> None:
     if r.get("survivors"):
         run.alert(c.st, f"{_clean(job)}: processes of its {_clean(kind)} outlived it ({r['reason'] or 'it ended'}): "
                         "look for leftovers before they touch its worktree")
+    if j is not None and r["reason"] == proc.STOPPED_BY_MARCO and j["status"] not in run.TERMINAL:
+        block(c, job, proc.STOPPED_BY_MARCO)  # before the check below: whatever the job waits for, it ends here
+        return
     if j is None or kind not in HANDLERS or RUNNING.get(j["status"]) != kind:
         run.event(c.st, f"ignored the result of {_clean(name)}: nothing was waiting for it")
-        return
-    if r["reason"] == "stopped by Marco":
-        block(c, job, "stopped by Marco")
         return
     if kind in MODEL_KINDS:
         if _learned_nothing(r):
@@ -857,6 +858,9 @@ def reconcile(st: dict) -> None:
         if s in RUNNING:
             kind = RUNNING[s]
             if not (d / f"{job}.{kind}.proc").exists():
+                if proc.stop_requested(d, f"{job}.{kind}"):  # consumed, then a crash before the save
+                    _block(st, job, proc.STOPPED_BY_MARCO)
+                    continue
                 j["status"] = WAITING[kind]
                 run.event(st, f"{job}: its {kind} is gone without a result; going back to {j['status']}")
             continue
@@ -1166,6 +1170,9 @@ def _polling(once: bool) -> int:
 
 
 def main(argv=None) -> int:
+    # A shell without job control starts `ark-loop &` with SIGINT ignored, and then Python installs no handler
+    # for it. It must stop on Ctrl-C however it was launched; what it starts gets the default back at exec.
+    signal.signal(signal.SIGINT, signal.default_int_handler)
     argv = sys.argv[1:] if argv is None else argv
     if set(argv) - {"--once"}:  # a typo must not start something that spends money
         print("uso: ark-loop [--once]", file=sys.stderr)
@@ -1177,6 +1184,10 @@ def main(argv=None) -> int:
     if os.environ.get("ARK_ROLE"):
         print("ark-loop no corre dentro de un proceso del runner.", file=sys.stderr)
         return 2
+    for name, where in (("ARK_HOME", paths.ark_home()), ("ARK_WORKTREES", paths.worktrees_dir())):
+        if not where.is_absolute():  # the wrapper changed directory: it would land inside the code
+            print(f"ark-loop necesita una ruta absoluta en {name}, no {where}.", file=sys.stderr)
+            return 2
     sys.stdout.reconfigure(errors="backslashreplace")  # an alert the terminal cannot show must not raise
     paths.runs_dir().mkdir(parents=True, exist_ok=True)
     lock_file = paths.runs_dir() / ".loop.lock"

@@ -60,6 +60,12 @@ def integrate(repo_name: str, slug: str, job: str, head: str) -> dict:
     if reason:  # the gate and setup come from the plan: never run commands nobody approved
         return {"ok": False, "base": None, "head": head, "reason": reason, "tail": ""}
     m = load_plan(Path(st["plan"])).manifest
+    # These names build a path that gets deleted: only what the validated plan and this run's state say.
+    if (repo_name, slug) != (st["repo"], st["slug"]):
+        return {"ok": False, "base": None, "head": head, "reason": f"this run is {st['repo']}/{st['slug']}", "tail": ""}
+    if job not in st["jobs"] or job not in {j["id"] for j in m["jobs"]}:
+        return {"ok": False, "base": None, "head": head, "reason": f"job {job} is not in the approved manifest",
+                "tail": ""}
     gitops.fetch(repo)
     base = gitops.rev(repo, f"origin/ark/{slug}")
     out = {"ok": False, "base": base, "head": head, "reason": "", "tail": ""}

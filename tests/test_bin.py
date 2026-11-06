@@ -128,7 +128,8 @@ def decoys(where):
 
 
 @pytest.mark.parametrize("name,args,code", [("ark-loop", ["--once"], 0), ("ark-merge", [], 2),
-                                            ("ark-dispatch", ["stop", "demo/x", "shell"], 1)])
+                                            ("ark-dispatch", ["stop", "demo/x", "shell"], 1),
+                                            ("ark-integrate", [], 2)])
 def test_a_wrapper_works_through_a_symlink_from_any_directory(ark_home, tmp_path, name, args, code):
     elsewhere = tmp_path / "some where"
     elsewhere.mkdir()
@@ -192,7 +193,8 @@ def test_the_loop_wakes_on_an_approval_and_ctrl_c_ends_it(runner, make_feature, 
     out, err = tmp_path / "out", tmp_path / "err"
     with open(out, "w") as o, open(err, "w") as e:
         looping = subprocess.Popen([str(CODE / "bin/ark-loop")], stdout=o, stderr=e, env=env_for(ark_home),
-                                   start_new_session=True)
+                                   start_new_session=True,
+                                   preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
     try:
         wait_for(lambda: "idle" in out.read_text(), err.read_text)
         second = subprocess.run([str(CODE / "bin/ark-loop"), "--once"], capture_output=True, text=True,
@@ -211,6 +213,48 @@ def test_the_loop_wakes_on_an_approval_and_ctrl_c_ends_it(runner, make_feature, 
         if looping.poll() is None:
             os.killpg(looping.pid, signal.SIGKILL)
             looping.wait()
+
+
+@pytest.mark.parametrize("at_launch", [signal.SIG_DFL, signal.SIG_IGN], ids=["default", "ignored"])
+def test_ctrl_c_stops_the_loop_however_it_was_launched(runner, ark_home, tmp_path, at_launch):
+    """A shell without job control starts `ark-loop &` with SIGINT ignored, and Python then installs no
+    handler of its own. What the suite itself inherited must not decide this test either."""
+    runner()
+    f = ark_home / "workspace.json"
+    f.write_text(json.dumps({**json.loads(f.read_text()), "tick_minutes": 60, "poll_seconds": 0.2}))
+    out, err = tmp_path / "out", tmp_path / "err"
+    with open(out, "w") as o, open(err, "w") as e:
+        looping = subprocess.Popen([str(CODE / "bin/ark-loop")], stdout=o, stderr=e, env=env_for(ark_home),
+                                   start_new_session=True, preexec_fn=lambda: signal.signal(signal.SIGINT, at_launch))
+    try:
+        wait_for(lambda: "idle" in out.read_text(), err.read_text)
+        os.killpg(looping.pid, signal.SIGINT)
+        assert looping.wait(20) == 130
+        assert "Traceback" not in err.read_text(), err.read_text()
+    finally:
+        if looping.poll() is None:
+            os.killpg(looping.pid, signal.SIGKILL)
+            looping.wait()
+
+
+@pytest.mark.parametrize("var", ["ARK_HOME", "ARK_WORKTREES"])
+def test_the_loop_refuses_a_relative_home_instead_of_making_one_inside_the_code(ark_home, var):
+    name = "rel-home-probe-should-not-exist"
+    env = env_for(ark_home)
+    env[var] = name
+    r = subprocess.run([str(CODE / "bin/ark-loop"), "--once"], capture_output=True, text=True, env=env, cwd=ark_home)
+    assert r.returncode == 2 and var in r.stderr
+    assert not (CODE / name).exists()
+
+
+def test_a_fifo_in_a_run_folder_does_not_hang_a_loop_start(ark_home):
+    d = ark_home / "runs" / "demo" / SLUG
+    d.mkdir(parents=True)
+    os.mkfifo(d / "evil.proc")
+    (ark_home / "approvals" / "demo").mkdir(parents=True, exist_ok=True)
+    r = subprocess.run([str(CODE / "bin/ark-loop"), "--once"], capture_output=True, text=True,
+                       env=env_for(ark_home), timeout=60)
+    assert r.returncode == 0, r.stderr
 
 
 def test_a_worker_outlives_the_loop_without_its_lock_and_ark_dispatch_stops_it(runner, make_feature, ark_home):

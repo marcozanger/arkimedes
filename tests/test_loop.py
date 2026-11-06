@@ -2614,3 +2614,133 @@ def test_a_broken_workspace_loses_no_alert_of_the_cycle(feature, ark_home):
 def test_the_lock_is_free_again_after_main_returns(polling):
     assert polling.run(1, argv=["--once"]) == 0
     assert polling.run(1, argv=["--once"]) == 0
+
+
+# ---- a stop from Marco wins over any retry ---------------------------------------------------------
+
+def _stop_with_the_loop_racing(monkeypatch):
+    """The loop's cycle comes in while `ark-dispatch stop` waits for the group to end."""
+    real = proc._group_ended
+    d = paths.run_dir("demo", SLUG)
+
+    def racing(pgid, seconds):
+        monkeypatch.setattr(proc, "_group_ended", real)
+        end = time.monotonic() + 5
+        while proc._leader_state(d, "shell.worker", proc._read(d / "shell.worker.proc")) == proc.OURS:
+            assert time.monotonic() < end
+            time.sleep(0.02)
+        loop.cycle()
+        return real(pgid, seconds)
+    monkeypatch.setattr(proc, "_group_ended", racing)
+    return proc.main(["stop", f"demo/{SLUG}", "shell"])
+
+
+def _settle():
+    for _ in range(5):
+        loop.cycle()
+
+
+def _one_worker_ever():
+    """The fake counts a worker only when it finishes: these never do. A retry would be running, or archived."""
+    d = paths.run_dir("demo", SLUG)
+    return "shell.worker" not in proc.active(d) and len(list((d / "done").glob("shell.worker-*.json"))) == 1
+
+
+def test_a_stop_that_the_loop_reaps_first_blocks_the_job_and_never_retries(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_SLEEP", "30")
+    feature()
+    loop.cycle()
+    assert _stop_with_the_loop_racing(monkeypatch) == 0
+    _settle()
+    j = state()["jobs"]["shell"]
+    assert j["status"] == "blocked" and j["reason"] == "stopped by Marco" and j["tier_attempts"] == 0
+    assert _one_worker_ever()
+
+
+def test_a_crash_right_after_consuming_a_stop_does_not_forget_it(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_SLEEP", "30")
+    feature()
+    loop.cycle()
+    assert proc.main(["stop", f"demo/{SLUG}", "shell"]) == 0
+    with monkeypatch.context() as m:
+        m.setattr(loop, "_on_receipt", lambda c, name, r: (_ for _ in ()).throw(KeyboardInterrupt()))
+        with pytest.raises(KeyboardInterrupt):
+            loop.cycle()
+    assert state()["jobs"]["shell"]["status"] == "working" and not proc.active(paths.run_dir("demo", SLUG))
+    _settle()
+    j = state()["jobs"]["shell"]
+    assert j["status"] == "blocked" and j["reason"] == "stopped by Marco"
+    assert _one_worker_ever()
+
+
+def test_a_save_that_fails_right_after_consuming_a_stop_does_not_forget_it(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_SLEEP", "30")
+    feature()
+    loop.cycle()
+    assert proc.main(["stop", f"demo/{SLUG}", "shell"]) == 0
+    with monkeypatch.context() as m:
+        m.setattr(run, "save", lambda st: (_ for _ in ()).throw(OSError("read-only")))
+        loop.cycle()
+    assert state()["jobs"]["shell"]["status"] == "working"
+    _settle()
+    j = state()["jobs"]["shell"]
+    assert j["status"] == "blocked" and j["reason"] == "stopped by Marco"
+    assert _one_worker_ever()
+
+
+def test_a_stop_blocks_even_a_job_whose_status_moved_on(tmp_path, monkeypatch):
+    c = bare(tmp_path, status="needs_gate")
+    consume_one(monkeypatch, c, "shell.worker", receipt(exit=-15, reason="stopped by Marco"))
+    assert c.st["jobs"]["shell"]["status"] == "blocked"
+
+
+def test_a_stop_does_not_unmerge_a_job(tmp_path, monkeypatch):
+    c = bare(tmp_path, status="merged")
+    consume_one(monkeypatch, c, "shell.worker", receipt(exit=-15, reason="stopped by Marco"))
+    assert c.st["jobs"]["shell"]["status"] == "merged"
+
+
+# ---- a FIFO in the run folder stops nothing ----------------------------------------------------------
+
+class Hung(BaseException):
+    """Not an Exception: the loop's guards catch those and go on."""
+
+
+@pytest.fixture
+def must_not_hang():
+    def alarm(*_):
+        raise Hung()
+    before = signal.signal(signal.SIGALRM, alarm)
+    signal.setitimer(signal.ITIMER_REAL, 90)
+    yield
+    signal.setitimer(signal.ITIMER_REAL, 0)
+    signal.signal(signal.SIGALRM, before)
+
+
+@pytest.mark.parametrize("name", ["evil.proc", "link.proc", "shell.worker.receipt.json", "state.json", "merge.lock"])
+def test_a_fifo_in_a_run_folder_hangs_nothing_and_the_other_runs_go_on(feature, monkeypatch, must_not_hang, name):
+    monkeypatch.setenv("FAKE_SLEEP", "1")
+    feature()
+    feature(repo="other", slug="fine")
+    loop.cycle()
+    d = paths.run_dir("demo", SLUG)
+    if name == "link.proc":
+        os.mkfifo(d / "pipe")
+        (d / name).symlink_to(d / "pipe")
+    else:
+        (d / name).unlink(missing_ok=True)
+        os.mkfifo(d / name)
+    loop.signature()
+    loop._retry_due()
+    drive(lambda: jobs_settled("other", "fine"))
+    assert state("other", "fine")["jobs"]["shell"]["status"] == "merged"
+
+
+def test_a_fifo_as_state_tells_marco_once(feature, must_not_hang):
+    feature()
+    loop.cycle()
+    f = run.state_file("demo", SLUG)
+    f.unlink()
+    os.mkfifo(f)
+    seen = [a for _ in range(3) for a in loop.cycle()[1] if a.startswith(f"demo/{SLUG}:")]
+    assert len(seen) == 1 and "skipped" in seen[0]

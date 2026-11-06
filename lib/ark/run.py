@@ -51,11 +51,11 @@ class StateCorrupt(Exception):
 
 def load(repo: str, slug: str) -> dict | None:
     f = state_file(repo, slug)
-    if not f.exists():
+    if not os.path.lexists(f):
         return None
     try:
-        st = json.loads(f.read_text(encoding="utf-8"))
-    except (ValueError, UnicodeDecodeError) as e:
+        st = json.loads(paths.read_regular(f).decode("utf-8"))
+    except (OSError, ValueError) as e:  # a FIFO or a link in its place is damage too, never "no run yet"
         raise StateCorrupt(f"corrupt run state {f}: {e}") from e
     if not isinstance(st, dict):
         raise StateCorrupt(f"corrupt run state {f}: not a JSON object")

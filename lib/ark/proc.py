@@ -4,8 +4,13 @@ Each process `name` in a run folder has:
   <name>.proc          pid, wrapper identity, command, start, deadline, meta (written at start)
   <name>.log           its stdout and stderr
   <name>.receipt.json  written when it ends: exit, reason, result, usd, session
+  <name>.stop          Marco stopped it: written before any signal, and it decides the receipt
 ark-loop consumes receipts (they move to done/ with the log). A process that died without
 a receipt, or ran past its deadline, gets one from reap(). `ark-dispatch stop` stops one by hand.
+
+A stop from Marco wins over whoever else has a word on how the process ended: the loop can see the
+wrapper gone and reap it while the stop waits for the group, and the process can end on its own just
+before the signal. The mark holds until the loop has the result safely on disk (forget_stop).
 
 The wrapper leads its own process group. Three rules keep signals where they belong:
 - A pid alone proves nothing after a restart: the runner signals a group only while its leader is
@@ -33,6 +38,8 @@ from . import paths
 TERM_GRACE = 3.0                      # seconds the watcher gives a group between SIGTERM and SIGKILL
 KILL_WAIT = TERM_GRACE + 1.0          # longest a cycle waits for one group to end
 START_SLOP = 2                        # ps start times can move a second on Linux
+
+STOPPED_BY_MARCO = "stopped by Marco"
 
 OURS, GONE, REUSED, UNKNOWN = "ours", "gone", "reused", "unknown"
 
@@ -66,7 +73,7 @@ def _valid_proc(d: dict) -> bool:
 def _read(path: Path) -> dict | None:
     """A JSON object, or None. A `.proc` must also hold everything a signal would rely on."""
     try:
-        d = json.loads(path.read_text(encoding="utf-8"))
+        d = json.loads(paths.read_regular(path).decode("utf-8"))
     except (OSError, ValueError):
         return None
     if not isinstance(d, dict) or (path.suffix == ".proc" and not _valid_proc(d)):
@@ -98,13 +105,54 @@ def parse_output(text: str) -> dict:
     return {"result": text[-4000:], "usd": None, "session": session, "is_error": None, "spoke": spoke}
 
 
+def _mark(run_dir: Path, name: str) -> Path:
+    return run_dir / f"{name}.stop"
+
+
+def stop_requested(run_dir, name: str) -> bool:
+    """Did Marco stop this process? The mark names the pid it was for, so an older process's mark says
+    nothing about a newer one. With no readable `.proc` to compare, the mark counts: it fails towards stopping."""
+    run_dir = Path(run_dir)
+    mark = _read(_mark(run_dir, name))
+    info = _read(run_dir / f"{name}.proc")
+    return mark is not None and (info is None or mark.get("pid") == info["pid"])
+
+
+def forget_stop(run_dir, name: str) -> None:
+    """The loop calls this once the stop's result is on disk; until then a crash must not lose it."""
+    _mark(Path(run_dir), name).unlink(missing_ok=True)
+
+
+def _note_stop(run_dir: Path, name: str) -> bool:
+    """Record Marco's stop before anything can end the process. False if the process was consumed meanwhile:
+    then it is over, the job has moved on and the mark must not stay behind to speak for a later process."""
+    record = run_dir / f"{name}.proc"
+    info = _read(record)
+    pid = info["pid"] if info else None
+    try:
+        _atomic(_mark(run_dir, name), {"pid": pid, "at": time.time()})
+    except OSError:
+        pass                                              # the signal matters more; stop's own receipt still says it
+    now = _read(record)
+    if not os.path.lexists(record) or (now["pid"] if now else None) != pid:
+        forget_stop(run_dir, name)
+        return False
+    return True
+
+
 def _receipt(run_dir: Path, name: str, code: int, reason: str, **extra) -> None:
-    """Write the receipt unless there is one: the first word on how a process ended stands."""
+    """Write the receipt unless there is one: the first word on how a process ended stands, except
+    that a stop from Marco says who ended it (what else was seen stays in `cause`)."""
     path = run_dir / f"{name}.receipt.json"
     if path.exists():
         return
+    if reason != STOPPED_BY_MARCO and stop_requested(run_dir, name):
+        code, reason, extra = -15, STOPPED_BY_MARCO, {**extra, "cause": reason}
     log = run_dir / f"{name}.log"
-    text = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
+    try:
+        text = paths.read_regular(log).decode("utf-8", "replace")
+    except OSError:
+        text = ""
     _atomic(path, {"name": name, "exit": code, "reason": reason, "end": time.time(), **parse_output(text), **extra})
 
 
@@ -249,6 +297,7 @@ def start(run_dir, name: str, cmd: list[str], *, cwd, env: dict, minutes: float,
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / f"{name}.receipt.json").unlink(missing_ok=True)
+    forget_stop(run_dir, name)
     env = dict(env)
     if env.get("PYTHONPATH"):
         env["ARK_ORIG_PYTHONPATH"] = env["PYTHONPATH"]
@@ -344,8 +393,11 @@ def reap(run_dir) -> list[str]:
 
 def stop(run_dir, name: str, reason: str) -> bool:
     """True if the process was running and now is not. Takes up to KILL_WAIT + 1 seconds, and only that
-    for a process that survives SIGTERM. A wrapper that is already gone gets its death recorded."""
+    for a process that survives SIGTERM. A wrapper that is already gone gets its death recorded. A stop
+    from Marco is on record first, so it holds even when this returns False (see stop_requested)."""
     run_dir = Path(run_dir)
+    if reason == STOPPED_BY_MARCO and not _note_stop(run_dir, name):
+        return False
     info = _read(run_dir / f"{name}.proc")
     if info is None or (run_dir / f"{name}.receipt.json").exists():
         return False
@@ -389,6 +441,8 @@ def consume(run_dir, name: str) -> dict | None:
     if not (isinstance(end, (int, float)) and math.isfinite(end)):
         r.update(reason="unreadable receipt", exit=-1, end=None)
         end = None
+    if r["reason"] != STOPPED_BY_MARCO and stop_requested(run_dir, name):  # it came after that receipt was written
+        r.update(reason=STOPPED_BY_MARCO, exit=-15, cause=r["reason"])
     stamp = f"{name}-{int(end * 1e9) if end is not None else time.time_ns()}"
     _atomic(done / f"{stamp}.json", {**r, "proc": info})
     log = run_dir / f"{name}.log"
@@ -437,9 +491,15 @@ def cwd_holders(path) -> list[int]:
 def _stop_cli(d: Path, job: str) -> int:
     stopped, notes = [], []
     for n in active(d):
-        if not n.startswith(job + ".") or (d / f"{n}.receipt.json").exists():
+        if not n.startswith(job + "."):
             continue
-        ok = stop(d, n, "stopped by Marco")
+        unreadable = _read(d / f"{n}.proc") is None
+        ok = stop(d, n, STOPPED_BY_MARCO)
+        if unreadable and stop_requested(d, n):           # who it is cannot be known: it may still be running
+            _receipt(d, n, -15, STOPPED_BY_MARCO, survivors=True)
+            notes.append(f"ojo: {n}: su .proc no se puede leer, así que no se mandó ninguna señal y su proceso "
+                         "puede seguir vivo; revisalo a mano. El job queda bloqueado.")
+            continue
         left = (_read(d / f"{n}.receipt.json") or {}).get("survivors")
         if ok:
             stopped.append(n)
@@ -448,10 +508,13 @@ def _stop_cli(d: Path, job: str) -> int:
                              "revisalos a mano.")
         elif left:
             notes.append(f"ojo: {n}: el proceso principal ya no estaba, pero quedan procesos de su grupo "
-                         "que no se pudieron verificar; no se mandó ninguna señal.")
+                         "que no se pudieron verificar; no se mandó ninguna señal. El job queda bloqueado.")
         elif not (d / f"{n}.receipt.json").exists():
-            notes.append(f"{n}: no se pudo verificar qué proceso es (ps no respondió); no se tocó nada. "
-                         "Reintentá en unos segundos.")
+            notes.append(f"{n}: no se pudo verificar qué proceso es (ps no respondió); no se mandó ninguna señal. "
+                         "El pedido quedó anotado: cuando termine, el job queda bloqueado. "
+                         "Reintentá en unos segundos para detenerlo ya.")
+        elif stop_requested(d, n):                        # it had already ended: the job still ends here
+            stopped.append(n)
     if stopped:
         print("detenido: " + ", ".join(stopped))
     elif not notes:

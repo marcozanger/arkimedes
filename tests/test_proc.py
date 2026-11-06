@@ -319,7 +319,8 @@ def test_stop_on_a_reused_pid_sends_nothing_and_records_the_death(tmp_path):
     by = bystander()
     reuse_pid(tmp_path, "j.worker", by)
     assert proc.stop(tmp_path, "j.worker", "stopped by Marco") is False
-    assert proc.consume(tmp_path, "j.worker")["reason"] == "died without a receipt"
+    r = proc.consume(tmp_path, "j.worker")
+    assert (r["reason"], r["cause"]) == ("stopped by Marco", "died without a receipt")  # it still counts as a stop
     time.sleep(0.2)
     assert by.poll() is None
 
@@ -540,12 +541,22 @@ def test_a_corrupt_proc_resolves_to_a_failure_with_no_signal(tmp_path, make):
     (tmp_path / "j.worker.proc").write_text(make(by.pid))
     assert proc._read(tmp_path / "j.worker.proc") is None   # the loop's fingerprint reads it this way
     assert proc.overdue(tmp_path) == []
-    assert proc.stop(tmp_path, "j.worker", "stopped by Marco") is False
     assert proc.reap(tmp_path) == ["j.worker"]
     assert proc.finished(tmp_path) == ["j.worker"]
     r = proc.consume(tmp_path, "j.worker")
     assert r["exit"] == -1 and "unreadable .proc" in r["reason"] and r["meta"] == {}
     assert proc.active(tmp_path) == []
+    time.sleep(0.2)
+    assert by.poll() is None
+
+
+def test_a_stop_of_a_corrupt_proc_sends_no_signal_and_still_counts(tmp_path):
+    by = bystander()
+    (tmp_path / "j.worker.proc").write_text(json.dumps({"pid": by.pid}))
+    assert proc.stop(tmp_path, "j.worker", "stopped by Marco") is False
+    assert proc.reap(tmp_path) == ["j.worker"]
+    r = proc.consume(tmp_path, "j.worker")
+    assert r["reason"] == "stopped by Marco" and "unreadable .proc" in r["cause"]
     time.sleep(0.2)
     assert by.poll() is None
 
@@ -699,3 +710,144 @@ def test_output_does_not_go_into_a_planted_hard_link(tmp_path):
     proc.start(d, "shell.gate", ["sh", "-c", "echo gate-output"], cwd=d, env=dict(os.environ), minutes=1)
     wait_receipt(d, "shell.gate")
     assert victim.read_text() == "mine"
+
+
+# ---- a stop from Marco wins, whoever gets to write the receipt ------------------------------------
+
+STOPPED = "stopped by Marco"
+
+
+def reap_during_the_wait(d, monkeypatch):
+    """What the live loop does while a stop waits for the group: it sees the wrapper gone and reaps."""
+    real = proc._group_ended
+
+    def racing(pgid, seconds):
+        monkeypatch.setattr(proc, "_group_ended", real)
+        end = time.monotonic() + 5
+        while proc._leader_state(d, "j.worker", proc._read(d / "j.worker.proc")) == proc.OURS:
+            assert time.monotonic() < end
+            time.sleep(0.02)
+        assert proc.reap(d) == ["j.worker"]
+        return real(pgid, seconds)
+    monkeypatch.setattr(proc, "_group_ended", racing)
+
+
+def test_a_reap_during_a_stop_leaves_it_a_stop(tmp_path, monkeypatch):
+    proc.start(tmp_path, "j.worker", ["sleep", "20"], cwd=tmp_path, env=dict(os.environ), minutes=5)
+    reap_during_the_wait(tmp_path, monkeypatch)
+    assert proc.stop(tmp_path, "j.worker", STOPPED) is True
+    assert proc.consume(tmp_path, "j.worker")["reason"] == STOPPED
+
+
+def test_a_stop_after_the_process_ended_still_counts_until_its_receipt_is_consumed(ark_home, capsys):
+    d = paths.run_dir("demo", "x")
+    proc.start(d, "j.worker", ["true"], cwd=d, env=dict(os.environ), minutes=5)
+    wait_receipt(d, "j.worker")
+    code, out = stop_cli(ark_home, capsys)
+    assert code == 0 and "detenido: j.worker" in out
+    assert proc.consume(d, "j.worker")["reason"] == STOPPED
+
+
+def test_a_stop_of_a_dead_wrapper_counts_and_says_so(ark_home, capsys):
+    d = paths.run_dir("demo", "x")
+    dead_wrapper_proc(d, "j.worker")
+    code, out = stop_cli(ark_home, capsys)
+    assert code == 0 and "detenido: j.worker" in out
+    assert proc.consume(d, "j.worker")["reason"] == STOPPED
+
+
+def test_a_stop_ps_could_not_verify_still_counts_when_the_process_ends(ark_home, capsys, monkeypatch):
+    d = paths.run_dir("demo", "x")
+    info = proc.start(d, "j.worker", ["sleep", "20"], cwd=d, env=dict(os.environ), minutes=5)
+    restart()
+    with monkeypatch.context() as m:
+        m.setattr(proc, "_describe", lambda pid: proc.UNKNOWN)
+        code, out = stop_cli(ark_home, capsys)
+    assert code == 1 and "no se mandó ninguna señal" in out and "bloqueado" in out
+    os.killpg(info["pid"], signal.SIGKILL)
+    _mine[-1].wait(10)
+    assert proc.reap(d) == ["j.worker"]
+    assert proc.consume(d, "j.worker")["reason"] == STOPPED
+
+
+def test_a_stop_with_an_unreadable_proc_counts_and_warns_it_may_still_run(ark_home, capsys):
+    d = paths.run_dir("demo", "x")
+    d.mkdir(parents=True)
+    (d / "j.worker.proc").write_text("{not json")
+    code, out = stop_cli(ark_home, capsys)
+    assert code == 1 and "ninguna señal" in out and "bloqueado" in out
+    r = proc.consume(d, "j.worker")
+    assert r["reason"] == STOPPED and r["survivors"] is True
+
+
+def test_the_mark_of_an_older_process_does_not_touch_the_next_one(tmp_path):
+    (tmp_path / "j.worker.stop").write_text(json.dumps({"pid": 1}))
+    proc.start(tmp_path, "j.worker", ["true"], cwd=tmp_path, env=dict(os.environ), minutes=1)
+    assert not (tmp_path / "j.worker.stop").exists()
+    wait_receipt(tmp_path, "j.worker")
+    (tmp_path / "j.worker.stop").write_text(json.dumps({"pid": 1}))             # survived a crash, say
+    assert proc.consume(tmp_path, "j.worker")["reason"] == ""
+
+
+def test_only_a_stop_from_marco_leaves_a_mark(tmp_path):
+    proc.start(tmp_path, "j.worker", ["sleep", "20"], cwd=tmp_path, env=dict(os.environ), minutes=5)
+    assert proc.stop(tmp_path, "j.worker", "timeout: over its time limit") is True
+    assert not (tmp_path / "j.worker.stop").exists()
+    assert proc.consume(tmp_path, "j.worker")["reason"].startswith("timeout")
+
+
+# ---- what a worker planted in the run folder never hangs a read ---------------------------------
+
+class Hung(BaseException):
+    """Not an Exception: nothing on the way up may catch it and carry on."""
+
+
+@pytest.fixture
+def must_not_hang():
+    def alarm(*_):
+        raise Hung()
+    before = signal.signal(signal.SIGALRM, alarm)
+    signal.setitimer(signal.ITIMER_REAL, 30)
+    yield
+    signal.setitimer(signal.ITIMER_REAL, 0)
+    signal.signal(signal.SIGALRM, before)
+
+
+def test_a_fifo_as_proc_gets_a_failure_and_no_hang(tmp_path, must_not_hang):
+    os.mkfifo(tmp_path / "evil.proc")
+    assert proc._read(tmp_path / "evil.proc") is None
+    assert proc.overdue(tmp_path) == []
+    assert proc.reap(tmp_path) == ["evil"]
+    assert proc.consume(tmp_path, "evil")["reason"].startswith("unreadable .proc")
+    assert proc.active(tmp_path) == []
+
+
+def test_a_link_to_a_fifo_as_proc_gets_a_failure_and_no_hang(tmp_path, must_not_hang):
+    os.mkfifo(tmp_path / "pipe")
+    (tmp_path / "link.proc").symlink_to(tmp_path / "pipe")
+    assert proc.reap(tmp_path) == ["link"]
+    assert proc.consume(tmp_path, "link")["reason"].startswith("unreadable .proc")
+
+
+def test_a_fifo_as_receipt_is_an_unreadable_receipt(tmp_path, must_not_hang):
+    proc.start(tmp_path, "j.worker", ["true"], cwd=tmp_path, env=dict(os.environ), minutes=1)
+    wait_receipt(tmp_path, "j.worker")
+    (tmp_path / "j.worker.receipt.json").unlink()
+    os.mkfifo(tmp_path / "j.worker.receipt.json")
+    assert proc.consume(tmp_path, "j.worker")["reason"] == "unreadable receipt"
+
+
+def test_a_fifo_as_the_log_of_a_dead_worker_is_an_empty_log(tmp_path, must_not_hang):
+    dead_wrapper_proc(tmp_path, "j.worker")
+    (tmp_path / "j.worker.log").unlink(missing_ok=True)
+    os.mkfifo(tmp_path / "j.worker.log")
+    assert proc.reap(tmp_path) == ["j.worker"]
+    r = proc.consume(tmp_path, "j.worker")
+    assert r["reason"] == "died without a receipt" and r["result"] == ""
+
+
+def test_a_fifo_as_the_stop_mark_is_no_mark(tmp_path, must_not_hang):
+    proc.start(tmp_path, "j.worker", ["true"], cwd=tmp_path, env=dict(os.environ), minutes=1)
+    wait_receipt(tmp_path, "j.worker")
+    os.mkfifo(tmp_path / "j.worker.stop")
+    assert proc.consume(tmp_path, "j.worker")["reason"] == ""

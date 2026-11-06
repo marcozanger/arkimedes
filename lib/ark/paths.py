@@ -2,10 +2,22 @@
 from __future__ import annotations
 
 import copy
+import errno
 import json
 import os
+import stat
 import subprocess
 from pathlib import Path
+
+
+def read_regular(path, limit: int = -1) -> bytes:
+    """The bytes of a regular file, at most `limit`. Workers can write in a run folder: a FIFO there would
+    hang the whole loop and a link could read anything, so whatever else is at `path` raises OSError."""
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    with os.fdopen(fd, "rb") as f:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, "not a regular file", str(path))
+        return f.read(limit)
 
 
 def ark_home() -> Path:
