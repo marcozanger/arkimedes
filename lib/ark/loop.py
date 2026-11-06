@@ -360,6 +360,7 @@ def on_judge(c: Ctx, job: str, r: dict) -> None:
     j.update(note=note, status="needs_worker")
 
 
+DECISIONS = "_decisions.tick"  # the close-of-run tick belongs to the run, not to a job
 MODEL_KINDS = ("worker", "review", "judge")  # the others run a program of ours, not the model
 HANDLERS = {"worker": on_worker, "gate": on_gate, "review": on_review, "integrate": on_integrate, "judge": on_judge}
 
@@ -431,6 +432,12 @@ def consume_receipts(c: Ctx) -> bool:
 
 
 def _on_receipt(c: Ctx, name: str, r: dict) -> None:
+    if name == DECISIONS:
+        if c.st["closing"] == "decisions":
+            on_decisions(c, r)
+        else:
+            run.event(c.st, f"ignored the result of {name}: nothing was waiting for it")
+        return
     job, _, kind = name.rpartition(".")
     j = c.st["jobs"].get(job)
     if j is not None:  # spent and alive whether or not anything still waits for the answer
@@ -604,6 +611,69 @@ def start_judge(c: Ctx, job: str) -> None:
     j["status"] = "judging"
 
 
+# ---- closing ----------------------------------------------------------------------------------
+
+STEP_ERRORS = (gitops.GitError, forge_mod.ForgeError)  # offline, a refused push: healed by trying again
+
+
+def _reports(c: Ctx) -> dict[str, str]:
+    return {jid: c.read_report(jid) or "" for jid in c.st["jobs"]}
+
+
+def maybe_close(c: Ctx) -> None:
+    st = c.st
+    if any(j["status"] not in run.TERMINAL for j in st["jobs"].values()) or proc.active(c.dir):
+        return
+    if st["closing"] is None:
+        cmd = claude.agent_cmd("tick", claude.TICK_MODEL["decisions"], brief.decisions_prompt(st, _reports(c)),
+                               session=str(uuid.uuid4()), usd=1)
+        proc.start(c.dir, DECISIONS, cmd, cwd=ticks_dir(), env=claude.runner_env("tick"), minutes=15)
+        st["closing"] = "decisions"
+        run.event(st, "every job is merged or blocked: writing the decisions file")
+    elif st["closing"] == "publish":
+        publish(c)
+
+
+def on_decisions(c: Ctx, r: dict) -> None:
+    text = (r["result"] or "").strip() if r["exit"] == 0 and not r["reason"] else ""
+    if not text.startswith("# Decisions"):
+        text = brief.fallback_decisions(c.st, _reports(c))
+        run.event(c.st, "the decisions tick gave no file: the runner wrote the fallback")
+    (c.dir / "decisions.md").write_text(text.rstrip() + "\n", encoding="utf-8")
+    c.st["closing"] = "publish"
+
+
+def publish(c: Ctx) -> None:
+    """Commit docs/decisions/<slug>.md on ark/<slug>, open the final PR, finish. Retried each cycle."""
+    st = c.st
+    try:
+        if not st.get("decisions_sha"):
+            st["decisions_sha"] = gitops.commit_file(
+                c.repo, c.base, f"docs/decisions/{st['slug']}.md", (c.dir / "decisions.md").read_text(encoding="utf-8"),
+                f"docs: decisions for {st['slug']}", paths.worktrees_dir() / st["repo"] / st["slug"] / "_decisions")
+            run.event(st, f"decisions file committed on ark/{st['slug']}")
+        merged = any(j["status"] == "merged" for j in st["jobs"].values())
+        if merged and not st["final_pr"]:
+            st["final_pr"] = c.forge.create(c.repo, base=st["default_branch"], head=c.base,
+                                            title=c.plan.manifest["final_pr_title"], body=brief.final_pr_body(st))
+    except STEP_ERRORS as e:
+        text = _clean(f"{type(e).__name__}: {e}")
+        if "symlink" in text and not st.get("decisions_sha"):  # the branch itself is the problem: no retry heals it
+            st.pop("closing_error", None)
+            st.update(status="blocked", closing="done")
+            return run.alert(st, f"run blocked: {text}. The decisions file was not committed and no final PR was "
+                                 f"opened; it is kept at {c.dir / 'decisions.md'}")
+        if st.get("closing_error") != text:  # not "error": a clean step would wipe it and repeat this event
+            st["closing_error"] = text
+            run.event(st, f"closing: {text} (retrying)")
+        return
+    st.pop("closing_error", None)
+    all_merged = all(j["status"] == "merged" for j in st["jobs"].values())
+    st.update(status="done" if all_merged else "blocked", closing="done")
+    pr = f"final PR {st['final_pr']['url']}" if st["final_pr"] else "no job merged, no final PR"
+    run.alert(st, f"run {st['status']}: {pr}")
+
+
 # ---- scheduling -------------------------------------------------------------------------------
 
 class Slots:
@@ -695,6 +765,9 @@ def reconcile(st: dict) -> None:
     if st["status"] in ("done", "blocked"):
         return
     d = paths.run_dir(st["repo"], st["slug"])
+    if st.get("closing") == "decisions" and not (d / f"{DECISIONS}.proc").exists():
+        st["closing"] = None
+        run.event(st, "the decisions tick is gone without a result; starting it again")
     for job, j in st["jobs"].items():
         s = j["status"]
         if s in RUNNING:
@@ -735,6 +808,7 @@ def step(st: dict, states: list[dict], forge, slots: Slots) -> None:
     c = Ctx(st, forge)
     if consume_receipts(c):
         schedule(c, slots)
+        maybe_close(c)
 
 
 def _adopt_reapproval(st: dict, a: dict, states: list[dict], forge) -> None:

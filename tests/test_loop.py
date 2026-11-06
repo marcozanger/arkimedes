@@ -55,12 +55,13 @@ def test_jobs_merge_in_order(feature):
     assert [j["status"] for j in st["jobs"].values()] == ["merged", "merged"]
     gitops.fetch(repo)
     files = gitops.changed_files(repo, st["base_sha"], f"origin/ark/{SLUG}")
-    assert files == ["src/shell/shell.txt", "src/ui/ui.txt"]
+    assert files == [f"docs/decisions/{SLUG}.md", "src/shell/shell.txt", "src/ui/ui.txt"]
     prs = forge.LocalForge().list(repo)
     assert [(p["base"], p["head"], p["state"]) for p in prs] == [
-        (f"ark/{SLUG}", f"ark/{SLUG}-shell", "MERGED"), (f"ark/{SLUG}", f"ark/{SLUG}-ui", "MERGED")]
+        (f"ark/{SLUG}", f"ark/{SLUG}-shell", "MERGED"), (f"ark/{SLUG}", f"ark/{SLUG}-ui", "MERGED"),
+        ("master", f"ark/{SLUG}", "OPEN")]
     log = gitops.git(repo, "log", "--format=%s", f"origin/ark/{SLUG}")
-    assert log.splitlines()[:2] == ["feat: ui", "feat: shell"]
+    assert log.splitlines()[:3] == [f"docs: decisions for {SLUG}", "feat: ui", "feat: shell"]
     assert gitops.git(repo, "rev-parse", "origin/master") == st["base_sha"]     # default branch untouched
 
 
@@ -99,7 +100,7 @@ def test_red_integration_gate_never_merges(feature):
     assert "integration gate failed twice" in st["jobs"]["shell"]["reason"]
     assert st["jobs"]["shell"]["attempts"] == 2                                 # sent back once
     gitops.fetch(repo)
-    assert gitops.rev(repo, f"origin/ark/{SLUG}") == st["base_sha"]
+    assert gitops.changed_files(repo, st["base_sha"], f"origin/ark/{SLUG}") == [f"docs/decisions/{SLUG}.md"]  # nothing merged
 
 
 def test_allowed_actions():
@@ -606,7 +607,7 @@ def test_a_crash_after_the_first_push_does_not_leave_the_run_waiting_forever(fea
     assert st["status"] == "waiting" and st["base_sha"] == gitops.remote_sha(repo, f"ark/{SLUG}")
     monkeypatch.setattr(gitops, "push_ref", real)
     drive(jobs_settled)
-    assert state()["status"] == "running" and state()["jobs"]["shell"]["status"] == "merged"
+    assert state()["status"] == "done" and state()["jobs"]["shell"]["status"] == "merged"
 
 
 # -- the plan under a run
@@ -627,7 +628,7 @@ def test_a_changed_plan_holds_the_run_and_its_return_resumes_it(feature):
     assert state()["jobs"]["shell"]["head"] is None
     p.write_bytes(good)
     drive(jobs_settled)
-    assert state()["status"] == "running" and state()["jobs"]["shell"]["status"] == "merged"
+    assert state()["status"] == "done" and state()["jobs"]["shell"]["status"] == "merged"
 
 
 def test_a_waiting_run_takes_a_newer_approval(feature):
@@ -1760,7 +1761,7 @@ def test_a_merged_job_cannot_pass_new_gates_so_the_approval_is_refused(feature, 
     p.write_text(old)
     approve(p, "demo", SLUG)
     drive(jobs_settled)
-    assert state()["status"] == "running" and state()["jobs"]["ui"]["status"] == "merged"
+    assert state()["status"] == "done" and state()["jobs"]["ui"]["status"] == "merged"
 
 
 def test_restoring_the_plan_as_told_and_approving_again_loses_nothing(at_merge, monkeypatch):
@@ -1780,7 +1781,7 @@ def test_restoring_the_plan_as_told_and_approving_again_loses_nothing(at_merge, 
     approve(p, "demo", SLUG)
     drive(jobs_settled)
     st = state()
-    assert st["status"] == "running" and st["jobs"]["shell"]["status"] == "merged" and st["jobs"]["ui"]["status"] == "merged"
+    assert st["status"] == "done" and st["jobs"]["shell"]["status"] == "merged" and st["jobs"]["ui"]["status"] == "merged"
     assert "reapprove_refused" not in st and runs_of("shell", "gate") == 1      # all of it kept
 
 
@@ -2005,3 +2006,59 @@ def test_a_rewritten_branch_says_what_probably_happened(tmp_path, monkeypatch):
 def test_workers_are_told_not_to_rewrite_their_history():
     text = (Path(loop.__file__).resolve().parents[2] / "agents" / "ark-dev.md").read_text()
     assert "amend" in text and "rebase" in text
+
+
+# -- closing
+
+def run_finished():
+    st = state()
+    return bool(st) and st["status"] in ("done", "blocked")
+
+
+def test_run_closes_with_decisions_and_final_pr(feature):
+    repo, _ = feature()
+    drive(run_finished)
+    st = state()
+    assert st["status"] == "done"
+    gitops.fetch(repo)
+    text = gitops.git(repo, "show", f"origin/ark/{SLUG}:docs/decisions/{SLUG}.md")
+    assert text.startswith("# Decisions")
+    final = forge.LocalForge().list(repo)[-1]
+    assert (final["base"], final["head"], final["title"]) == ("master", f"ark/{SLUG}", "feat(notes): edit and delete notes")
+    assert final["body"].startswith(f"**Decisions:** `docs/decisions/{SLUG}.md`")
+    assert st["final_pr"]["url"] == final["url"]
+    assert "Status: done" in paths.run_file("demo", SLUG).read_text()
+
+
+def test_blocked_run_writes_the_fallback_when_the_tick_fails(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_OUTSIDE", "shell")
+    repo, _ = feature()
+    monkeypatch.setattr(loop.brief, "decisions_prompt", lambda st, reports: "say nothing useful")
+    drive(run_finished)
+    st = state()
+    assert st["status"] == "blocked" and st["final_pr"] is None             # nothing merged: no final PR
+    gitops.fetch(repo)
+    text = gitops.git(repo, "show", f"origin/ark/{SLUG}:docs/decisions/{SLUG}.md")
+    assert "written by the runner" in text and "outside its area" in text
+
+
+def test_a_symlinked_docs_on_the_branch_blocks_the_close_once(feature):
+    repo, _ = feature()
+    (repo / "docs").symlink_to("README.md")                                 # docs/ is a symlink on the default branch
+    gitops.git(repo, "add", "docs")
+    gitops.git(repo, "commit", "-q", "-m", "docs is a symlink")
+    gitops.git(repo, "push", "-q", "origin", "master")
+    alerts = []
+    for _ in range(400):
+        alerts += loop.cycle()[1]
+        if run_finished():
+            break
+        time.sleep(0.05)
+    for _ in range(3):
+        alerts += loop.cycle()[1]                                           # a finished run is left alone
+    st = state()
+    assert st["status"] == "blocked" and st["final_pr"] is None and st["closing"] == "done"
+    mine = [a for a in alerts if "symlink" in a]
+    assert len(mine) == 1 and "decisions.md" in mine[0]
+    assert (paths.run_dir("demo", SLUG) / "decisions.md").is_file()         # the text is kept for Marco
+    assert not [p for p in forge.LocalForge().list(repo) if p["base"] == "master"]
