@@ -110,6 +110,11 @@ def remote_sha(repo, branch: str) -> str | None:
     return None
 
 
+def is_ancestor(repo, ancestor: str, descendant: str) -> bool:
+    """A commit this repo does not have is not an ancestor of anything."""
+    return _run(repo, "merge-base", "--is-ancestor", ancestor, descendant).returncode == 0
+
+
 _ARK_BRANCH = re.compile(r"ark/[A-Za-z0-9][A-Za-z0-9._/-]*")
 
 

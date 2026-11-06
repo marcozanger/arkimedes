@@ -122,7 +122,7 @@ def bare(tmp_path, status="working", **over):
     mj = job("shell", ["T1"], ["src/shell/**"])
     st["jobs"]["shell"] = {**run.new_job(mj), "status": status, **over}
     return SimpleNamespace(st=st, dir=tmp_path, base=f"ark/{SLUG}", mjobs={"shell": mj}, repo=tmp_path,
-                           wt=lambda j: tmp_path / j)
+                           wt=lambda j: tmp_path / j, branch=lambda j: f"ark/{SLUG}-{j}")
 
 
 def receipt(result="", exit=0, reason="", **over):
@@ -541,7 +541,7 @@ def test_a_process_the_state_missed_is_adopted_never_started_twice(ark_home, sta
     assert st["jobs"]["shell"]["status"] == after and st["jobs"]["shell"]["attempts"] == attempts
 
 
-@pytest.mark.parametrize("status", ["merged", "blocked", "needs_pr", "needs_merge"])
+@pytest.mark.parametrize("status", ["merged", "blocked", "needs_push", "needs_pr", "needs_merge"])
 def test_a_job_with_nothing_to_run_is_left_alone(ark_home, status, tmp_path):
     st = bare(tmp_path, status=status).st
     loop.reconcile(st)
@@ -723,3 +723,91 @@ def test_a_retry_after_the_model_was_down_keeps_the_feedback(feature, monkeypatc
     assert len(started) == 3 and "src/x:1" in " ".join(started[2]) and "--resume" in started[2]
     j = state()["jobs"]["shell"]
     assert j["status"] == "merged" and not j["resume_msg"] and j["attempts"] == 2
+
+
+# -- pushing a worker's result
+
+def leftover(repo, branch):
+    """A commit on origin that the worker's commits do not descend from."""
+    tree = gitops.git(repo, "rev-parse", "HEAD^{tree}")
+    sha = gitops.git(repo, "commit-tree", tree, "-p", "HEAD", "-m", "left by an earlier run")
+    gitops.push_ref(repo, sha, branch)
+    return sha
+
+
+def test_a_push_that_fails_for_a_moment_costs_no_worker(feature, monkeypatch, tmp_path):
+    feature()
+    real, failures = gitops.push_ref, [1, 2]
+    def flaky(repo, sha, branch):
+        if branch.endswith("-shell") and failures:
+            failures.pop()
+            raise gitops.GitError("network down")
+        return real(repo, sha, branch)
+    monkeypatch.setattr(gitops, "push_ref", flaky)
+    drive(jobs_settled)
+    j = state()["jobs"]["shell"]
+    assert not failures and j["status"] == "merged" and "errors" not in j
+    assert (tmp_path / "fake" / "shell.worker.count").read_text() == "1"
+    assert j["tier_attempts"] == 0 and j["attempts"] == 1
+
+
+def test_a_leftover_job_branch_blocks_at_once_without_spending(feature, tmp_path):
+    repo, _ = feature()
+    loop.cycle()
+    sha = leftover(repo, f"ark/{SLUG}-shell")
+    drive(jobs_settled)
+    j = state()["jobs"]["shell"]
+    assert j["status"] == "blocked" and f"ark/{SLUG}-shell" in j["reason"] and "fast-forward" in j["reason"]
+    assert (tmp_path / "fake" / "shell.worker.count").read_text() == "1" and j["tier_path"] == ["T1"]
+    assert gitops.remote_sha(repo, f"ark/{SLUG}-shell") == sha                  # left for Marco, not overwritten
+
+
+def test_the_exact_commit_the_checks_saw_is_what_gets_pushed(feature, monkeypatch):
+    repo, _ = feature()
+    real, pushed = gitops.push_ref, {}
+    def spy(repo, sha, branch):
+        pushed[branch] = sha
+        return real(repo, sha, branch)
+    monkeypatch.setattr(gitops, "push_ref", spy)
+    drive(jobs_settled)
+    assert pushed[f"ark/{SLUG}-shell"] == state()["jobs"]["shell"]["head"]
+
+
+@pytest.mark.parametrize("remote,ancestor", [("gone", None), (None, None), ("older", True)])
+def test_a_push_error_that_is_not_a_leftover_retries(tmp_path, monkeypatch, remote, ancestor):
+    c = bare(tmp_path, status="needs_push", head="a" * 40)
+    def no(*a):
+        raise gitops.GitError("network down")
+    monkeypatch.setattr(gitops, "push_ref", no)
+    monkeypatch.setattr(gitops, "remote_sha", no if remote == "gone" else lambda *a: remote)
+    monkeypatch.setattr(gitops, "is_ancestor", lambda *a: ancestor)
+    loop.schedule(c, loop.Slots([c.st], {"writers_per_repo": 1, "writers_total": 1, "heavy_gates": 1}))
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "needs_push" and j["errors"] == 1 and "network down" in j["error"]
+
+
+def test_a_job_that_was_pushed_before_a_crash_moves_on(tmp_path, monkeypatch):
+    c = bare(tmp_path, status="needs_push", head="a" * 40)
+    monkeypatch.setattr(gitops, "push_ref", lambda *a: None)
+    loop.push_job(c, "shell")
+    assert c.st["jobs"]["shell"]["status"] == "needs_gate"
+
+
+def test_an_existing_job_branch_keeps_the_run_waiting_and_names_it(feature):
+    repo, _ = feature()
+    gitops.push_ref(repo, gitops.rev(repo, "HEAD"), f"ark/{SLUG}-ui")
+    loop.cycle()
+    st = state()
+    assert st["status"] == "waiting" and f"ark/{SLUG}-ui already exists" in st["reason"]
+    assert gitops.remote_sha(repo, f"ark/{SLUG}") is None and not proc.active(paths.run_dir("demo", SLUG))
+    gitops.git(repo, "push", "-q", "origin", "--delete", f"ark/{SLUG}-ui")
+    drive(jobs_settled)
+    assert state()["jobs"]["ui"]["status"] == "merged"
+
+
+def test_is_ancestor(feature):
+    repo, _ = feature()
+    head = gitops.rev(repo, "HEAD")
+    child = gitops.git(repo, "commit-tree", gitops.git(repo, "rev-parse", "HEAD^{tree}"), "-p", "HEAD", "-m", "c")
+    assert gitops.is_ancestor(repo, head, child) and not gitops.is_ancestor(repo, child, head)
+    assert not gitops.is_ancestor(repo, "0" * 40, head)

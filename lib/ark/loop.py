@@ -87,7 +87,8 @@ def plan_ok(st: dict) -> bool:
 
 def try_start(st: dict, others: list[dict]) -> bool:
     """waiting → running: the approved plan still validates, the repo is there, no running run in
-    the same repo has an overlapping area, ark/<slug> does not exist yet. Then push ark/<slug>."""
+    the same repo has an overlapping area, ark/<slug> and its job branches do not exist yet. Then
+    push ark/<slug>."""
     plan = Path(st["plan"])
     problems = validate(plan, approved=True)
     reason, repo, default, area, existing = "", None, None, [], None
@@ -111,6 +112,11 @@ def try_start(st: dict, others: list[dict]) -> bool:
             existing = gitops.remote_sha(repo, f"ark/{st['slug']}")
             if existing and existing != st["base_sha"]:
                 reason = f"ark/{st['slug']} already exists on origin: delete it, or approve under another slug"
+            for job in () if reason else load_plan(plan).manifest["jobs"]:
+                branch = f"ark/{st['slug']}-{job['id']}"
+                if gitops.remote_sha(repo, branch):  # a job's push could never fast-forward over it
+                    reason = f"{branch} already exists on origin: delete it, or approve under another slug"
+                    break
         except gitops.GitError as e:
             reason = str(e)
     if reason:
@@ -202,9 +208,8 @@ def on_worker(c: Ctx, job: str, r: dict) -> None:
     outside = [_printable(f) for f in files if not match_any(f, c.mjobs[job]["area"])]
     if outside:
         return block(c, job, "changed files outside its area: " + ", ".join(outside[:5]))
-    gitops.push_branch(wt, c.branch(job))
-    j.update(status="needs_gate", head=gitops.rev(wt, "HEAD"))
-    run.event(c.st, f"{job}: worker done, head {j['head'][:8]} pushed")
+    j.update(status="needs_push", head=gitops.rev(wt, "HEAD"))
+    run.event(c.st, f"{job}: worker done, head {j['head'][:8]}")
 
 
 def on_gate(c: Ctx, job: str, r: dict) -> None:
@@ -448,6 +453,22 @@ def start_worker(c: Ctx, job: str) -> bool:
     return True
 
 
+def push_job(c: Ctx, job: str) -> None:
+    """The worker's result is saved and paid for, so a failed push retries through _error. Only a branch
+    on origin that this head does not descend from can never heal: Marco decides what to do with it."""
+    j, branch = c.st["jobs"][job], c.branch(job)
+    try:
+        gitops.push_ref(c.repo, j["head"], branch)
+    except gitops.GitError:
+        remote = gitops.remote_sha(c.repo, branch)
+        if remote and remote != j["head"] and not gitops.is_ancestor(c.repo, remote, j["head"]):
+            return block(c, job, f"non-fast-forward: {branch} on origin holds {remote[:8]}, which is not part "
+                                 "of this work; delete that branch or look at it")
+        raise
+    j["status"] = "needs_gate"
+    run.event(c.st, f"{job}: head {j['head'][:8]} pushed")
+
+
 def start_gate(c: Ctx, job: str) -> None:
     j, mj = c.st["jobs"][job], c.mjobs[job]
     env = claude.runner_env("gate", origin_url=gitops.origin_url(c.repo))  # it runs tests a worker wrote
@@ -587,7 +608,7 @@ def _next_step(c: Ctx, job: str, j: dict, slots: Slots):
         if slots.gate(j["heavy"]):
             return lambda: start_integrate(c, job)
     else:
-        step_ = {"needs_pr": ensure_pr, "needs_review": start_review, "needs_merge": do_merge,
+        step_ = {"needs_push": push_job, "needs_pr": ensure_pr, "needs_review": start_review, "needs_merge": do_merge,
                  "needs_judge": start_judge}.get(s)
         if step_:
             return lambda: step_(c, job)
