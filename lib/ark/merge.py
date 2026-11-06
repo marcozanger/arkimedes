@@ -36,6 +36,12 @@ def record(run_dir, job: str, kind: str, data: dict) -> None:
     tmp.replace(run_dir / f"{job}.{kind}.json")
 
 
+def drop_records(run_dir, job: str) -> None:
+    """A job's checks count no more: gone from disk, so nothing, ark-merge included, can act on them."""
+    for kind in ("gate", "verdict", "integrate"):
+        (Path(run_dir) / f"{job}.{kind}.json").unlink(missing_ok=True)
+
+
 def read_record(run_dir, job: str, kind: str) -> dict | None:
     try:
         data = json.loads((Path(run_dir) / f"{job}.{kind}.json").read_text(encoding="utf-8"))

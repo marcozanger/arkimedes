@@ -548,6 +548,7 @@ def test_any_other_error_blocks_after_the_limit_because_it_will_not_heal(tmp_pat
 def test_a_step_that_works_clears_the_error_and_one_job_does_not_stop_the_next(tmp_path, monkeypatch):
     c = bare(tmp_path, status="needs_merge")
     c.st["jobs"]["ui"] = {**run.new_job(job("ui", [], [])), "status": "needs_merge"}
+    c.mjobs["ui"] = job("ui", [], [])
     seen = []
     def merge_it(c, j):
         seen.append(j)
@@ -1619,3 +1620,192 @@ def test_a_job_with_no_pr_goes_to_its_check(at_merge, monkeypatch):
     st["jobs"]["shell"].update(status="needs_integrate", pr=None)
     loop.start_integrate(c, "shell")
     assert st["jobs"]["shell"]["status"] == "integrating" and started == ["shell.integrate"]
+
+
+# ---- second review -------------------------------------------------------------------------------
+
+def shim(tmp_path, monkeypatch, body):
+    """Run `body` in place of claude; it can hand over to the usual fake with `exec "$REAL_FAKE" "$@"`."""
+    s = tmp_path / "shim.sh"
+    s.write_text("#!/bin/sh\n" + body)
+    s.chmod(0o755)
+    monkeypatch.setenv("REAL_FAKE", os.environ["ARK_CLAUDE"])
+    monkeypatch.setenv("ARK_CLAUDE", str(s))
+
+
+def turn(n, sleep=0.05):
+    out = []
+    for _ in range(n):
+        out += loop.cycle()[1]
+        time.sleep(sleep)
+    return out
+
+
+def runs_of(job_name, kind):
+    return len(list((paths.run_dir("demo", SLUG) / "done").glob(f"{job_name}.{kind}-*.json")))
+
+
+# -- a new approval: everything not merged earns its checks again, under the plan approved now
+
+STRICTER = {"job gate": {"jobs": [job("shell", ["T1", "T2"], ["src/shell/**"], gate="false"),
+                                  job("ui", ["T3"], ["src/ui/**"], after=["shell"])]},
+            "integration gate": {"integration_gate": "false"}}
+
+
+@pytest.mark.parametrize("what", STRICTER)
+def test_a_job_past_its_checks_runs_the_gates_of_the_plan_approved_now(at_merge, monkeypatch, what):
+    monkeypatch.setattr(loop, "BACKOFF_FIRST", 0)
+    _, st, _ = at_merge
+    p = Path(st["plan"])
+    p.write_text(plan_text(manifest(**STRICTER[what])))
+    loop.cycle()
+    approve(p, "demo", SLUG)
+    loop.cycle()
+    st = state()
+    assert st["status"] == "running" and st["plan_sha"] == sha256_file(p)
+    drive(jobs_settled)
+    assert state()["jobs"]["shell"]["status"] == "blocked"
+
+
+def test_a_new_approval_leaves_no_green_record_for_a_terminal_merge(at_merge, monkeypatch):
+    repo, st, c = at_merge
+    p = Path(st["plan"])
+    _hold_and_edit(p)
+    loop.cycle()
+    approve(p, "demo", SLUG)
+    with monkeypatch.context() as m:
+        m.setattr(loop, "start_gate", lambda c, job: None)                      # only the adoption happens
+        loop.cycle()
+    st = state()
+    assert st["status"] == "running" and st["jobs"]["shell"]["status"] == "needs_gate"
+    assert not any(merge.read_record(paths.run_dir("demo", SLUG), "shell", k) for k in ("gate", "verdict", "integrate"))
+    assert "no green job gate" in merge.check(st, "shell", forge.LocalForge(), repo)
+
+
+def test_even_a_new_approval_that_only_touches_a_comment_earns_the_checks_again(at_merge):
+    _, st, _ = at_merge
+    p = Path(st["plan"])
+    _hold_and_edit(p)
+    loop.cycle()
+    approve(p, "demo", SLUG)
+    drive(jobs_settled)
+    assert state()["jobs"]["shell"]["status"] == "merged"
+    assert (runs_of("shell", "gate"), runs_of("shell", "review"), runs_of("shell", "integrate")) == (2, 2, 2)
+    assert runs_of("shell", "worker") == 1                                      # no worker pays for it
+
+
+def _at_gating(feature, gate="sleep 1"):
+    r, p = feature(manifest(jobs=[job("shell", ["T1", "T2", "T3"], ["src/shell/**"], gate=gate)]))
+    drive(lambda: state() and state()["jobs"].get("shell", {}).get("status") == "gating", cycles=200)
+    return r, p
+
+
+def test_a_gate_that_started_under_the_old_plan_does_not_count(feature, monkeypatch):
+    monkeypatch.setattr(loop, "BACKOFF_FIRST", 0)
+    _, p = _at_gating(feature)
+    p.write_text(plan_text(manifest(jobs=[job("shell", ["T1", "T2", "T3"], ["src/shell/**"], gate="false")])))
+    loop.cycle()
+    approve(p, "demo", SLUG)
+    loop.cycle()
+    assert state()["status"] == "held"                                          # it still runs: nothing to believe yet
+    drive(jobs_settled)
+    assert runs_of("shell", "gate") >= 2 and state()["jobs"]["shell"]["status"] == "blocked"
+
+
+def test_a_stop_from_marco_during_the_hold_survives_a_new_approval(feature):
+    _, p = _at_gating(feature, gate="sleep 30")
+    _hold_and_edit(p)
+    loop.cycle()
+    proc.stop(paths.run_dir("demo", SLUG), "shell.gate", "stopped by Marco")
+    approve(p, "demo", SLUG)
+    loop.cycle()
+    st = state()
+    assert st["status"] == "running" and st["jobs"]["shell"]["status"] == "blocked"
+    assert "stopped by Marco" in st["jobs"]["shell"]["reason"]
+
+
+def test_a_merged_job_cannot_pass_new_gates_so_the_approval_is_refused(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_SLEEP", "1")
+    _, p = feature()
+    drive(lambda: state() and state()["jobs"].get("shell", {}).get("status") == "merged")
+    old, sha = p.read_text(), state()["plan_sha"]
+    _hold_and_edit(p)
+    alerts = turn(1)
+    approve(p, "demo", SLUG)
+    alerts += turn(3)
+    st = state()
+    assert st["status"] == "held" and st["plan_sha"] == sha
+    assert sum("cannot take the new approval" in a and "shell" in a and "merged" in a for a in alerts) == 1
+    p.write_text(old)
+    approve(p, "demo", SLUG)
+    drive(jobs_settled)
+    assert state()["status"] == "running" and state()["jobs"]["ui"]["status"] == "merged"
+
+
+def test_restoring_the_plan_as_told_and_approving_again_loses_nothing(at_merge, monkeypatch):
+    _, st, _ = at_merge
+    p = Path(st["plan"])
+    old = p.read_text()
+    p.write_text(plan_text(manifest(jobs=[job("shell", ["T1", "T2", "T3"], ["src/shell/**"]), job("x", ["T1"], ["x/**"])])))
+    alerts = turn(1)
+    approve(p, "demo", SLUG)
+    alerts += turn(2)
+    said = [a for a in alerts if "cannot take the new approval" in a]
+    assert len(said) == 1 and "approve it again" in said[0]
+    p.write_text(old)                                                           # restored, not approved yet
+    alerts = turn(3)
+    st = state()
+    assert st["status"] == "held" and st["jobs"]["shell"]["status"] == "needs_merge" and not alerts  # he was told
+    approve(p, "demo", SLUG)
+    drive(jobs_settled)
+    st = state()
+    assert st["status"] == "running" and st["jobs"]["shell"]["status"] == "merged" and st["jobs"]["ui"]["status"] == "merged"
+    assert "reapprove_refused" not in st and runs_of("shell", "gate") == 1      # all of it kept
+
+
+def test_an_approval_that_disagrees_with_the_run_holds_it(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_SLEEP", "1")
+    _, p = feature()
+    loop.cycle()
+    a = paths.approval_file("demo", SLUG)
+    a.write_text(json.dumps({**json.loads(a.read_text()), "sha256": "f" * 64}))
+    loop.cycle()
+    assert state()["status"] == "held"
+
+
+def test_a_new_edge_makes_a_job_at_its_merge_wait_for_it(at_merge):
+    _, st, _ = at_merge
+    p = Path(st["plan"])
+    p.write_text(plan_text(manifest(jobs=[job("shell", ["T1", "T2"], ["src/shell/**"], after=["ui"]),
+                                          job("ui", ["T3"], ["src/ui/**"])])))
+    loop.cycle()
+    approve(p, "demo", SLUG)
+    drive(jobs_settled)
+    assert [j["status"] for j in state()["jobs"].values()] == ["merged", "merged"]
+
+
+@pytest.mark.parametrize("dep,moves", [("pending", False), ("blocked", True)])
+def test_a_job_at_its_merge_follows_its_dependency(tmp_path, dep, moves):
+    c = bare(tmp_path, status="needs_merge")
+    c.mjobs["shell"]["after"] = ["ui"]
+    c.st["jobs"]["ui"] = {"status": dep}
+    slots = loop.Slots([], {"writers_per_repo": 1, "writers_total": 1, "heavy_gates": 1})
+    move = loop._next_step(c, "shell", c.st["jobs"]["shell"], slots)
+    assert bool(move) is moves
+    if moves:
+        move()
+        assert c.st["jobs"]["shell"]["status"] == "blocked"
+
+
+def test_a_new_approval_brings_the_fields_the_job_copied_from_the_plan(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_SLEEP", "1")
+    _, p = feature()
+    loop.cycle()
+    p.write_text(plan_text(manifest(jobs=[job("shell", ["T1", "T2"], ["src/shell/**"], heavy=True, tier="T2"),
+                                          job("ui", ["T3"], ["src/ui/**"], after=["shell"], heavy=True, tier="T2")])))
+    loop.cycle()
+    approve(p, "demo", SLUG)
+    loop.cycle()
+    shell, ui = state()["jobs"]["shell"], state()["jobs"]["ui"]
+    assert shell["heavy"] is True and shell["tier"] == "T1"                     # it already runs at the tier it has
+    assert ui["heavy"] is True and ui["tier"] == "T2" and ui["tier_path"] == ["T2"]

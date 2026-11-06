@@ -31,6 +31,8 @@ SKIP_ALERT_AFTER = 3      # integration checks that could not run before Marco h
 RUNNING = {"working": "worker", "gating": "gate", "reviewing": "review", "integrating": "integrate", "judging": "judge"}
 WAITING = {"worker": "needs_worker", "gate": "needs_gate", "review": "needs_review",
            "integrate": "needs_integrate", "judge": "needs_judge"}
+CHECK_KINDS = ("gate", "review", "integrate")  # what a new approval makes a job earn again
+REWOUND = ("gating", "needs_pr", "needs_review", "reviewing", "needs_integrate", "integrating", "needs_merge")
 
 _said: set[tuple] = set()  # what was already alerted about a run with no state to remember it in
 
@@ -102,11 +104,6 @@ class Ctx:
 
 
 # ---- runs -------------------------------------------------------------------------------------
-
-def plan_ok(st: dict) -> bool:
-    p = Path(st["plan"])
-    return p.exists() and sha256_file(p) == st["plan_sha"]
-
 
 def try_start(st: dict, others: list[dict]) -> bool:
     """waiting → running: the approved plan still validates, the repo is there, no running run in
@@ -645,13 +642,13 @@ def _next_step(c: Ctx, job: str, j: dict, slots: Slots):
     s, repo = j["status"], c.st["repo"]
     if j.get("not_before", 0) > time.time():
         return None
-    if s == "pending":
+    if s in ("pending", "needs_merge"):  # needs_merge: a new approval may have added the dependency
         deps = [c.st["jobs"][d]["status"] for d in c.mjobs[job].get("after") or []]
         if "blocked" in deps:
             return lambda: block(c, job, "a job it depends on is blocked")
-        if all(d == "merged" for d in deps) and slots.writer(repo):
-            return lambda: _start_writer(c, job, slots)
-    elif s == "needs_worker":
+        if not all(d == "merged" for d in deps):
+            return None
+    if s in ("pending", "needs_worker"):
         if slots.writer(repo):
             return lambda: _start_writer(c, job, slots)
     elif s == "needs_gate":
@@ -714,39 +711,45 @@ def step(st: dict, states: list[dict], forge, slots: Slots) -> None:
             return
         _save_now(st)  # the jobs exist now: a crash below finds its worker by them, not by chance
     proc.reap(paths.run_dir(st["repo"], st["slug"]))  # first: nothing below can excuse a process from its deadline
-    if not plan_ok(st):
+    if merge.plan_reason(st):  # the same question ark-merge asks: a run it would refuse takes no step
         if st["status"] != "held":
             st["status"] = "held"
-            run.alert(st, "the plan changed after its approval: nothing new is dispatched. Running "
-                          "processes finish; their results wait until the approved plan is back.")
+            run.alert(st, "the plan changed after its approval: nothing new is dispatched. Running processes "
+                          "finish; their results wait. Restore the approved text, or approve the new text: then "
+                          "every job not merged passes its checks again.")
         return
     if st["status"] == "held":
         st["status"] = "running"
+        st.pop("reapprove_refused", None)
         run.event(st, "the approved plan is back: running again")
     c = Ctx(st, forge)
     consume_receipts(c)
     schedule(c, slots)
 
 
-def _adopt_reapproval(st: dict, a: dict, states: list[dict]) -> None:
+def _adopt_reapproval(st: dict, a: dict, states: list[dict], forge) -> None:
     """Marco edited a held run's plan and approved it again: that releases it, if the new plan still
-    describes this run. A plan with other jobs, or one running into another run's area, is a new run, so
-    it stays held and he hears why once. What a job already earned stays valid: it is bound to its head,
-    and merge.check looks at the head against the new plan's area."""
+    describes this run. The old text is gone, so nobody can say what the edit changed: every job not merged
+    earns its checks again under the plan approved now, and a merged job, which cannot, refuses the approval.
+    A plan with other jobs, or one running into another run's area, is a new run. A refusal leaves it held
+    and he hears why once."""
     if st["status"] != "held" or a["sha256"] == st["plan_sha"]:
         return
     plan = Path(a["plan"])
     if not plan.is_file() or sha256_file(plan) != a["sha256"]:  # edited since: not what was approved
         return
-    why, area = "", []
+    why, area, jobs = "", [], []
     problems = validate(plan, approved=True)
     if problems:
         why = f"it does not validate: {problems[0].message}"
     else:
         jobs = load_plan(plan).manifest["jobs"]
         area = [g for j in jobs for g in j["area"]]
+        merged = [job for job, j in st["jobs"].items() if j["status"] == "merged"]
         if {j["id"] for j in jobs} != set(st["jobs"]):
             why = "it changes the run's jobs"
+        elif merged:
+            why = f"{', '.join(merged)} already merged under the old plan and cannot pass the new one's checks"
         for o in states:
             if not why and o is not st and o["repo"] == st["repo"] and o["status"] in ("running", "held") \
                     and areas_overlap(area, o.get("area") or []):
@@ -754,12 +757,28 @@ def _adopt_reapproval(st: dict, a: dict, states: list[dict]) -> None:
     if why:
         if st.get("reapprove_refused") != a["sha256"]:
             st["reapprove_refused"] = a["sha256"]
-            run.alert(st, f"it cannot take the new approval: {why}. It stays held until the approved plan is "
-                          "back; for a different run, approve under another slug")
+            run.alert(st, f"it cannot take the new approval: {why}. It stays held. To go on with this run, restore "
+                          "the approved text and approve it again; for a different run, approve under another "
+                          "slug (this one keeps its area until it ends)")
         return
+    d = paths.run_dir(st["repo"], st["slug"])
+    done = proc.finished(d)
+    if any(n.rpartition(".")[2] in CHECK_KINDS and n not in done for n in proc.active(d)):
+        return  # a check under the old plan still runs. It has a time limit, so this retries soon
+    consume_receipts(Ctx(st, forge))  # a stop from Marco or a block still counts; a green no longer does
+    for mj in jobs:
+        j = st["jobs"][mj["id"]]
+        if j["status"] == "pending":
+            st["jobs"][mj["id"]] = run.new_job(mj)  # nothing done yet: all it copied comes from the new plan
+            continue
+        j["heavy"] = bool(mj.get("heavy"))
+        if j["status"] in REWOUND:
+            j["status"] = "needs_gate"
+        merge.drop_records(d, mj["id"])  # before the new sha can reach disk: no old green under a new plan
     st.pop("reapprove_refused", None)
     st.update(plan=a["plan"], plan_sha=a["sha256"], approved_at=a["approved_at"], area=area)
-    run.event(st, f"approved again ({a['sha256'][:8]}): the run takes the new plan")
+    run.event(st, f"approved again ({a['sha256'][:8]}): the run takes the new plan, and every job not merged "
+                  "passes its checks again")
 
 
 def status_line(states: list[dict]) -> str:
@@ -850,7 +869,7 @@ def cycle(forge=None) -> tuple[str, list[str], bool]:
             states[key].update(plan=a["plan"], plan_sha=a["sha256"], approved_at=a["approved_at"])
     _orphans(approved, alerts)
     for key, st in states.items():
-        _guarded(st, "reapprove_error", lambda st=st, a=approved[key]: _adopt_reapproval(st, a, list(states.values())))
+        _guarded(st, "reapprove_error", lambda st=st, a=approved[key]: _adopt_reapproval(st, a, list(states.values()), forge))
     for st in states.values():
         _guarded(st, "reconcile_error", lambda st=st: reconcile(st))
     slots = Slots(states.values(), paths.load_workspace()["limits"])
