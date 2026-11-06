@@ -402,3 +402,46 @@ def test_local_merge_refuses_like_gh(runner, tmp_path):
     f.merge(repo, ark["number"], subject="t", head_sha=head)
     with pytest.raises(forge.ForgeError):   # no longer OPEN
         f.merge(repo, ark["number"], subject="t", head_sha=head)
+
+
+def _local_pr(runner, tmp_path):
+    repo = runner()
+    base = gitops.rev(repo, "HEAD")
+    gitops.push_ref(repo, base, "ark/x")
+    head = branch_with_file(repo, tmp_path, "ark/x-job", base, "a.txt")
+    f = forge.LocalForge()
+    return repo, base, head, f, f.create(repo, base="ark/x", head="ark/x-job", title="feat: a", body="")
+
+
+def test_local_merge_squashes_the_head_it_was_given_not_a_later_push(runner, tmp_path, monkeypatch):
+    repo, base, head, f, pr = _local_pr(runner, tmp_path)
+    wt = tmp_path / "ark-x-job"
+    (wt / "evil.txt").write_text("never gated\n")
+    subprocess.run(["git", "-C", str(wt), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(wt), "commit", "-q", "-m", "evil"], check=True)
+    real_fetch = gitops.fetch
+
+    def push_then_fetch(r):
+        monkeypatch.setattr(gitops, "fetch", real_fetch)
+        gitops.push_branch(wt, "ark/x-job")
+        real_fetch(r)
+    monkeypatch.setattr(gitops, "fetch", push_then_fetch)
+    f.merge(repo, pr["number"], subject="feat: a", head_sha=head)
+    gitops.fetch(repo)
+    assert gitops.changed_files(repo, base, "origin/ark/x") == ["a.txt"]
+
+
+def test_local_merged_pr_keeps_the_head_it_merged_like_github(runner, tmp_path):
+    repo, base, head, f, pr = _local_pr(runner, tmp_path)
+    f.merge(repo, pr["number"], subject="feat: a", head_sha=head)
+    subprocess.run(["git", "-C", str(repo), "push", "-q", "origin", "--delete", "ark/x-job"], check=True)
+    assert f.view(repo, pr["number"])["head_sha"] == head
+
+
+@pytest.mark.parametrize("text", ["{not json", "[1]", '{"a": 1}', '[{"number": 1}]', "\xff"])
+def test_local_corrupt_file_is_a_forge_error(runner, text):
+    repo = runner()
+    f = forge.LocalForge()
+    f._file(repo).write_bytes(text.encode("latin-1"))
+    with pytest.raises(forge.ForgeError):
+        f.list(repo)

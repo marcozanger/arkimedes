@@ -159,7 +159,16 @@ class LocalForge:
 
     def list(self, repo) -> list[dict]:
         f = self._file(repo)
-        return json.loads(f.read_text()) if f.exists() else []
+        if not f.exists():
+            return []
+        try:
+            prs = json.loads(f.read_text())
+        except (OSError, ValueError, RecursionError) as e:
+            raise ForgeError(f"unreadable {f}: {e}") from e
+        fields = ("number", "url", "base", "head", "state")
+        if not isinstance(prs, list) or not all(isinstance(p, dict) and all(k in p for k in fields) for p in prs):
+            raise ForgeError(f"unreadable {f}: not a list of PRs")
+        return prs
 
     def _save(self, repo, prs: list[dict]) -> None:
         self._file(repo).write_text(json.dumps(prs, indent=2))
@@ -183,7 +192,9 @@ class LocalForge:
 
     def view(self, repo, number: int) -> dict:
         pr = self._pr(repo, number)
-        return {"base": pr["base"], "head": pr["head"], "head_sha": gitops.remote_sha(repo, pr["head"]),
+        # As on GitHub, a merged PR keeps the head it merged, whatever happens to the branch later.
+        return {"base": pr["base"], "head": pr["head"],
+                "head_sha": pr.get("head_sha") or gitops.remote_sha(repo, pr["head"]),
                 "state": pr["state"], "url": pr["url"]}
 
     def merge(self, repo, number: int, *, subject: str, head_sha: str) -> None:
@@ -193,7 +204,7 @@ class LocalForge:
         scratch = paths.worktrees_dir() / "_forge" / uuid.uuid4().hex
         try:
             gitops.fetch(repo)
-            sha = gitops.squash_keep(repo, f"origin/{pr['base']}", f"origin/{pr['head']}", subject, scratch)
+            sha = gitops.squash_keep(repo, f"origin/{pr['base']}", head_sha, subject, scratch)
             if sha is None:
                 raise ForgeError("merge conflict")
             gitops.push_branch(scratch, pr["base"])
@@ -204,7 +215,7 @@ class LocalForge:
                 gitops.remove_worktree(repo, scratch)
             except gitops.GitError:
                 pass
-        pr["state"] = "MERGED"
+        pr.update(state="MERGED", head_sha=head_sha)
         self._save(repo, prs)
 
 

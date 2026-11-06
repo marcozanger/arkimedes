@@ -541,17 +541,16 @@ def test_commit_file_takes_rel_literally_not_as_a_pathspec(runner, tmp_path, rel
 
 # ---- minors from the same re-review ----
 
-def test_remove_worktree_turns_os_errors_into_git_errors(runner, tmp_path):
+def test_remove_worktree_turns_os_errors_into_git_errors(runner, tmp_path, monkeypatch):
     repo = runner()
     stale = tmp_path / "wt" / "stale"
-    (stale / "ro").mkdir(parents=True)
-    (stale / "ro" / "f").write_text("x")
-    (stale / "ro").chmod(0o555)
-    try:
-        with pytest.raises(gitops.GitError):
-            gitops.remove_worktree(repo, stale)
-    finally:
-        (stale / "ro").chmod(0o755)
+    stale.mkdir(parents=True)
+
+    def denied(path):
+        raise PermissionError(13, "denied", str(path))
+    monkeypatch.setattr(gitops.shutil, "rmtree", denied)
+    with pytest.raises(gitops.GitError, match="cannot remove"):
+        gitops.remove_worktree(repo, stale)
 
 
 def test_changed_files_keeps_whitespace_in_the_first_path(runner):
@@ -642,3 +641,59 @@ def test_cleanup_refusal_does_not_discard_a_successful_squash(runner, tmp_path):
     with m.patch.object(gitops, "squash_keep", keep_then_swap):
         assert gitops.squash(a, "master", "ark/a", "sq", scratch)
     assert scratch.exists()
+
+
+def _rejecting_hook(repo, name, mark):
+    hook = repo / ".git" / "hooks" / name
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text(f'#!/bin/sh\ntouch "{mark}"\nexit 1\n')
+    hook.chmod(0o755)
+
+
+@pytest.mark.parametrize("hook", ["pre-commit", "prepare-commit-msg", "commit-msg", "post-checkout"])
+def test_runner_commits_ignore_the_repos_hooks_and_signing(runner, tmp_path, hook):
+    repo = runner()
+    gitops.push_ref(repo, gitops.rev(repo, "HEAD"), "ark/x")
+    mark = tmp_path / "hook-ran"
+    _rejecting_hook(repo, hook, mark)
+    subprocess.run(["git", "-C", str(repo), "config", "commit.gpgsign", "true"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "gpg.program", "false"], check=True)
+    gitops.commit_file(repo, "ark/x", "docs/x.md", "# D\n", "docs: d", tmp_path / "wt" / "s")
+    gitops.fetch(repo)
+    assert gitops.git(repo, "show", "origin/ark/x:docs/x.md") == "# D"
+    assert gitops.squash(repo, "origin/ark/x", "origin/master", "m", tmp_path / "wt" / "s2")
+    assert not mark.exists()
+
+
+def test_remove_worktree_removes_read_only_content(runner, tmp_path):
+    repo = runner()
+    scratch = tmp_path / "wt" / "s"
+    gitops.squash_keep(repo, "HEAD", "HEAD", "m", scratch)
+    (scratch / "ro" / "deep").mkdir(parents=True)
+    (scratch / "ro" / "deep" / "f").write_text("x\n")
+    (scratch / "ro" / "deep").chmod(0o000)
+    (scratch / "ro").chmod(0o555)
+    gitops.remove_worktree(repo, scratch)
+    assert not scratch.exists()
+    gitops.squash_keep(repo, "HEAD", "HEAD", "m", scratch)   # and nothing stays wedged
+    gitops.remove_worktree(repo, scratch)
+
+
+def test_remove_worktree_does_not_chmod_through_a_symlink(runner, tmp_path):
+    repo = runner()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "f").write_text("x\n")
+    outside.chmod(0o555)
+    scratch = tmp_path / "wt" / "s"
+    gitops.squash_keep(repo, "HEAD", "HEAD", "m", scratch)
+    (scratch / "link").symlink_to(outside)
+    (scratch / "ro").mkdir()
+    (scratch / "ro" / "link").symlink_to(outside)
+    (scratch / "ro").chmod(0o555)
+    try:
+        gitops.remove_worktree(repo, scratch)
+        assert not scratch.exists()
+        assert (outside / "f").exists() and outside.stat().st_mode & 0o777 == 0o555
+    finally:
+        outside.chmod(0o755)

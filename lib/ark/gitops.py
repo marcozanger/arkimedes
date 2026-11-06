@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import tempfile
 from pathlib import Path, PurePosixPath
@@ -12,6 +13,10 @@ from pathlib import Path, PurePosixPath
 from . import paths
 
 GIT_TIMEOUT = 300  # seconds; override per call with git(..., timeout=)
+# For scratch worktrees: the target repo's hooks expect a checkout with its dependencies, and a
+# signature can wait on a terminal. Neither has a say in the runner's own commits.
+_NO_HOOKS = ("-c", "core.hooksPath=/dev/null")
+_NO_SIGN = ("-c", "commit.gpgsign=false")
 _KILL_WAIT = 5  # seconds to wait for git to die after SIGKILL
 
 
@@ -175,6 +180,22 @@ def _belongs_elsewhere(repo, path: Path) -> bool:
         return True
 
 
+def _make_removable(path: Path) -> None:
+    """Give back the owner's permissions on every directory under `path`, which a gate may have
+    left read-only. Never follows a symlink: its target is not ours to change."""
+    def restore(d):
+        try:
+            os.chmod(d, os.stat(d, follow_symlinks=False).st_mode | stat.S_IRWXU)
+        except OSError:
+            pass  # the removal reports what is really in the way
+    restore(path)
+    for root, dirs, _ in os.walk(path):
+        for name in dirs:
+            d = os.path.join(root, name)
+            if not os.path.islink(d):
+                restore(d)
+
+
 def remove_worktree(repo, path: Path) -> None:
     git(repo, "worktree", "remove", "--force", str(path), check=False)
     git(repo, "worktree", "prune", check=False)
@@ -186,7 +207,11 @@ def remove_worktree(repo, path: Path) -> None:
                 raise GitError(f"{path} holds a git checkout that is not a leftover of this repo: "
                                "not deleting it")
             try:
-                shutil.rmtree(path) if path.is_dir() and not path.is_symlink() else path.unlink()
+                if path.is_dir() and not path.is_symlink():
+                    _make_removable(path)
+                    shutil.rmtree(path)
+                else:
+                    path.unlink()
             except OSError as e:
                 raise GitError(f"cannot remove {path}: {e}") from e
             git(repo, "worktree", "prune", check=False)
@@ -220,14 +245,14 @@ def squash_keep(repo, base_ref: str, head_ref: str, message: str, scratch: Path)
     scratch = Path(scratch)
     remove_worktree(repo, scratch)
     scratch.parent.mkdir(parents=True, exist_ok=True)
-    git(repo, "worktree", "add", "-q", "--detach", str(scratch), base_ref)
-    r = _run(scratch, "-c", "merge.ff=true", "merge", "--squash", head_ref)
+    git(repo, *_NO_HOOKS, "worktree", "add", "-q", "--detach", str(scratch), base_ref)
+    r = _run(scratch, *_NO_HOOKS, "-c", "merge.ff=true", "merge", "--squash", head_ref)
     if r.returncode:
         if git(scratch, "ls-files", "-u"):
             return None
         raise GitError(f"git merge --squash {head_ref}: {(r.stderr or r.stdout).strip()}")
     if _run(scratch, "diff", "--cached", "--quiet").returncode:
-        git(scratch, "commit", "-q", "-m", message)
+        git(scratch, *_NO_HOOKS, *_NO_SIGN, "commit", "-q", "-m", message)
     return rev(scratch, "HEAD")
 
 
@@ -266,7 +291,7 @@ def commit_file(repo, branch: str, rel: str, content: str, message: str, scratch
     fetch(repo)
     remove_worktree(repo, scratch)
     scratch.parent.mkdir(parents=True, exist_ok=True)
-    git(repo, "worktree", "add", "-q", "--detach", str(scratch), f"origin/{branch}")
+    git(repo, *_NO_HOOKS, "worktree", "add", "-q", "--detach", str(scratch), f"origin/{branch}")
     try:
         _refuse_symlinks(scratch, rel)
         f = scratch / rel
@@ -277,7 +302,7 @@ def commit_file(repo, branch: str, rel: str, content: str, message: str, scratch
             raise GitError(f"cannot write {rel!r}: {e}") from e
         git(scratch, "--literal-pathspecs", "add", "--", rel)
         if _run(scratch, "diff", "--cached", "--quiet").returncode:
-            git(scratch, "commit", "-q", "-m", message)
+            git(scratch, *_NO_HOOKS, *_NO_SIGN, "commit", "-q", "-m", message)
             push_branch(scratch, branch)
         return rev(scratch, "HEAD")
     finally:
