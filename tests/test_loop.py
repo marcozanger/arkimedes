@@ -1,5 +1,6 @@
 import json
 import os
+import signal
 import sys
 import time
 from pathlib import Path
@@ -927,3 +928,48 @@ def test_a_report_with_a_nul_byte_cannot_wedge_the_job(feature, monkeypatch):
     drive(jobs_settled)
     j = state()["jobs"]["shell"]
     assert j["status"] == "merged" and "errors" not in j
+
+
+# -- the report file is the worker's to write
+
+def _report_at(path):
+    return loop.Ctx.read_report(SimpleNamespace(report=lambda job: path), "x")
+
+
+def test_a_fifo_at_the_report_path_is_not_a_report(tmp_path):
+    f = tmp_path / "r.md"
+    os.mkfifo(f)
+    old = signal.signal(signal.SIGALRM, lambda *_: pytest.fail("reading a FIFO blocked the loop"))
+    signal.alarm(5)
+    try:
+        assert _report_at(f) is None
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old)
+
+
+def test_a_directory_at_the_report_path_is_not_a_report(tmp_path):
+    assert _report_at(tmp_path) is None
+
+
+def test_a_symlink_at_the_report_path_is_not_followed(tmp_path):
+    secret = tmp_path / "secret"
+    secret.write_text("a secret")
+    (tmp_path / "r.md").symlink_to(secret)
+    assert _report_at(tmp_path / "r.md") is None
+
+
+def test_a_missing_report_is_none(tmp_path):
+    assert _report_at(tmp_path / "r.md") is None
+
+
+def test_a_report_with_bad_bytes_is_read_clean(tmp_path):
+    f = tmp_path / "r.md"
+    f.write_bytes(b"ok \x00here \xff end \xc3\xa9")
+    assert _report_at(f) == "ok here � end é"
+
+
+def test_a_huge_report_is_cut(tmp_path):
+    f = tmp_path / "r.md"
+    f.write_bytes(b"x" * (loop.REPORT_MAX + 1000))
+    assert _report_at(f) == "x" * loop.REPORT_MAX

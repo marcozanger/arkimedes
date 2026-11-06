@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import stat
 import time
 import uuid
 from pathlib import Path
@@ -22,6 +24,7 @@ INFRA_QUICK = 120         # seconds: a model process that dies sooner, with no a
 INFRA_LIMIT = 200         # tries before a job stops waiting for the model; about 50 hours at the ceiling
 BACKOFF_FIRST = 15        # seconds before the first retry; it doubles each time
 BACKOFF_MAX = 900         # seconds, the ceiling of that wait
+REPORT_MAX = 1_000_000    # bytes of a worker's report the runner reads
 SKIP_ALERT_AFTER = 3      # integration checks that could not run before Marco hears about it
 
 # What a job's status says is running, and where the job goes back to if that process is not there.
@@ -84,11 +87,18 @@ class Ctx:
         return self.dir / f"{job}.report.md"
 
     def read_report(self, job: str) -> str | None:
-        """A worker writes this file and its bytes are not trusted; a symlink is not a report."""
-        f = self.report(job)
-        if f.is_symlink() or not f.exists():
+        """A worker writes this file and its bytes are not trusted: only a regular file is a report (a symlink
+        could read anything, a FIFO would hang the whole loop), and only its first REPORT_MAX bytes."""
+        try:
+            fd = os.open(self.report(job), os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        except OSError:
             return None
-        return _clean(f.read_text(encoding="utf-8", errors="replace"))
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                return None
+            return _clean(os.read(fd, REPORT_MAX).decode("utf-8", "replace"))
+        finally:
+            os.close(fd)
 
 
 # ---- runs -------------------------------------------------------------------------------------
