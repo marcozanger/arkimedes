@@ -2744,3 +2744,50 @@ def test_a_fifo_as_state_tells_marco_once(feature, must_not_hang):
     os.mkfifo(f)
     seen = [a for _ in range(3) for a in loop.cycle()[1] if a.startswith(f"demo/{SLUG}:")]
     assert len(seen) == 1 and "skipped" in seen[0]
+
+
+# -- across runs
+
+def test_writer_limit_holds_across_repos(feature, ark_home, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_SLEEP", "0.5")  # or the workers never overlap, limit or no limit
+    limits(ark_home, writers_total=1)
+    one = manifest(jobs=[manifest()["jobs"][0]])
+    feature(one, repo="demo", tasks=("T1", "T2"))                 # T3 belongs to no job here
+    feature(one, repo="other", tasks=("T1", "T2"))
+    drive(lambda: jobs_settled("demo") and jobs_settled("other"))
+    assert state("demo")["jobs"]["shell"]["status"] == "merged"
+    assert state("other")["jobs"]["shell"]["status"] == "merged"
+    assert (tmp_path / "fake" / "max_active").read_text() == "1"
+
+
+def test_overlapping_plans_in_one_repo_wait(feature, make_feature, monkeypatch):
+    monkeypatch.setenv("FAKE_SLEEP", "0.3")
+    feature()
+    p2 = make_feature(plan_text(slug="notes-more"), slug="notes-more", create_repo=False)
+    approve(p2, slug="notes-more", at="2026-11-05T11:00:00+00:00")
+    loop.cycle()
+    assert state()["status"] == "running"
+    second = state(slug="notes-more")
+    assert second["status"] == "waiting" and "overlaps the running plan notes-edit" in second["reason"]
+    drive(run_finished)
+    drive(lambda: state(slug="notes-more")["status"] in ("done", "blocked"))
+    assert state(slug="notes-more")["status"] == "done"
+
+
+def test_changed_plan_holds_the_run(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_SLEEP", "1")
+    repo, plan = feature()
+    loop.cycle()
+    assert state()["jobs"]["shell"]["status"] == "working"
+    plan.write_text(plan.read_text() + "\nedited after approval\n")
+    line, alerts, _ = loop.cycle()
+    assert state()["status"] == "held" and "held" in line
+    assert any("changed after its approval" in a for a in alerts)
+    assert "Status: held" in paths.run_file("demo", SLUG).read_text()
+    time.sleep(1.5)
+    loop.cycle()
+    st = state()
+    assert st["status"] == "held" and st["jobs"]["shell"]["status"] == "working"   # receipt waits
+    assert gitops.remote_sha(repo, f"ark/{SLUG}-shell") is None
+    d = paths.run_dir("demo", SLUG)
+    assert proc.finished(d) == ["shell.worker"]
