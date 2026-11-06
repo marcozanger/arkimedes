@@ -1,3 +1,7 @@
+import os
+
+import pytest
+
 from ark import paths
 
 
@@ -51,3 +55,26 @@ def test_runner_paths(ark_home, tmp_path, monkeypatch):
     assert paths.run_dir("muscleapp/mobile", "x") == ark_home / "runs/muscleapp/mobile/x"
     assert paths.worktrees_dir() == tmp_path / "wt"
     assert (paths.code_dir() / "lib/ark/paths.py").exists()
+
+
+def open_fds():
+    return len(os.listdir("/dev/fd"))
+
+
+@pytest.mark.parametrize("plant", [lambda p: p.mkdir(), os.mkfifo, lambda p: p.symlink_to("/etc/hosts")],
+                         ids=["directory", "fifo", "link"])
+def test_whatever_is_not_a_regular_file_refuses_and_leaks_no_descriptor(tmp_path, plant):
+    plant(tmp_path / "x.proc")
+    before = open_fds()
+    for _ in range(20):
+        with pytest.raises(OSError):
+            paths.read_regular(tmp_path / "x.proc")
+    assert open_fds() == before
+
+
+def test_read_regular_of_a_file_closes_it(tmp_path):
+    (tmp_path / "f").write_bytes(b"hello")
+    before = open_fds()
+    for _ in range(20):
+        assert paths.read_regular(tmp_path / "f", 2) == b"he"
+    assert open_fds() == before

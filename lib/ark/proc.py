@@ -12,6 +12,10 @@ A stop from Marco wins over whoever else has a word on how the process ended: th
 wrapper gone and reap it while the stop waits for the group, and the process can end on its own just
 before the signal. The mark holds until the loop has the result safely on disk (forget_stop).
 
+A stop can cross the loop's consume. The stop writes its mark and then looks for `.proc`; consume removes
+`.proc` and then looks for the mark. So a stop that still saw `.proc` always counts, and one that did not
+cannot know whether consume saw its mark: it says so, and the job may end either way.
+
 The wrapper leads its own process group. Three rules keep signals where they belong:
 - A pid alone proves nothing after a restart: the runner signals a group only while its leader is
   the wrapper it started, same start time and same command as `.proc` recorded. A reused pid means
@@ -113,8 +117,11 @@ def stop_requested(run_dir, name: str) -> bool:
     """Did Marco stop this process? The mark names the pid it was for, so an older process's mark says
     nothing about a newer one. With no readable `.proc` to compare, the mark counts: it fails towards stopping."""
     run_dir = Path(run_dir)
+    return _marked(run_dir, name, _read(run_dir / f"{name}.proc"))
+
+
+def _marked(run_dir: Path, name: str, info: dict | None) -> bool:
     mark = _read(_mark(run_dir, name))
-    info = _read(run_dir / f"{name}.proc")
     return mark is not None and (info is None or mark.get("pid") == info["pid"])
 
 
@@ -124,8 +131,9 @@ def forget_stop(run_dir, name: str) -> None:
 
 
 def _note_stop(run_dir: Path, name: str) -> bool:
-    """Record Marco's stop before anything can end the process. False if the process was consumed meanwhile:
-    then it is over, the job has moved on and the mark must not stay behind to speak for a later process."""
+    """Record Marco's stop before anything can end the process. True means consume will see the mark (see the
+    top of this file). False if the process was consumed meanwhile: then it is over, and the mark must not stay
+    behind to speak for a later process. Whether consume saw it first cannot be known from here."""
     record = run_dir / f"{name}.proc"
     info = _read(record)
     pid = info["pid"] if info else None
@@ -422,33 +430,45 @@ def stop(run_dir, name: str, reason: str) -> bool:
     return True
 
 
+def _stop_after_the_receipt(r: dict, run_dir: Path, name: str, info: dict | None) -> bool:
+    """A stop that came after the receipt was written rewrites the result. True if this call did it."""
+    if r["reason"] == STOPPED_BY_MARCO or not _marked(run_dir, name, info):
+        return False
+    r.update(reason=STOPPED_BY_MARCO, exit=-15, cause=r["reason"])
+    return True
+
+
 def consume(run_dir, name: str) -> dict | None:
     """Read a receipt and archive it (with its log) in done/; the process is forgotten. None if there is
     no receipt, and then nothing changes. A crash at any step is safe: the steps repeat with the same
     result and the same archive name until `.proc` goes. That unlink is the commit: without a `.proc`
-    the process is no longer listed, and a receipt left behind is invisible until start() clears it."""
+    the process is no longer listed, and a receipt left behind is invisible until start() clears it.
+    A stop from Marco is looked for on both sides of that unlink: the look after it closes the race with a stop
+    (see the top of this file), the look before it keeps the archive right in the usual case."""
     run_dir = Path(run_dir)
     receipt = run_dir / f"{name}.receipt.json"
     if not receipt.exists():
         return None
     r = {"name": name, "exit": -1, "reason": "unreadable receipt", "result": "", "usd": None, "session": None,
          "is_error": None, "end": None, **(_read(receipt) or {})}
-    info = _read(run_dir / f"{name}.proc") or {}
-    r["meta"], r["start"] = info.get("meta", {}), info.get("start")
+    info = _read(run_dir / f"{name}.proc")
+    known = info or {}
+    r["meta"], r["start"] = known.get("meta", {}), known.get("start")
     done = run_dir / "done"
     done.mkdir(exist_ok=True)
     end = r["end"]
     if not (isinstance(end, (int, float)) and math.isfinite(end)):
         r.update(reason="unreadable receipt", exit=-1, end=None)
         end = None
-    if r["reason"] != STOPPED_BY_MARCO and stop_requested(run_dir, name):  # it came after that receipt was written
-        r.update(reason=STOPPED_BY_MARCO, exit=-15, cause=r["reason"])
+    _stop_after_the_receipt(r, run_dir, name, info)
     stamp = f"{name}-{int(end * 1e9) if end is not None else time.time_ns()}"
-    _atomic(done / f"{stamp}.json", {**r, "proc": info})
+    _atomic(done / f"{stamp}.json", {**r, "proc": known})
     log = run_dir / f"{name}.log"
     if log.exists():
         log.replace(done / f"{stamp}.log")
     (run_dir / f"{name}.proc").unlink(missing_ok=True)
+    if _stop_after_the_receipt(r, run_dir, name, info):
+        _atomic(done / f"{stamp}.json", {**r, "proc": known})
     receipt.unlink(missing_ok=True)
     child = _children.pop(str(run_dir / name), None)
     if child is not None:
@@ -501,19 +521,25 @@ def _stop_cli(d: Path, job: str) -> int:
                          "puede seguir vivo; revisalo a mano. El job queda bloqueado.")
             continue
         left = (_read(d / f"{n}.receipt.json") or {}).get("survivors")
+        had_receipt = (d / f"{n}.receipt.json").exists()  # before `.proc`: consume removes `.proc` first
+        gone = not os.path.lexists(d / f"{n}.proc")
+        marked = stop_requested(d, n)
         if ok:
             stopped.append(n)
             if left:
                 notes.append(f"ojo: {n}: se mandó SIGTERM y SIGKILL, pero quedan procesos del grupo vivos; "
                              "revisalos a mano.")
+        elif gone and not marked:                         # it crossed consume, which may or may not have seen the mark
+            notes.append(f"{n}: terminó justo mientras lo detenías y no se puede saber si el pedido llegó a tiempo: "
+                         "el job puede quedar bloqueado o seguir su curso. Revisá su estado con `ark status`.")
         elif left:
             notes.append(f"ojo: {n}: el proceso principal ya no estaba, pero quedan procesos de su grupo "
                          "que no se pudieron verificar; no se mandó ninguna señal. El job queda bloqueado.")
-        elif not (d / f"{n}.receipt.json").exists():
+        elif not had_receipt and not gone:
             notes.append(f"{n}: no se pudo verificar qué proceso es (ps no respondió); no se mandó ninguna señal. "
                          "El pedido quedó anotado: cuando termine, el job queda bloqueado. "
                          "Reintentá en unos segundos para detenerlo ya.")
-        elif stop_requested(d, n):                        # it had already ended: the job still ends here
+        elif marked:                                      # it had already ended: the job still ends here
             stopped.append(n)
     if stopped:
         print("detenido: " + ", ".join(stopped))

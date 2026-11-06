@@ -851,3 +851,139 @@ def test_a_fifo_as_the_stop_mark_is_no_mark(tmp_path, must_not_hang):
     wait_receipt(tmp_path, "j.worker")
     os.mkfifo(tmp_path / "j.worker.stop")
     assert proc.consume(tmp_path, "j.worker")["reason"] == ""
+
+
+# ---- a stop that crosses the loop's consume: the CLI never claims what did not happen -------------
+#
+# stop writes its mark, then looks for `.proc`. consume removes `.proc`, then looks for the mark. So at least
+# one sees the other: a stop that saw `.proc` always counts, and one that did not cannot know.
+
+UNKNOWABLE = "no se puede saber"
+
+
+def ended_with_a_natural_receipt(d):
+    proc.start(d, "j.worker", ["sh", "-c", "echo 'STATUS: DONE'"], cwd=d, env=dict(os.environ), minutes=5)
+    wait_receipt(d, "j.worker")
+
+
+def run_before_proc_goes(monkeypatch, action):
+    """Run `action` inside consume: after its first look at the mark, just before it removes `.proc`."""
+    real = Path.unlink
+
+    def unlink(self, *a, **k):
+        if self.name == "j.worker.proc":
+            monkeypatch.setattr(Path, "unlink", real)
+            action()
+        return real(self, *a, **k)
+    monkeypatch.setattr(Path, "unlink", unlink)
+
+
+def run_around_the_mark(monkeypatch, action, before_write=False):
+    """Run `action` inside the stop, just before or just after the write of its mark."""
+    real = proc._atomic
+
+    def atomic(path, data):
+        if path.name != "j.worker.stop":
+            return real(path, data)
+        monkeypatch.setattr(proc, "_atomic", real)
+        if before_write:
+            action()
+        real(path, data)
+        if not before_write:
+            action()
+    monkeypatch.setattr(proc, "_atomic", atomic)
+
+
+def test_a_stop_landing_just_before_consume_removes_the_proc_really_stops_the_job(ark_home, capsys, monkeypatch):
+    """The 'detenido' that was false: said after consume's only check, and the job followed the natural receipt."""
+    d = paths.run_dir("demo", "x")
+    ended_with_a_natural_receipt(d)
+    said = {}
+
+    def stop_now():
+        said["code"], said["out"] = stop_cli(ark_home, capsys)
+    run_before_proc_goes(monkeypatch, stop_now)
+
+    r = proc.consume(d, "j.worker")
+    assert said["code"] == 0 and "detenido: j.worker" in said["out"]
+    assert (r["reason"], r["exit"], r["cause"]) == (STOPPED, -15, "")
+    assert "STATUS: DONE" in r["result"]
+    archived = [json.loads(f.read_text()) for f in (d / "done").glob("j.worker-*.json")]
+    assert len(archived) == 1 and archived[0]["reason"] == STOPPED          # what is kept says the same
+    assert proc.stop_requested(d, "j.worker")                               # until the loop has saved the result
+
+
+def test_a_stop_that_saw_the_proc_gone_while_consume_missed_its_mark_says_it_cannot_tell(ark_home, capsys, monkeypatch):
+    """The job follows its natural receipt here. The CLI may neither say 'detenido' nor blame ps."""
+    d = paths.run_dir("demo", "x")
+    ended_with_a_natural_receipt(d)
+    consumed = {}
+
+    def consume_now():
+        consumed["r"] = proc.consume(d, "j.worker")
+    run_around_the_mark(monkeypatch, consume_now, before_write=True)
+
+    code, out = stop_cli(ark_home, capsys)
+    assert consumed["r"]["reason"] == ""
+    assert code == 1 and UNKNOWABLE in out
+    assert "detenido" not in out and "ps no respondió" not in out and "nada corriendo" not in out
+    assert not (d / "j.worker.stop").exists()                               # it must not speak for a later process
+
+
+def test_a_stop_that_saw_the_proc_gone_while_consume_took_its_mark_blocks_and_says_it_cannot_tell(
+        ark_home, capsys, monkeypatch):
+    """Both see each other: it fails closed. The job ends as stopped, and the CLI still claims nothing."""
+    d = paths.run_dir("demo", "x")
+    ended_with_a_natural_receipt(d)
+    consumed = {}
+
+    def consume_now():
+        consumed["r"] = proc.consume(d, "j.worker")
+    run_around_the_mark(monkeypatch, consume_now)
+
+    code, out = stop_cli(ark_home, capsys)
+    assert consumed["r"]["reason"] == STOPPED
+    assert code == 1 and UNKNOWABLE in out and "detenido" not in out
+
+
+def test_a_stop_between_the_two_unlinks_of_consume_cannot_tell(ark_home, capsys, monkeypatch):
+    """`.proc` is gone, the receipt not yet: 'nada corriendo' would be a guess, consume may yet see the mark."""
+    d = paths.run_dir("demo", "x")
+    ended_with_a_natural_receipt(d)
+    (d / "j.worker.proc").unlink()
+    monkeypatch.setattr(proc, "active", lambda _: ["j.worker"])
+    code, out = stop_cli(ark_home, capsys)
+    assert code == 1 and UNKNOWABLE in out and "nada corriendo" not in out
+
+
+def test_a_stop_in_time_says_detenido_even_if_consume_ends_before_the_cli_looks(ark_home, capsys, monkeypatch):
+    """The mark was seen with `.proc` in place, so it counts, whatever is gone by the time the CLI words it."""
+    d = paths.run_dir("demo", "x")
+    ended_with_a_natural_receipt(d)
+    real = proc.stop
+    consumed = {}
+
+    def stop_then_consume(*a):
+        ok = real(*a)
+        consumed["r"] = proc.consume(d, "j.worker")
+        return ok
+    monkeypatch.setattr(proc, "stop", stop_then_consume)
+    code, out = stop_cli(ark_home, capsys)
+    assert consumed["r"]["reason"] == STOPPED
+    assert code == 0 and "detenido: j.worker" in out and "ps no respondió" not in out
+
+
+def test_consume_second_look_ignores_the_mark_of_an_older_process(tmp_path, monkeypatch):
+    proc.start(tmp_path, "j.worker", ["true"], cwd=tmp_path, env=dict(os.environ), minutes=1)
+    wait_receipt(tmp_path, "j.worker")
+    run_before_proc_goes(monkeypatch, lambda: (tmp_path / "j.worker.stop").write_text(json.dumps({"pid": 1})))
+    assert proc.consume(tmp_path, "j.worker")["reason"] == ""
+
+
+def test_a_directory_as_proc_leaks_no_descriptor_through_the_loops_reads(tmp_path):
+    (tmp_path / "evil.proc").mkdir()
+    before = len(os.listdir("/dev/fd"))
+    for _ in range(30):
+        assert proc._read(tmp_path / "evil.proc") is None
+        assert proc.overdue(tmp_path) == []
+    assert len(os.listdir("/dev/fd")) == before
