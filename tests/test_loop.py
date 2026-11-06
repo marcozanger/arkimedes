@@ -1,0 +1,608 @@
+import json
+import os
+import sys
+import time
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from helpers import approve, job, manifest, plan_text
+
+from ark import forge, gitops, integrate, loop, merge, paths, proc, run
+
+SLUG = "notes-edit"
+
+
+@pytest.fixture
+def feature(runner, make_feature):
+    """Seed a repo, write the plan on the desk and approve it."""
+    def make(m=None, repo="demo", slug=SLUG, tasks=("T1", "T2", "T3")):
+        r = runner(repo)
+        p = make_feature(plan_text(m, tasks=tasks, repo=repo, slug=slug), repo=repo, slug=slug, create_repo=False)
+        approve(p, repo, slug)
+        return r, p
+    return make
+
+
+def state(repo="demo", slug=SLUG):
+    return run.load(repo, slug)
+
+
+def jobs_settled(repo="demo", slug=SLUG):
+    st = state(repo, slug)
+    return bool(st and st["jobs"]) and all(j["status"] in run.TERMINAL for j in st["jobs"].values()) \
+        and not proc.active(paths.run_dir(repo, slug))
+
+
+def drive(until, cycles=400):
+    for _ in range(cycles):
+        loop.cycle()
+        if until():
+            return
+        time.sleep(0.05)
+    raise AssertionError("not reached:\n" + "\n".join(
+        f.read_text() for f in paths.runs_dir().glob("**/*.md")))
+
+
+def test_jobs_merge_in_order(feature):
+    repo, _ = feature()
+    drive(jobs_settled)
+    st = state()
+    assert [j["status"] for j in st["jobs"].values()] == ["merged", "merged"]
+    gitops.fetch(repo)
+    files = gitops.changed_files(repo, st["base_sha"], f"origin/ark/{SLUG}")
+    assert files == ["src/shell/shell.txt", "src/ui/ui.txt"]
+    prs = forge.LocalForge().list(repo)
+    assert [(p["base"], p["head"], p["state"]) for p in prs] == [
+        (f"ark/{SLUG}", f"ark/{SLUG}-shell", "MERGED"), (f"ark/{SLUG}", f"ark/{SLUG}-ui", "MERGED")]
+    log = gitops.git(repo, "log", "--format=%s", f"origin/ark/{SLUG}")
+    assert log.splitlines()[:2] == ["feat: ui", "feat: shell"]
+    assert gitops.git(repo, "rev-parse", "origin/master") == st["base_sha"]     # default branch untouched
+
+
+def test_outside_area_blocks_the_job_and_its_dependents(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_OUTSIDE", "shell")
+    repo, _ = feature()
+    drive(jobs_settled)
+    st = state()
+    assert st["jobs"]["shell"]["status"] == "blocked" and "outside its area" in st["jobs"]["shell"]["reason"]
+    assert st["jobs"]["ui"]["status"] == "blocked"
+    assert gitops.remote_sha(repo, f"ark/{SLUG}-shell") is None                 # never pushed
+
+
+def test_failed_attempt_is_judged_and_retried(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_FAIL", "shell:1")
+    feature()
+    drive(jobs_settled)
+    j = state()["jobs"]["shell"]
+    assert j["status"] == "merged" and j["attempts"] == 2 and j["tier_path"] == ["T1"]
+    assert any("judge: retry" in e for e in state()["events"])
+
+
+def test_review_fix_resumes_the_worker(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_FIX", "shell")
+    feature()
+    drive(jobs_settled)
+    j = state()["jobs"]["shell"]
+    assert j["status"] == "merged" and j["review_rounds"] == 1 and j["attempts"] == 2
+
+
+def test_red_integration_gate_never_merges(feature):
+    repo, _ = feature(manifest(integration_gate="exit 1"))
+    drive(jobs_settled)
+    st = state()
+    assert st["jobs"]["shell"]["status"] == "blocked"
+    assert "integration gate failed twice" in st["jobs"]["shell"]["reason"]
+    assert st["jobs"]["shell"]["attempts"] == 2                                 # sent back once
+    gitops.fetch(repo)
+    assert gitops.rev(repo, f"origin/ark/{SLUG}") == st["base_sha"]
+
+
+def test_allowed_actions():
+    j = {"tier": "T1", "tier_attempts": 1}
+    assert loop.allowed_actions(j) == ["block", "retry", "escalate"]
+    assert loop.allowed_actions({**j, "tier_attempts": 2}) == ["block", "escalate"]
+    assert loop.allowed_actions({"tier": "T2", "tier_attempts": 2}) == ["block"]
+
+
+def test_existing_integration_branch_keeps_the_run_waiting(feature):
+    repo, _ = feature()
+    gitops.push_ref(repo, gitops.rev(repo, "HEAD"), f"ark/{SLUG}")
+    loop.cycle()
+    st = state()
+    assert st["status"] == "waiting" and "already exists" in st["reason"]
+    assert not proc.active(paths.run_dir("demo", SLUG))
+
+
+# ---- beyond the plan's list: each of these is a way an unattended loop could go wrong ------------
+
+def bare(tmp_path, status="working", **over):
+    """A context with no repo behind it, for handlers that decide from a receipt alone."""
+    st = run.new_state({"repo": "demo", "slug": SLUG, "plan": "/nowhere", "sha256": "0" * 64, "approved_at": "t"})
+    mj = job("shell", ["T1"], ["src/shell/**"])
+    st["jobs"]["shell"] = {**run.new_job(mj), "status": status, **over}
+    return SimpleNamespace(st=st, dir=tmp_path, base=f"ark/{SLUG}", mjobs={"shell": mj}, repo=tmp_path,
+                           wt=lambda j: tmp_path / j)
+
+
+def receipt(result="", exit=0, reason="", **over):
+    return {"exit": exit, "reason": reason, "result": result, "usd": None, "session": None, "is_error": False,
+            "meta": {"head": "abc"}, **over}
+
+
+def consume_one(monkeypatch, c, name, r):
+    monkeypatch.setattr(proc, "reap", lambda d: [])
+    monkeypatch.setattr(proc, "finished", lambda d: [name])
+    monkeypatch.setattr(proc, "consume", lambda d, n: r)
+    loop.consume_receipts(c)
+
+
+def limits(ark_home, **values):
+    f = ark_home / "workspace.json"
+    f.write_text(json.dumps({**json.loads(f.read_text()), "limits": values}))
+
+
+def is_gone(pid):
+    for _ in range(100):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+# -- a damaged run state
+
+@pytest.mark.parametrize("damage", ["{not json", "[]", '{"repo": "demo"}', "\xff"])
+def test_a_damaged_state_alerts_once_is_never_replaced_and_stops_no_other_run(feature, damage):
+    feature()
+    feature(repo="other", slug="fine")
+    f = run.state_file("demo", SLUG)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_bytes(damage.encode("latin-1"))
+    before = f.read_bytes()
+    seen = [a for _ in range(3) for a in loop.cycle()[1] if a.startswith(f"demo/{SLUG}:")]
+    assert len(seen) == 1 and "skipped" in seen[0]
+    assert f.read_bytes() == before
+    assert not proc.active(paths.run_dir("demo", SLUG))
+    drive(lambda: jobs_settled("other", "fine"))
+    assert state("other", "fine")["jobs"]["shell"]["status"] == "merged"
+
+
+def test_a_job_of_the_wrong_shape_is_damage(feature):
+    feature()
+    loop.cycle()
+    st = state()
+    st["jobs"]["shell"] = "working"
+    run.state_file("demo", SLUG).write_text(json.dumps(st))
+    assert any("skipped" in a for a in loop.cycle()[1])
+    good = {**st, "jobs": {**st["jobs"], "shell": {**run.new_job(job("shell", [], [])), "status": "working"}}}
+    run.state_file("demo", SLUG).write_text(json.dumps(good))
+    drive(jobs_settled)                                                         # readable again: it goes on
+    assert state()["jobs"]["shell"]["status"] == "merged"
+
+
+# -- leftovers in a worktree
+
+def test_a_retry_waits_for_what_is_still_in_the_worktree(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_FAIL", "shell:1")
+    feature()
+    holders = [4242]
+    monkeypatch.setattr(proc, "cwd_holders", lambda p: holders if Path(p).exists() else [])
+    drive(lambda: "holders_since" in state()["jobs"]["shell"])
+    for _ in range(3):
+        loop.cycle()
+    st = state()
+    j = st["jobs"]["shell"]
+    assert j["status"] == "needs_worker" and j["attempts"] == 1
+    assert len([e for e in st["events"] if "ALERT" in e and "4242" in e]) == 1
+    holders.clear()
+    drive(jobs_settled)
+    j = state()["jobs"]["shell"]
+    assert j["status"] == "merged" and j["attempts"] == 2 and "holders_since" not in j
+
+
+@pytest.mark.parametrize("holders", [lambda p: [4242], "error"])
+def test_holders_that_persist_block_the_job_and_not_knowing_counts_as_holders(feature, monkeypatch, holders):
+    feature()
+    def fails(p):
+        raise proc.CwdHoldersError("lsof failed")
+    monkeypatch.setattr(proc, "cwd_holders", fails if holders == "error" else holders)
+    alerts = loop.cycle()[1] + loop.cycle()[1]
+    assert state()["jobs"]["shell"]["status"] == "pending"
+    assert not proc.active(paths.run_dir("demo", SLUG))
+    assert len([a for a in alerts if "shell waits" in a]) == 1
+    monkeypatch.setattr(loop, "HOLDERS_PATIENCE", 0)
+    time.sleep(0.01)
+    loop.cycle()
+    st = state()
+    assert st["jobs"]["shell"]["status"] == "blocked" and "worktree" in st["jobs"]["shell"]["reason"]
+
+
+def test_a_held_job_gives_its_writer_slot_to_the_next(feature, monkeypatch, ark_home):
+    limits(ark_home, writers_per_repo=1)
+    feature(manifest(jobs=[job("shell", ["T1", "T2"], ["src/shell/**"]), job("ui", ["T3"], ["src/ui/**"])]))
+    monkeypatch.setattr(proc, "cwd_holders", lambda p: [4242] if Path(p).name == "shell" else [])
+    loop.cycle()
+    st = state()
+    assert st["jobs"]["shell"]["status"] == "pending" and st["jobs"]["ui"]["status"] == "working"
+    monkeypatch.setattr(proc, "cwd_holders", lambda p: [])
+    drive(jobs_settled)
+
+
+def test_the_writer_limit_holds_across_jobs(feature, ark_home, tmp_path):
+    limits(ark_home, writers_per_repo=1)
+    feature(manifest(jobs=[job("shell", ["T1", "T2"], ["src/shell/**"]), job("ui", ["T3"], ["src/ui/**"])]))
+    drive(jobs_settled)
+    assert (tmp_path / "fake" / "max_active").read_text() == "1"
+
+
+def test_survivors_reach_marco(tmp_path, monkeypatch):
+    c = bare(tmp_path)
+    consume_one(monkeypatch, c, "shell.worker", receipt(exit=-15, reason="timeout: over its time limit", survivors=True))
+    assert len(c.st["alerts"]) == 1 and "outlived" in c.st["alerts"][0] and "timeout" in c.st["alerts"][0]
+    assert c.st["jobs"]["shell"]["status"] == "needs_judge"
+
+
+# -- receipts
+
+@pytest.mark.parametrize("status,kind", [("gating", "gate"), ("reviewing", "review"), ("integrating", "integrate"),
+                                         ("judging", "judge"), ("working", "worker")])
+def test_stopped_by_marco_blocks_whatever_was_running(tmp_path, monkeypatch, status, kind):
+    c = bare(tmp_path, status=status)
+    consume_one(monkeypatch, c, f"shell.{kind}", receipt(exit=-15, reason="stopped by Marco"))
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "blocked" and j["reason"] == "stopped by Marco" and j["tier_attempts"] == 0
+
+
+def test_a_receipt_nothing_waits_for_is_ignored(tmp_path, monkeypatch):
+    c = bare(tmp_path, status="needs_review")
+    consume_one(monkeypatch, c, "shell.gate", receipt(exit=1))
+    assert c.st["jobs"]["shell"]["status"] == "needs_review"
+    assert any("ignored" in e for e in c.st["events"])
+
+
+@pytest.mark.parametrize("usd,total", [(0.5, 0.5), (float("nan"), 0), ("3", 0), (True, 0)])
+def test_only_a_real_cost_is_added(tmp_path, monkeypatch, usd, total):
+    c = bare(tmp_path)
+    consume_one(monkeypatch, c, "shell.worker", receipt(reason="x", usd=usd))
+    assert c.st["jobs"]["shell"]["usd"] == total
+
+
+def test_a_handler_that_raises_fails_the_job_instead_of_losing_it(tmp_path, monkeypatch):
+    c = bare(tmp_path, status="gating")
+    monkeypatch.setitem(loop.HANDLERS, "gate", lambda *a: 1 / 0)
+    consume_one(monkeypatch, c, "shell.gate", receipt())
+    assert c.st["jobs"]["shell"]["status"] == "needs_judge" and "ZeroDivisionError" in c.st["jobs"]["shell"]["failure"]
+
+
+# -- the worker's receipt
+
+@pytest.mark.parametrize("r", [receipt("STATUS: DONE", exit=1), receipt("STATUS: DONE", is_error=True)])
+def test_a_worker_that_ended_in_error_is_a_failure_whatever_it_says(tmp_path, r):
+    c = bare(tmp_path)
+    loop.on_worker(c, "shell", r)
+    assert c.st["jobs"]["shell"]["status"] == "needs_judge" and "error" in c.st["jobs"]["shell"]["failure"]
+
+
+@pytest.mark.parametrize("r,done", [(receipt("STATUS: FAILED — no"), True), (receipt(reason="setup failed: x", exit=1), False),
+                                    (receipt(reason="timeout: over its time limit", exit=-15), False)])
+def test_setup_counts_as_done_only_when_the_process_got_through_it(tmp_path, r, done):
+    c = bare(tmp_path)
+    loop.on_worker(c, "shell", r)
+    assert c.st["jobs"]["shell"]["setup_done"] is done
+
+
+def test_a_file_name_that_is_not_utf8_cannot_break_the_state(tmp_path, monkeypatch):
+    c = bare(tmp_path)
+    monkeypatch.setattr(gitops, "is_clean", lambda wt: True)
+    monkeypatch.setattr(gitops, "changed_files", lambda *a: ["bad\udcff.txt"])
+    loop.on_worker(c, "shell", receipt("STATUS: DONE"))
+    assert c.st["jobs"]["shell"]["status"] == "blocked" and "outside its area" in c.st["jobs"]["shell"]["reason"]
+    run.render(c.st).encode("utf-8")
+
+
+# -- the judge
+
+JUDGE_GARBAGE = [
+    receipt("no json here"), receipt('{"action": "rm -rf /", "note": "x"}'), receipt('{"action": "retry"}'),
+    receipt('{"action": "retry", "note": "x", "extra": 1}'), receipt('{"action": ["retry"], "note": "x"}'),
+    receipt('{"action": "retry", "note": 5}'), receipt('{"action": "retry", "note": "x"}', exit=1),
+    receipt('{"action": "retry", "note": "x"}', is_error=True), receipt('{"action": "retry", "note": "x"}', reason="timeout"),
+]
+
+
+@pytest.mark.parametrize("r", JUDGE_GARBAGE)
+def test_an_unusable_judge_answer_never_runs(tmp_path, r):
+    c = bare(tmp_path, status="judging", tier="T2", tier_attempts=1, failure="red", tier_path=["T2"])
+    loop.on_judge(c, "shell", r)
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "needs_worker" and j["tier"] == "T2" and "no usable answer" in j["note"]
+
+
+def test_a_retry_the_job_has_no_right_to_becomes_an_escalation(tmp_path):
+    c = bare(tmp_path, status="judging", tier="T1", tier_attempts=2, failure="red", session="s")
+    loop.on_judge(c, "shell", receipt('{"action": "retry", "note": "again"}'))
+    j = c.st["jobs"]["shell"]
+    assert j["tier"] == "T2" and j["tier_path"] == ["T1", "T2"] and j["tier_attempts"] == 0 and j["session"] is None
+
+
+def test_an_escalation_at_the_top_tier_becomes_a_block_when_nothing_else_is_left(tmp_path):
+    c = bare(tmp_path, status="judging", tier="T2", tier_attempts=2, failure="red")
+    loop.on_judge(c, "shell", receipt('{"action": "escalate", "note": "x"}'))
+    assert c.st["jobs"]["shell"]["status"] == "blocked"
+
+
+def test_a_judge_that_always_retries_cannot_retry_past_the_limit(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_FAIL", "shell:1,shell:2")
+    feature()
+    drive(jobs_settled)
+    j = state()["jobs"]["shell"]
+    assert j["status"] == "merged" and j["tier_path"] == ["T1", "T2"] and j["attempts"] == 3
+
+
+def test_every_tier_exhausted_blocks_the_job_and_its_dependents(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_FAIL", "shell:1,shell:2,shell:3,shell:4")
+    feature()
+    drive(jobs_settled)
+    st = state()
+    assert st["jobs"]["shell"]["status"] == "blocked" and st["jobs"]["shell"]["attempts"] == 4
+    assert "no retry or escalation left" in st["jobs"]["shell"]["reason"]
+    assert st["jobs"]["ui"]["status"] == "blocked"
+
+
+# -- the reviewer
+
+@pytest.mark.parametrize("r", [
+    receipt("looks fine"), receipt('{"verdict": NaN, "findings": []}'), receipt('{"verdict": ["CLEAN"], "findings": []}'),
+    receipt('{"verdict": "CLEAN"}'), receipt('{"verdict": "CLEAN", "findings": "none"}'),
+    receipt('{"verdict": "CLEAN", "findings": [], "extra": 1}'), receipt('{"verdict": "FIX", "findings": []}'),
+    receipt('{"verdict": "CLEAN", "findings": []}', exit=1), receipt('{"verdict": "CLEAN", "findings": []}', is_error=True),
+])
+def test_an_unusable_review_is_no_verdict(tmp_path, r):
+    c = bare(tmp_path, status="reviewing")
+    loop.on_review(c, "shell", r)
+    assert c.st["jobs"]["shell"]["status"] == "needs_review"
+    assert merge.read_record(tmp_path, "shell", "verdict") is None
+    loop.on_review(c, "shell", r)
+    assert c.st["jobs"]["shell"]["status"] == "blocked"
+
+
+def test_a_real_verdict_forgives_an_earlier_review_error(tmp_path):
+    c = bare(tmp_path, status="reviewing", review_errors=1)
+    loop.on_review(c, "shell", receipt('{"verdict": "CLEAN", "findings": []}'))
+    assert c.st["jobs"]["shell"]["review_errors"] == 0 and c.st["jobs"]["shell"]["status"] == "needs_integrate"
+
+
+# -- the integration gate's receipt
+
+@pytest.mark.parametrize("r", [receipt(exit=-15, reason="timeout: over its time limit"), receipt("", exit=-9),
+                               receipt("Traceback, no JSON", exit=1)])
+def test_a_check_with_no_result_is_not_a_red_gate(tmp_path, r):
+    c = bare(tmp_path, status="integrating")
+    loop.on_integrate(c, "shell", r)
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "needs_integrate" and j["integrate_fails"] == 0 and not j["resume_msg"]
+    assert merge.read_record(tmp_path, "shell", "integrate") is None
+    loop.on_integrate(c, "shell", r)
+    assert j["status"] == "blocked" and "twice without a result" in j["reason"]
+
+
+def test_a_check_that_could_not_run_is_not_charged_to_the_worker(tmp_path):
+    c = bare(tmp_path, status="integrating")
+    line = json.dumps({"ok": False, "base": None, "head": "abc", "reason": "the plan changed after its approval", "tail": ""})
+    for _ in range(loop.ERROR_ALERT_AFTER + 2):
+        loop.on_integrate(c, "shell", receipt(line, exit=1))
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "needs_integrate" and j["integrate_fails"] == 0 and j["attempts"] == 0
+    assert merge.read_record(tmp_path, "shell", "integrate") is None
+    assert len(c.st["alerts"]) == 1
+
+
+@pytest.mark.parametrize("ok", [False, 1, "true"])
+def test_only_a_true_ok_is_green(tmp_path, ok):
+    c = bare(tmp_path, status="integrating")
+    loop.on_integrate(c, "shell", receipt(json.dumps({"ok": ok, "base": "b" * 40, "head": "abc", "reason": "red", "tail": "t"})))
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "needs_worker" and j["integrate_fails"] == 1 and "red" in j["resume_msg"]
+    assert merge.read_record(tmp_path, "shell", "integrate")["ok"] is False
+
+
+def test_a_red_result_clears_the_counts_of_lost_checks(tmp_path):
+    c = bare(tmp_path, status="integrating", integrate_lost=1, integrate_skips=3)
+    loop.on_integrate(c, "shell", receipt(json.dumps({"ok": True, "base": "b" * 40, "head": "abc", "reason": "", "tail": ""})))
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "needs_merge" and j["integrate_lost"] == 0 and j["integrate_skips"] == 0
+
+
+def test_a_red_gate_full_of_non_ascii_still_reaches_the_loop_as_red(feature):
+    gate = f"{sys.executable} -c \"import sys; sys.stdout.buffer.write(b'\\xc3\\xa9' * 3000)\"; exit 1"
+    feature(manifest(integration_gate=gate))
+    drive(jobs_settled)
+    j = state()["jobs"]["shell"]
+    assert j["status"] == "blocked" and j["integrate_fails"] == 2 and j["reason"].endswith("(exit 1)")
+    assert "é" in merge.read_record(paths.run_dir("demo", SLUG), "shell", "integrate")["tail"]
+
+
+def test_the_json_line_of_a_check_always_fits(capsys):
+    out = {"ok": False, "base": "b" * 40, "head": "h" * 40, "reason": "é" * 5000, "tail": "é" * integrate.TAIL}
+    d = json.loads(integrate._json_line(out))
+    assert len(integrate._json_line(out)) <= integrate.MAX_LINE and d["reason"] == "é" * integrate.REASON
+    assert d["tail"] and out["tail"].endswith(d["tail"])
+    assert json.loads(integrate._json_line({**out, "reason": "r", "tail": "plain"}))["tail"] == "plain"
+
+
+def test_stopping_ark_integrate_under_proc_kills_the_gate_and_leaves_no_scratch(feature, tmp_path):
+    marker = tmp_path / "gate.pid"
+    feature(manifest(integration_gate=f"echo $$ > {marker}; sleep 60 & wait"))
+    drive(marker.exists)
+    pid = int(marker.read_text())
+    assert proc.stop(paths.run_dir("demo", SLUG), "shell.integrate", "stopped by Marco")
+    drive(jobs_settled)
+    st = state()
+    assert st["jobs"]["shell"]["status"] == "blocked" and st["jobs"]["shell"]["reason"] == "stopped by Marco"
+    assert is_gone(pid)
+    assert not (paths.worktrees_dir() / "demo" / SLUG / "_integrate-shell").exists()
+
+
+# -- what the processes are started with
+
+def test_every_process_gets_the_push_layer_and_the_check_outlives_its_own_timeout(feature, monkeypatch):
+    repo, _ = feature()
+    started, real = {}, proc.start
+    def spy(run_dir, name, cmd, **kw):
+        started[name] = kw
+        return real(run_dir, name, cmd, **kw)
+    monkeypatch.setattr(proc, "start", spy)
+    drive(jobs_settled)
+    url = gitops.origin_url(repo)
+    for kind in ("worker", "gate", "review", "integrate"):
+        env = started[f"shell.{kind}"]["env"]
+        n = int(env["GIT_CONFIG_COUNT"]) - 1
+        assert env[f"GIT_CONFIG_VALUE_{n}"] == url, kind
+    assert started["shell.integrate"]["minutes"] > integrate.GATE_TIMEOUT / 60
+
+
+# -- merging
+
+def test_a_merge_whose_result_was_never_saved_is_confirmed_before_anything_else(feature):
+    feature()
+    drive(jobs_settled)
+    st = state()
+    st["jobs"]["shell"]["status"] = "needs_merge"                               # the base has moved since (ui merged)
+    c = loop.Ctx(st, forge.LocalForge())
+    loop.do_merge(c, "shell")
+    assert st["jobs"]["shell"]["status"] == "merged"
+
+
+def test_a_worktree_that_will_not_go_does_not_unmerge_a_job(feature, monkeypatch):
+    feature()
+    real = gitops.remove_worktree
+    def stuck(repo, path):                                                      # the forge removes its scratch here too
+        if path.name in ("shell", "ui"):
+            raise gitops.GitError("busy")
+        return real(repo, path)
+    monkeypatch.setattr(gitops, "remove_worktree", stuck)
+    drive(jobs_settled)
+    st = state()
+    assert [j["status"] for j in st["jobs"].values()] == ["merged", "merged"]
+    assert any("its worktree stays" in e for e in st["events"])
+
+
+# -- errors while moving a job
+
+def test_an_error_keeps_retrying_and_alerts_once(tmp_path):
+    c = bare(tmp_path, status="needs_merge")
+    for _ in range(loop.ERROR_ALERT_AFTER * 2):
+        loop._error(c, "shell", OSError("offline"))
+    assert c.st["jobs"]["shell"]["status"] == "needs_merge"
+    assert len(c.st["alerts"]) == 1 and "offline" in c.st["alerts"][0]
+
+
+def test_a_step_that_works_clears_the_error_and_one_job_does_not_stop_the_next(tmp_path, monkeypatch):
+    c = bare(tmp_path, status="needs_merge")
+    c.st["jobs"]["ui"] = {**run.new_job(job("ui", [], [])), "status": "needs_merge"}
+    seen = []
+    def merge_it(c, j):
+        seen.append(j)
+        if j == "shell" and seen.count("shell") == 1:
+            raise forge.ForgeError("gh is down")
+    monkeypatch.setattr(loop, "do_merge", merge_it)
+    slots = loop.Slots([c.st], {"writers_per_repo": 1, "writers_total": 1, "heavy_gates": 1})
+    loop.schedule(c, slots)
+    assert seen == ["shell", "ui"] and c.st["jobs"]["shell"]["errors"] == 1
+    loop.schedule(c, slots)
+    assert "errors" not in c.st["jobs"]["shell"] and "error" not in c.st["jobs"]["shell"]
+
+
+# -- crashes between a process and the saved state
+
+@pytest.mark.parametrize("status,kind,after", [("working", "worker", "needs_worker"), ("gating", "gate", "needs_gate"),
+                                               ("reviewing", "review", "needs_review"),
+                                               ("integrating", "integrate", "needs_integrate"), ("judging", "judge", "needs_judge")])
+def test_a_process_gone_without_a_result_goes_back_a_step(ark_home, status, kind, after, tmp_path):
+    st = bare(tmp_path, status=status).st
+    loop.reconcile(st)
+    assert st["jobs"]["shell"]["status"] == after
+    assert loop.RUNNING[status] == kind
+
+
+@pytest.mark.parametrize("status,kind,after,attempts", [
+    ("pending", "worker", "working", 1), ("needs_worker", "worker", "working", 1), ("needs_gate", "gate", "gating", 0),
+    ("needs_review", "review", "reviewing", 0), ("needs_integrate", "integrate", "integrating", 0),
+    ("needs_judge", "judge", "judging", 0)])
+def test_a_process_the_state_missed_is_adopted_never_started_twice(ark_home, status, kind, after, attempts, tmp_path):
+    st = bare(tmp_path, status=status).st
+    d = paths.run_dir("demo", SLUG)
+    d.mkdir(parents=True)
+    (d / f"shell.{kind}.proc").write_text("{}")
+    loop.reconcile(st)
+    assert st["jobs"]["shell"]["status"] == after and st["jobs"]["shell"]["attempts"] == attempts
+
+
+@pytest.mark.parametrize("status", ["merged", "blocked", "needs_pr", "needs_merge"])
+def test_a_job_with_nothing_to_run_is_left_alone(ark_home, status, tmp_path):
+    st = bare(tmp_path, status=status).st
+    loop.reconcile(st)
+    assert st["jobs"]["shell"]["status"] == status and not st["events"]
+
+
+def test_a_crash_after_the_first_push_does_not_leave_the_run_waiting_forever(feature, monkeypatch):
+    repo, _ = feature()
+    real = gitops.push_ref
+    def dies_after(*a):
+        real(*a)
+        raise gitops.GitError("the laptop went to sleep")
+    monkeypatch.setattr(gitops, "push_ref", dies_after)
+    assert any("runner error" in a for a in loop.cycle()[1])
+    st = state()
+    assert st["status"] == "waiting" and st["base_sha"] == gitops.remote_sha(repo, f"ark/{SLUG}")
+    monkeypatch.setattr(gitops, "push_ref", real)
+    drive(jobs_settled)
+    assert state()["status"] == "running" and state()["jobs"]["shell"]["status"] == "merged"
+
+
+# -- the plan under a run
+
+def test_a_changed_plan_holds_the_run_and_its_return_resumes_it(feature):
+    _, p = feature()
+    loop.cycle()
+    good = p.read_bytes()
+    p.write_bytes(good + b"\nsomeone edited this\n")
+    alerts = loop.cycle()[1] + loop.cycle()[1]
+    assert state()["status"] == "held" and len([a for a in alerts if "plan changed" in a]) == 1
+    for _ in range(40):
+        loop.cycle()
+        if proc.finished(paths.run_dir("demo", SLUG)):
+            break
+        time.sleep(0.1)
+    assert state()["jobs"]["shell"]["status"] == "working"                      # its result waits
+    assert state()["jobs"]["shell"]["head"] is None
+    p.write_bytes(good)
+    drive(jobs_settled)
+    assert state()["status"] == "running" and state()["jobs"]["shell"]["status"] == "merged"
+
+
+def test_a_waiting_run_takes_a_newer_approval(feature):
+    repo, p = feature()
+    gitops.push_ref(repo, gitops.rev(repo, "HEAD"), f"ark/{SLUG}")
+    loop.cycle()
+    first = state()["plan_sha"]
+    p.write_text(plan_text(manifest(integration_gate="true # new"), tasks=("T1", "T2", "T3")))
+    approve(p, "demo", SLUG, at="2026-11-05T11:00:00+00:00")
+    loop.cycle()
+    assert state()["plan_sha"] != first and state()["approved_at"].startswith("2026-11-05T11")
+    gitops.git(repo, "push", "-q", "origin", "--delete", f"ark/{SLUG}")
+    drive(jobs_settled)
+    assert state()["jobs"]["shell"]["status"] == "merged"
+
+
+def test_a_repo_that_went_away_alerts_once(feature, monkeypatch):
+    feature()
+    loop.cycle()
+    with monkeypatch.context() as m:  # never monkeypatch.undo(): it also reverts the fixtures' ARK_HOME
+        m.setattr(paths, "find_repo", lambda name: None)
+        alerts = loop.cycle()[1] + loop.cycle()[1]
+    assert len([a for a in alerts if "not found" in a]) == 1
+    drive(jobs_settled)

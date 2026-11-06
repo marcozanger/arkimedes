@@ -17,6 +17,8 @@ from .plan import load_plan
 
 GATE_TIMEOUT = 3600  # seconds, for setup and the gate together
 TAIL = 3000  # characters of output kept for the worker
+REASON = 500  # characters of a reason in the JSON line
+MAX_LINE = 3900  # characters of the JSON line: see _json_line
 STOPS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
 
 # A step runs in its own session, so nothing sent to this process's group reaches it. The first line
@@ -94,6 +96,17 @@ def _exit_on_stop(signum, frame) -> None:
     raise SystemExit(128 + signum)
 
 
+def _json_line(out: dict) -> str:
+    """The line must reach the loop whole, and proc keeps only the last 4000 characters of a program's
+    output: non-ASCII text grows up to six times when escaped, so what gets cut is the oldest of the tail."""
+    out = {**out, "reason": out["reason"][:REASON]}
+    line = json.dumps(out)
+    while len(line) > MAX_LINE and out["tail"]:
+        out["tail"] = out["tail"][len(out["tail"]) // 2 + 1:]
+        line = json.dumps(out)
+    return line
+
+
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if len(argv) != 3 or "/" not in argv[0]:
@@ -107,7 +120,7 @@ def main(argv=None) -> int:
         out = {"ok": False, "base": None, "head": argv[2], "reason": f"{type(e).__name__}: {e}", "tail": ""}
     for sig, handler in before.items():  # not on the way out of a stop: those signals stay ignored
         signal.signal(sig, handler)
-    print(json.dumps(out))
+    print(_json_line(out))
     return 0 if out["ok"] else 1
 
 

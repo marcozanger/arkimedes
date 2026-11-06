@@ -149,10 +149,17 @@ def _merged_at(v: dict, st: dict, job: str, head: str) -> bool:
     return v["state"] == "MERGED" and v["base"] == base and v["head"] == f"{base}-{job}" and v["head_sha"] == head
 
 
-def _merge_locked(st: dict, job: str, forge, repo) -> None:
+def confirmed(st: dict, job: str, forge, repo) -> bool:
+    """The forge shows this job's PR already merged at its head: an earlier call did it, even if that
+    call ended in an error or a crash."""
     ref = _pr_and_head(st, job)
-    if ref and _merged_at(forge.view(repo, ref[0]), st, job, ref[1]):
-        return  # a rerun: an earlier call merged it, even if it ended in an error or a crash
+    return bool(ref) and _merged_at(forge.view(repo, ref[0]), st, job, ref[1])
+
+
+def _merge_locked(st: dict, job: str, forge, repo) -> None:
+    if confirmed(st, job, forge, repo):
+        return
+    ref = _pr_and_head(st, job)
     reason = check(st, job, forge, repo)
     if reason:
         raise MergeRefused(reason)

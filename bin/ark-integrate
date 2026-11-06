@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# ark-integrate <repo>/<slug> <job> <head-sha> — the integration gate for one job head (§5).
+set -euo pipefail
+CODE="$(cd "$(dirname "$(realpath "$0")")/.." && pwd)"
+export PYTHONPATH="$CODE/lib${PYTHONPATH:+:$PYTHONPATH}"
+exec "$CODE/.venv/bin/python" -m ark.integrate "$@"
