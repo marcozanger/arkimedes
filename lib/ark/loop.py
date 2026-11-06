@@ -9,6 +9,7 @@ import json
 import math
 import os
 import stat
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -25,6 +26,7 @@ INFRA_LIMIT = 200         # tries before a job stops waiting for the model; abou
 BACKOFF_FIRST = 15        # seconds before the first retry; it doubles each time
 BACKOFF_MAX = 900         # seconds, the ceiling of that wait
 REPORT_MAX = 1_000_000    # bytes of a worker's report the runner reads
+DECISIONS_TICKS = 2       # paid ticks a run's close may start before the runner writes the fallback itself
 SKIP_ALERT_AFTER = 3      # integration checks that could not run before Marco hears about it
 
 # What a job's status says is running, and where the job goes back to if that process is not there.
@@ -47,6 +49,21 @@ def _clean(x):
     if isinstance(x, dict):
         return {_clean(k): _clean(v) for k, v in x.items()}
     return x
+
+
+def _read_untrusted(path: Path) -> str | None:
+    """A worker can write in the run folder and its bytes are not trusted: only a regular file counts (a
+    symlink could read anything, a FIFO would hang the whole loop), and only its first REPORT_MAX bytes."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        return _clean(os.read(fd, REPORT_MAX).decode("utf-8", "replace"))
+    finally:
+        os.close(fd)
 
 
 def approvals() -> list[dict]:
@@ -89,18 +106,7 @@ class Ctx:
         return self.dir / f"{job}.report.md"
 
     def read_report(self, job: str) -> str | None:
-        """A worker writes this file and its bytes are not trusted: only a regular file is a report (a symlink
-        could read anything, a FIFO would hang the whole loop), and only its first REPORT_MAX bytes."""
-        try:
-            fd = os.open(self.report(job), os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
-        except OSError:
-            return None
-        try:
-            if not stat.S_ISREG(os.fstat(fd).st_mode):
-                return None
-            return _clean(os.read(fd, REPORT_MAX).decode("utf-8", "replace"))
-        finally:
-            os.close(fd)
+        return _read_untrusted(self.report(job))
 
 
 # ---- runs -------------------------------------------------------------------------------------
@@ -434,7 +440,11 @@ def consume_receipts(c: Ctx) -> bool:
 def _on_receipt(c: Ctx, name: str, r: dict) -> None:
     if name == DECISIONS:
         if c.st["closing"] == "decisions":
-            on_decisions(c, r)
+            try:
+                on_decisions(c, r)
+            except Exception as e:  # the receipt is gone and the tick is paid: publish takes it from here
+                run.event(c.st, f"the decisions tick's answer could not be kept: {type(e).__name__}: {_clean(str(e))}")
+                c.st["closing"] = "publish"
         else:
             run.event(c.st, f"ignored the result of {name}: nothing was waiting for it")
         return
@@ -625,49 +635,119 @@ def maybe_close(c: Ctx) -> None:
     if any(j["status"] not in run.TERMINAL for j in st["jobs"].values()) or proc.active(c.dir):
         return
     if st["closing"] is None:
-        cmd = claude.agent_cmd("tick", claude.TICK_MODEL["decisions"], brief.decisions_prompt(st, _reports(c)),
-                               session=str(uuid.uuid4()), usd=1)
-        proc.start(c.dir, DECISIONS, cmd, cwd=ticks_dir(), env=claude.runner_env("tick"), minutes=15)
-        st["closing"] = "decisions"
-        run.event(st, "every job is merged or blocked: writing the decisions file")
-    elif st["closing"] == "publish":
+        start_decisions(c)
+    elif st["closing"] == "publish" and st.get("closing_wait", 0) <= time.time():
         publish(c)
 
 
+def start_decisions(c: Ctx) -> None:
+    """The tick is paid, so its count and "decisions" reach disk first: a crash after the start finds its
+    process, and one before it is one of the DECISIONS_TICKS. With none left, or if it cannot start, publish
+    has no answer to find and writes the fallback."""
+    st = c.st
+    if st.get("decisions_ticks", 0) >= DECISIONS_TICKS:
+        st["closing"] = "publish"
+        return run.event(st, f"the decisions tick was lost {DECISIONS_TICKS} times: no other is started")
+    st["decisions_ticks"] = st.get("decisions_ticks", 0) + 1
+    st["closing"] = "decisions"
+    run.event(st, "every job is merged or blocked: writing the decisions file")
+    if not _save_now(st):
+        return
+    try:
+        cmd = claude.agent_cmd("tick", claude.TICK_MODEL["decisions"], brief.decisions_prompt(st, _reports(c)),
+                               session=str(uuid.uuid4()), usd=1)
+        proc.start(c.dir, DECISIONS, cmd, cwd=ticks_dir(), env=claude.runner_env("tick"), minutes=15)
+    except Exception as e:
+        st["closing"] = "publish"
+        run.event(st, f"the decisions tick could not start: {type(e).__name__}: {_clean(str(e))}")
+
+
+def _write_decisions(c: Ctx, text: str) -> str:
+    """A new file put in place, never a write through what is there: a worker can plant a symlink in the run
+    folder, and a fixed temporary name could be one too."""
+    text = _clean(text).rstrip() + "\n"
+    fd, tmp = tempfile.mkstemp(dir=c.dir, prefix=".decisions.")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, c.dir / "decisions.md")
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+    return text
+
+
 def on_decisions(c: Ctx, r: dict) -> None:
-    text = (r["result"] or "").strip() if r["exit"] == 0 and not r["reason"] else ""
+    text = _clean(r["result"] or "").strip() if r["exit"] == 0 and not r["reason"] else ""
     if not text.startswith("# Decisions"):
         text = brief.fallback_decisions(c.st, _reports(c))
         run.event(c.st, "the decisions tick gave no file: the runner wrote the fallback")
-    (c.dir / "decisions.md").write_text(text.rstrip() + "\n", encoding="utf-8")
+    _write_decisions(c, text)
     c.st["closing"] = "publish"
 
 
+def _decisions_text(c: Ctx) -> str:
+    """What to commit: the file on_decisions left, or the fallback if it is not there or is not one any more."""
+    text = _read_untrusted(c.dir / "decisions.md")
+    if text and text.startswith("# Decisions"):
+        return text
+    text = _write_decisions(c, brief.fallback_decisions(c.st, _reports(c)))
+    run.event(c.st, "there is no decisions file from the tick: the runner wrote the fallback")
+    return text
+
+
+def _forget_retries(st: dict) -> None:
+    for key in ("closing_error", "closing_errors", "closing_wait"):
+        st.pop(key, None)
+
+
+def _stop_closing(c: Ctx, why: str) -> None:
+    """A finished run is never entered again, so this tells Marco what is left to do by hand."""
+    st = c.st
+    _forget_retries(st)
+    st.update(status="blocked", closing="done")
+    file = f"The decisions file is on ark/{st['slug']}" if st.get("decisions_sha") else \
+        f"The decisions file was not committed; its text, if it could be written, is at {c.dir / 'decisions.md'}"
+    run.alert(st, f"run blocked: {why}. {file}, and no final PR was opened: the rest is by hand")
+
+
+def _closing_failed(c: Ctx, e: Exception) -> None:
+    """Like _error for a job: a git / gh error may heal (a laptop offline), so it is retried, every cycle until
+    Marco hears about it and then at the ceiling, up to the limit. An error not known to heal stops at the alert."""
+    st, text = c.st, _clean(f"{type(e).__name__}: {e}")
+    n = st["closing_errors"] = st.get("closing_errors", 0) + 1
+    if st.get("closing_error") != text:  # not "error": a clean step would wipe it and repeat this event
+        st["closing_error"] = text
+        run.event(st, f"closing: {text} (retrying)")
+    if n >= (INFRA_LIMIT if isinstance(e, STEP_ERRORS) else ERROR_ALERT_AFTER):
+        return _stop_closing(c, f"closing failed {n} times: {text}")
+    if n == ERROR_ALERT_AFTER:
+        run.alert(st, f"closing has been failing for {n} cycles, still retrying, and it stops after {INFRA_LIMIT} "
+                      f"tries: {text}")
+    if n >= ERROR_ALERT_AFTER:
+        st["closing_wait"] = time.time() + BACKOFF_MAX
+
+
 def publish(c: Ctx) -> None:
-    """Commit docs/decisions/<slug>.md on ark/<slug>, open the final PR, finish. Retried each cycle."""
+    """Commit docs/decisions/<slug>.md on ark/<slug>, open the final PR, finish. Retried within _closing_failed."""
     st = c.st
     try:
         if not st.get("decisions_sha"):
             st["decisions_sha"] = gitops.commit_file(
-                c.repo, c.base, f"docs/decisions/{st['slug']}.md", (c.dir / "decisions.md").read_text(encoding="utf-8"),
+                c.repo, c.base, f"docs/decisions/{st['slug']}.md", _decisions_text(c),
                 f"docs: decisions for {st['slug']}", paths.worktrees_dir() / st["repo"] / st["slug"] / "_decisions")
             run.event(st, f"decisions file committed on ark/{st['slug']}")
         merged = any(j["status"] == "merged" for j in st["jobs"].values())
         if merged and not st["final_pr"]:
             st["final_pr"] = c.forge.create(c.repo, base=st["default_branch"], head=c.base,
                                             title=c.plan.manifest["final_pr_title"], body=brief.final_pr_body(st))
-    except STEP_ERRORS as e:
-        text = _clean(f"{type(e).__name__}: {e}")
-        if "symlink" in text and not st.get("decisions_sha"):  # the branch itself is the problem: no retry heals it
-            st.pop("closing_error", None)
-            st.update(status="blocked", closing="done")
-            return run.alert(st, f"run blocked: {text}. The decisions file was not committed and no final PR was "
-                                 f"opened; it is kept at {c.dir / 'decisions.md'}")
-        if st.get("closing_error") != text:  # not "error": a clean step would wipe it and repeat this event
-            st["closing_error"] = text
-            run.event(st, f"closing: {text} (retrying)")
-        return
-    st.pop("closing_error", None)
+    except gitops.PathRefused as e:  # the branch itself is the problem: no retry heals it
+        return _stop_closing(c, _clean(f"{type(e).__name__}: {e}"))
+    except Exception as e:
+        return _closing_failed(c, e)
+    _forget_retries(st)
     all_merged = all(j["status"] == "merged" for j in st["jobs"].values())
     st.update(status="done" if all_merged else "blocked", closing="done")
     pr = f"final PR {st['final_pr']['url']}" if st["final_pr"] else "no job merged, no final PR"
@@ -817,7 +897,15 @@ def _adopt_reapproval(st: dict, a: dict, states: list[dict], forge) -> None:
     earns its checks again under the plan approved now, and a merged job, which cannot, refuses the approval.
     A plan with other jobs, or one running into another run's area, is a new run. A refusal leaves it held
     and he hears why once."""
-    if st["status"] != "held" or a["sha256"] == st["plan_sha"]:
+    if a["sha256"] == st["plan_sha"]:
+        return
+    if st["status"] in ("done", "blocked"):  # only a plan with no run file runs: he must not wait for this one
+        if st.get("reapprove_refused") != a["sha256"]:
+            st["reapprove_refused"] = a["sha256"]
+            run.alert(st, f"this run already finished ({st['status']}): the new approval starts nothing. "
+                          "To run the new plan, approve it under another slug")
+        return
+    if st["status"] != "held":
         return
     plan = Path(a["plan"])
     if not plan.is_file() or sha256_file(plan) != a["sha256"]:  # edited since: not what was approved

@@ -2062,3 +2062,319 @@ def test_a_symlinked_docs_on_the_branch_blocks_the_close_once(feature):
     assert len(mine) == 1 and "decisions.md" in mine[0]
     assert (paths.run_dir("demo", SLUG) / "decisions.md").is_file()         # the text is kept for Marco
     assert not [p for p in forge.LocalForge().list(repo) if p["base"] == "master"]
+
+
+class Crash(BaseException):
+    """The runner dies here: `except Exception` does not see it and nothing is saved."""
+
+
+def decisions_ticks():
+    return runs_of("_decisions", "tick")
+
+
+def closing_alerts(until=run_finished, cycles=400):
+    """Cycle until the run ends, and three more: a finished run is left alone. Every alert seen."""
+    alerts = []
+    for _ in range(cycles):
+        alerts += loop.cycle()[1]
+        if until():
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError(f"not reached: {state()['status']} {state()['closing']} {alerts}")
+    for _ in range(3):
+        alerts += loop.cycle()[1]
+    return alerts
+
+
+def on_default_branch(repo, name, make):
+    make(repo / name)
+    gitops.git(repo, "add", name)
+    gitops.git(repo, "commit", "-q", "-m", f"plant {name}")
+    gitops.git(repo, "push", "-q", "origin", "master")
+
+
+def committed_decisions(repo, slug=SLUG):
+    gitops.fetch(repo)
+    return gitops.git(repo, "show", f"origin/ark/{slug}:docs/decisions/{slug}.md")
+
+
+@pytest.mark.parametrize("raw", ['"# Decisions \\ud800 lone\\n"', '"# Decisions \\u0000 nul\\n"'])
+def test_bytes_a_tick_cannot_store_are_cleaned_and_cost_one_tick(feature, monkeypatch, raw):
+    monkeypatch.setenv("FAKE_DECISIONS", raw)
+    repo, _ = feature()
+    alerts = closing_alerts()
+    st = state()
+    assert st["status"] == "done" and decisions_ticks() == 1
+    assert not [a for a in alerts if "runner error" in a]
+    text = committed_decisions(repo)
+    assert text.startswith("# Decisions") and "\0" not in text
+    gitops.fetch(repo)
+    numstat = gitops.git(repo, "diff", "--numstat", f"origin/ark/{SLUG}~1", f"origin/ark/{SLUG}")
+    assert not numstat.startswith("-")                                      # text, not binary
+
+
+def test_a_decisions_file_that_cannot_be_written_never_pays_a_second_tick(feature, monkeypatch):
+    monkeypatch.setattr(loop, "ERROR_ALERT_AFTER", 3)
+    repo, _ = feature()
+    (paths.run_dir("demo", SLUG) / "decisions.md").mkdir(parents=True)       # no write can replace it
+    alerts = closing_alerts()
+    st = state()
+    assert st["status"] == "blocked" and st["closing"] == "done" and st["final_pr"] is None
+    assert decisions_ticks() == 1
+    mine = [a for a in alerts if "IsADirectoryError" in a or "Is a directory" in a]
+    assert len(mine) == 1 and "run blocked" in mine[0]
+    assert not [a for a in alerts if "runner error" in a]
+
+
+def test_a_tick_that_keeps_being_lost_is_tried_twice_then_the_fallback(feature, monkeypatch):
+    def dies(c, r):
+        raise Crash
+    monkeypatch.setattr(loop, "on_decisions", dies)
+    repo, _ = feature()
+    for _ in range(400):
+        try:
+            loop.cycle()
+        except Crash:
+            pass
+        if run_finished():
+            break
+        time.sleep(0.05)
+    assert state()["status"] == "done" and decisions_ticks() == 2
+    assert "written by the runner" in committed_decisions(repo)
+
+
+def test_a_crash_right_after_starting_the_tick_adopts_it(feature, monkeypatch):
+    real, crashed = loop.proc.start, []
+
+    def start(run_dir, name, *a, **k):
+        out = real(run_dir, name, *a, **k)
+        if name == loop.DECISIONS and not crashed:
+            crashed.append(name)
+            raise Crash
+        return out
+    monkeypatch.setattr(loop.proc, "start", start)
+    repo, _ = feature()
+    for _ in range(400):
+        try:
+            loop.cycle()
+        except Crash:
+            pass
+        if run_finished():
+            break
+        time.sleep(0.05)
+    st = state()
+    assert crashed and st["status"] == "done" and decisions_ticks() == 1
+    assert not [e for e in st["events"] if "ignored the result" in e]
+    assert not [e for e in st["events"] if "written by the runner" in e]
+
+
+def test_a_tick_lost_once_starts_again_through_reconcile(feature, monkeypatch):
+    real, crashed = loop.on_decisions, []
+
+    def once(c, r):
+        if not crashed:
+            crashed.append(1)
+            raise Crash
+        real(c, r)
+    monkeypatch.setattr(loop, "on_decisions", once)
+    repo, _ = feature()
+    for _ in range(400):
+        try:
+            loop.cycle()
+        except Crash:
+            pass
+        if run_finished():
+            break
+        time.sleep(0.05)
+    st = state()
+    assert st["status"] == "done" and decisions_ticks() == 2
+    assert any("gone without a result" in e for e in st["events"])
+    assert "written by the runner" not in committed_decisions(repo)
+
+
+def test_a_tick_that_cannot_start_leaves_the_fallback(feature, monkeypatch):
+    real = loop.proc.start
+
+    def start(run_dir, name, *a, **k):
+        if name == loop.DECISIONS:
+            raise OSError("no more processes")
+        return real(run_dir, name, *a, **k)
+    monkeypatch.setattr(loop.proc, "start", start)
+    repo, _ = feature()
+    alerts = closing_alerts()
+    assert state()["status"] == "done" and decisions_ticks() == 0
+    assert "written by the runner" in committed_decisions(repo)
+    assert not [a for a in alerts if "runner error" in a]
+
+
+def test_a_planted_decisions_symlink_overwrites_nothing(feature, tmp_path):
+    victim = tmp_path / "victim.txt"
+    victim.write_text("safe\n")
+    repo, _ = feature()
+    planted = paths.run_dir("demo", SLUG) / "decisions.md"
+    planted.parent.mkdir(parents=True, exist_ok=True)
+    planted.symlink_to(victim)
+    closing_alerts()
+    assert victim.read_text() == "safe\n"
+    assert state()["status"] == "done" and not planted.is_symlink() and decisions_ticks() == 1
+    assert committed_decisions(repo).startswith("# Decisions — fake")
+
+
+def test_a_symlink_to_a_read_only_file_does_not_stop_the_close(feature, tmp_path):
+    victim = tmp_path / "victim.txt"
+    victim.write_text("safe\n")
+    victim.chmod(0o444)
+    feature()
+    planted = paths.run_dir("demo", SLUG) / "decisions.md"
+    planted.parent.mkdir(parents=True, exist_ok=True)
+    planted.symlink_to(victim)
+    closing_alerts()
+    assert state()["status"] == "done" and victim.read_text() == "safe\n" and decisions_ticks() == 1
+
+
+def test_a_symlink_planted_after_the_tick_is_not_published(feature, monkeypatch, tmp_path):
+    secret = tmp_path / "secret.txt"
+    secret.write_text("# Decisions SECRET\n")
+    real = loop.publish
+
+    def planted_first(c):
+        f = c.dir / "decisions.md"
+        if not f.is_symlink() and not c.st.get("decisions_sha"):
+            f.unlink()
+            f.symlink_to(secret)
+        real(c)
+    monkeypatch.setattr(loop, "publish", planted_first)
+    repo, _ = feature()
+    closing_alerts()
+    text = committed_decisions(repo)
+    assert "SECRET" not in text and "written by the runner" in text
+
+
+@pytest.mark.parametrize("name, make", [
+    (".gitignore", lambda p: p.write_text("docs/\n")),                      # git add refuses an ignored path
+    ("docs", lambda p: p.write_text("a file\n")),                           # not a directory
+])
+def test_a_branch_that_refuses_the_path_blocks_the_close_once(feature, name, make):
+    repo, _ = feature()
+    on_default_branch(repo, name, make)
+    alerts = closing_alerts()
+    st = state()
+    assert st["status"] == "blocked" and st["closing"] == "done" and st["final_pr"] is None
+    mine = [a for a in alerts if "run blocked" in a]
+    assert len(mine) == 1 and "decisions.md" in mine[0]
+    assert "decisions_sha" not in st and (paths.run_dir("demo", SLUG) / "decisions.md").is_file()
+
+
+def fails(monkeypatch, target, name, error, when=lambda k: True):
+    """Make target.name raise for the calls `when` picks by keywords; returns those calls, and undo() which
+    brings the real one back. Only the close commits a file or opens a PR to the default branch, so a test
+    sets this before the run: the close happens in the same cycle the last job's tick ends."""
+    real, calls = getattr(target, name), []
+
+    def broken(*a, **k):
+        if not when(k):
+            return real(*a, **k)
+        calls.append(a)
+        raise error
+    monkeypatch.setattr(target, name, broken)
+    return calls, lambda: monkeypatch.setattr(target, name, real)
+
+
+def test_a_publish_that_keeps_failing_alerts_once_then_stops_at_the_limit(feature, monkeypatch):
+    monkeypatch.setattr(loop, "ERROR_ALERT_AFTER", 3)
+    monkeypatch.setattr(loop, "INFRA_LIMIT", 6)
+    monkeypatch.setattr(loop, "BACKOFF_MAX", 0)
+    calls, _ = fails(monkeypatch, gitops, "commit_file", gitops.GitError("git fetch: origin is gone"))
+    repo, _ = feature()
+    alerts = closing_alerts()
+    st = state()
+    assert len(calls) == 6 and st["status"] == "blocked" and st["closing"] == "done"
+    waiting = [a for a in alerts if "still retrying" in a]
+    stopped = [a for a in alerts if "run blocked" in a]
+    assert len(waiting) == 1 and "origin is gone" in waiting[0]
+    assert len(stopped) == 1 and "decisions.md" in stopped[0]
+    assert "closing_errors" not in st and "closing_error" not in st
+
+
+def test_a_publish_past_the_alert_waits_at_the_ceiling_and_can_still_heal(feature, monkeypatch):
+    monkeypatch.setattr(loop, "ERROR_ALERT_AFTER", 3)
+    calls, undo = fails(monkeypatch, gitops, "commit_file", gitops.GitError("offline"))
+    repo, _ = feature()
+    for _ in range(400):
+        loop.cycle()
+        if len(calls) >= 3:
+            break
+        time.sleep(0.05)
+    for _ in range(5):
+        loop.cycle()
+    assert len(calls) == 3 and state()["status"] == "running"               # not every cycle any more
+    undo()
+    st = state()
+    st["closing_wait"] = 0                                                  # the wait is over
+    run.save(st)
+    alerts = closing_alerts()
+    st = state()
+    assert st["status"] == "done" and st["final_pr"] and not [a for a in alerts if "run blocked" in a]
+    assert not {"closing_errors", "closing_error", "closing_wait"} & set(st)
+
+
+def test_a_final_pr_that_keeps_failing_says_the_file_is_on_the_branch(feature, monkeypatch):
+    monkeypatch.setattr(loop, "ERROR_ALERT_AFTER", 2)
+    monkeypatch.setattr(loop, "INFRA_LIMIT", 3)
+    monkeypatch.setattr(loop, "BACKOFF_MAX", 0)
+    calls, _ = fails(monkeypatch, forge.LocalForge, "create", forge.ForgeError("gh is down"),
+                     when=lambda k: k["base"] == "master")
+    repo, _ = feature()
+    alerts = closing_alerts()
+    st = state()
+    assert st["status"] == "blocked" and st["decisions_sha"] and st["final_pr"] is None
+    mine = [a for a in alerts if "run blocked" in a]
+    assert len(mine) == 1 and f"ark/{SLUG}" in mine[0] and "gh is down" in mine[0]
+    assert committed_decisions(repo).startswith("# Decisions")
+
+
+def test_an_error_nobody_knows_to_heal_stops_the_close_at_the_alert_limit(feature, monkeypatch):
+    monkeypatch.setattr(loop, "ERROR_ALERT_AFTER", 3)
+    calls, _ = fails(monkeypatch, gitops, "commit_file", ValueError("what is this"))
+    repo, _ = feature()
+    alerts = closing_alerts()
+    st = state()
+    assert len(calls) == 3 and st["status"] == "blocked"
+    mine = [a for a in alerts if "what is this" in a]
+    assert len(mine) == 1 and "run blocked" in mine[0]
+    assert not [a for a in alerts if "runner error" in a]
+
+
+def test_the_word_symlink_in_a_passing_error_does_not_block_the_close(feature, monkeypatch):
+    slug = "fix-symlink-race"
+    repo, _ = feature(slug=slug)
+    real, calls = gitops.commit_file, []
+
+    def once(*a, **k):
+        calls.append(a)
+        if len(calls) == 1:
+            raise gitops.GitError(f"git push origin HEAD:ark/{slug}: pre-push hook refused")
+        return real(*a, **k)
+    monkeypatch.setattr(gitops, "commit_file", once)
+    closing_alerts(until=lambda: run_finished_of(slug))
+    st = state(slug=slug)
+    assert st["status"] == "done" and st["final_pr"] and len(calls) == 2
+
+
+def run_finished_of(slug):
+    st = state(slug=slug)
+    return bool(st) and st["status"] in ("done", "blocked")
+
+
+def test_a_new_approval_of_a_finished_run_is_not_silently_ignored(feature):
+    repo, p = feature()
+    closing_alerts()
+    assert state()["status"] == "done"
+    p.write_text(p.read_text() + "\nedited\n")
+    approve(p, "demo", SLUG)
+    alerts = []
+    for _ in range(3):
+        alerts += loop.cycle()[1]
+    mine = [a for a in alerts if "already finished" in a]
+    assert len(mine) == 1 and state()["status"] == "done"

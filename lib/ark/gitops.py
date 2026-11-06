@@ -24,6 +24,10 @@ class GitError(Exception):
     pass
 
 
+class PathRefused(GitError):
+    """The branch's own content will not take this path, so trying again cannot heal it."""
+
+
 def _kill(p: subprocess.Popen) -> None:
     """SIGKILL git's process group, and wait for git a bounded time. Never raises: the caller is
     already reporting the timeout."""
@@ -284,7 +288,7 @@ def _refuse_symlinks(scratch: Path, rel: str) -> None:
     for part in PurePosixPath(rel).parts:
         here = here / part
         if here.is_symlink():
-            raise GitError(f"{rel!r} goes through the symlink {part!r} on the branch")
+            raise PathRefused(f"{rel!r} goes through the symlink {part!r} on the branch")
 
 
 def commit_file(repo, branch: str, rel: str, content: str, message: str, scratch: Path) -> str:
@@ -303,9 +307,16 @@ def commit_file(repo, branch: str, rel: str, content: str, message: str, scratch
         try:
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_text(content, encoding="utf-8")
-        except (OSError, ValueError) as e:  # a file or directory in the way; content that is not text
+        except (FileExistsError, NotADirectoryError, IsADirectoryError) as e:  # a file or directory in the way
+            raise PathRefused(f"cannot write {rel!r}: {e}") from e
+        except (OSError, ValueError) as e:  # a full disk; content that is not text
             raise GitError(f"cannot write {rel!r}: {e}") from e
-        git(scratch, "--literal-pathspecs", "add", "--", rel)
+        try:
+            git(scratch, "--literal-pathspecs", "add", "--", rel)
+        except GitError as e:
+            if _run(scratch, "check-ignore", "-q", "--no-index", "--", rel).returncode == 0:
+                raise PathRefused(f"{rel!r} is ignored on the branch: {e}") from None
+            raise
         if _run(scratch, "diff", "--cached", "--quiet").returncode:
             git(scratch, *_NO_HOOKS, *_NO_SIGN, "commit", "-q", "-m", message)
             push_branch(scratch, branch)

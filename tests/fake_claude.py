@@ -113,7 +113,9 @@ elif ROLE == "reviewer":
     else:
         emit('{"verdict": "CLEAN", "findings": []}')
 elif ROLE == "tick":
-    if "Write the decisions file" in PROMPT:
+    if "Write the decisions file" in PROMPT and os.environ.get("FAKE_DECISIONS"):
+        emit(json.loads(os.environ["FAKE_DECISIONS"]), stream=False)  # raw JSON: it can hold any escape
+    elif "Write the decisions file" in PROMPT:
         emit("# Decisions — fake\n\n## shell — merged\n\n- **D1** · a fake decision · _arkimedes_\n", stream=False)
     else:
         emit('{"action": "retry", "note": "try again"}', stream=False)

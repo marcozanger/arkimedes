@@ -697,3 +697,47 @@ def test_remove_worktree_does_not_chmod_through_a_symlink(runner, tmp_path):
         assert (outside / "f").exists() and outside.stat().st_mode & 0o777 == 0o555
     finally:
         outside.chmod(0o755)
+
+
+@pytest.mark.parametrize("rel, make", [
+    ("docs/x.md", lambda r: (r / ".gitignore").write_text("docs/\n")),       # ignored
+    ("docs/sub/x.md", lambda r: (r / "docs").write_text("a file\n")),        # a file on the way
+    ("docs/x.md", lambda r: (r / "docs" / "x.md" / "y").parent.mkdir(parents=True) or (r / "docs" / "x.md" / "y").write_text("y\n")),  # a directory
+    ("docs/x.md", lambda r: (r / "docs").symlink_to("README.md")),           # a symlink
+])
+def test_commit_file_says_when_the_branch_itself_refuses_the_path(runner, tmp_path, rel, make):
+    repo = runner()
+    make(repo)
+    gitops.git(repo, "add", "-A")
+    gitops.git(repo, "commit", "-q", "-m", "in the way")
+    gitops.git(repo, "push", "-q", "origin", "master")
+    gitops.git(repo, "push", "-q", "origin", "master:refs/heads/ark/x")
+    before = gitops.remote_sha(repo, "ark/x")
+    with pytest.raises(gitops.PathRefused):
+        gitops.commit_file(repo, "ark/x", rel, "x\n", "m", tmp_path / "wt" / "s")
+    assert gitops.remote_sha(repo, "ark/x") == before and not (tmp_path / "wt" / "s").exists()
+
+
+def test_a_tracked_file_under_an_ignored_path_is_still_committed(runner, tmp_path):
+    repo = runner()
+    (repo / "docs").mkdir()
+    (repo / "docs" / "x.md").write_text("old\n")
+    gitops.git(repo, "add", "-A")
+    (repo / ".gitignore").write_text("docs/x.md\n")                          # git add takes this one, being tracked
+    gitops.git(repo, "add", ".gitignore")
+    gitops.git(repo, "commit", "-q", "-m", "ignored but tracked")
+    gitops.git(repo, "push", "-q", "origin", "master:refs/heads/ark/x")
+    gitops.commit_file(repo, "ark/x", "docs/x.md", "new\n", "m", tmp_path / "wt" / "s")
+    assert gitops.git(repo, "show", "origin/ark/x:docs/x.md") == "new"
+
+
+def test_a_failed_push_is_not_a_refused_path(runner, tmp_path, monkeypatch):
+    repo = runner()
+    gitops.git(repo, "push", "-q", "origin", "master:refs/heads/ark/x")
+
+    def no_push(*a):
+        raise gitops.GitError("git push: 'docs/x.md' goes through the symlink")
+    monkeypatch.setattr(gitops, "push_branch", no_push)
+    with pytest.raises(gitops.GitError) as e:
+        gitops.commit_file(repo, "ark/x", "docs/x.md", "x\n", "m", tmp_path / "wt" / "s")
+    assert not isinstance(e.value, gitops.PathRefused)
