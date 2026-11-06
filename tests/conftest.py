@@ -13,11 +13,12 @@ _TRIPWIRE = _SANDBOX / "tripwire"
 (_SANDBOX / "bin").mkdir()
 for _name in ("gh", "claude"):
     _shim = _SANDBOX / "bin" / _name
-    _shim.write_text(f'#!/bin/sh\necho "{_name} $*" >> "{_TRIPWIRE}"\nexit 97\n')
+    _shim.write_text(f'#!/bin/sh\necho "{_name} $*" >> "${{ARK_TRIPWIRE:-{_TRIPWIRE}}}"\nexit 97\n')
     _shim.chmod(0o755)
 os.environ.update(HOME=str(_SANDBOX / "home"), ARK_HOME=str(_SANDBOX / "ark"), ARK_WORKTREES=str(_SANDBOX / "wt"),
                   PATH=f"{_SANDBOX / 'bin'}:{os.environ['PATH']}")
-for _k in ("ARK_CLAUDE", "ARK_FORGE", "ARK_ROLE", "FAKE_STATE", "ANTHROPIC_API_KEY", "GH_TOKEN", "GITHUB_TOKEN"):
+for _k in ("ARK_CLAUDE", "ARK_FORGE", "ARK_ROLE", "ARK_TRIPWIRE", "FAKE_STATE", "ANTHROPIC_API_KEY", "GH_TOKEN", "GITHUB_TOKEN",
+           "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):  # a suite run from a git hook must not act on that repo
     os.environ.pop(_k, None)
 
 import json

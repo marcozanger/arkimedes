@@ -36,10 +36,11 @@ def test_a_child_that_inherits_the_environment_stays_in_the_sandbox():
 
 
 @pytest.mark.parametrize("name", ["gh", "claude"])
-def test_a_real_program_name_hits_the_tripwire_shim(name):
-    assert subprocess.run([name, "pr", "list"], capture_output=True).returncode == 97
-    assert f"{name} pr list" in conftest._TRIPWIRE.read_text()
-    conftest._TRIPWIRE.unlink()                                                 # or this very run would fail
+def test_a_real_program_name_hits_the_tripwire_shim(name, tmp_path):
+    own = tmp_path / "tripwire"                                                 # the session's own record is not ours to touch
+    env = {**os.environ, "ARK_TRIPWIRE": str(own)}
+    assert subprocess.run([name, "pr", "list"], capture_output=True, env=env).returncode == 97
+    assert f"{name} pr list" in own.read_text()
 
 
 def test_the_incident_itself_runs_nothing_real(monkeypatch):
@@ -49,11 +50,11 @@ def test_the_incident_itself_runs_nothing_real(monkeypatch):
     assert loop.cycle(forge=object())[0] == "idle"
 
 
-def child_pytest(tmp_path, body):
+def child_pytest(tmp_path, body, **extra_env):
     """A whole pytest session under the real conftest, with its own sandbox."""
     (tmp_path / "test_probe.py").write_text(body)
     code = conftest.CODE
-    env = {**os.environ, "PYTHONPATH": f"{code / 'tests'}:{code / 'lib'}"}
+    env = {**os.environ, "PYTHONPATH": f"{code / 'tests'}:{code / 'lib'}", **extra_env}
     return subprocess.run(
         [sys.executable, "-m", "pytest", "-c", str(code / "pytest.ini"), "--rootdir", str(tmp_path), "-o", "addopts=",
          "--confcutdir", str(tmp_path), "-p", "conftest", "-p", "no:cacheprovider", "--basetemp", str(tmp_path / "base"),
@@ -100,3 +101,18 @@ def test_a_swallowed_call_to_a_real_program_still_fails_the_session(tmp_path, na
     body = f'import subprocess\ndef test_it():\n    subprocess.run(["{name}", "x"], capture_output=True)\n'
     r = child_pytest(tmp_path, body)
     assert r.returncode == 1 and "1 passed" in r.stdout and f"{name} x" in r.stdout + r.stderr, r.stdout + r.stderr
+
+
+def test_the_guards_own_test_does_not_erase_what_another_test_tripped(tmp_path):
+    body = ('import subprocess\n'
+            'def test_swallowed():\n    subprocess.run(["gh", "pr", "merge", "1"], capture_output=True)\n'
+            'from test_suite_guard import test_a_real_program_name_hits_the_tripwire_shim\n')
+    r = child_pytest(tmp_path, body)
+    assert r.returncode == 1 and "gh pr merge 1" in r.stdout + r.stderr, r.stdout + r.stderr
+
+
+@pytest.mark.parametrize("var", ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"])
+def test_a_suite_run_from_a_git_hook_does_not_inherit_its_repo(tmp_path, var):
+    body = f'import os\ndef test_it():\n    assert "{var}" not in os.environ\n'
+    r = child_pytest(tmp_path, body, **{var: str(tmp_path / "elsewhere")})
+    assert r.returncode == 0, r.stdout + r.stderr
