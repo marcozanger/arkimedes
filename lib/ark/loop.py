@@ -709,6 +709,40 @@ def step(st: dict, states: list[dict], forge, slots: Slots) -> None:
     schedule(c, slots)
 
 
+def _adopt_reapproval(st: dict, a: dict, states: list[dict]) -> None:
+    """Marco edited a held run's plan and approved it again: that releases it, if the new plan still
+    describes this run. A plan with other jobs, or one running into another run's area, is a new run, so
+    it stays held and he hears why once. What a job already earned stays valid: it is bound to its head,
+    and merge.check looks at the head against the new plan's area."""
+    if st["status"] != "held" or a["sha256"] == st["plan_sha"]:
+        return
+    plan = Path(a["plan"])
+    if not plan.is_file() or sha256_file(plan) != a["sha256"]:  # edited since: not what was approved
+        return
+    why, area = "", []
+    problems = validate(plan, approved=True)
+    if problems:
+        why = f"it does not validate: {problems[0].message}"
+    else:
+        jobs = load_plan(plan).manifest["jobs"]
+        area = [g for j in jobs for g in j["area"]]
+        if {j["id"] for j in jobs} != set(st["jobs"]):
+            why = "it changes the run's jobs"
+        for o in states:
+            if not why and o is not st and o["repo"] == st["repo"] and o["status"] in ("running", "held") \
+                    and areas_overlap(area, o.get("area") or []):
+                why = f"its area overlaps the running plan {o['slug']}"
+    if why:
+        if st.get("reapprove_refused") != a["sha256"]:
+            st["reapprove_refused"] = a["sha256"]
+            run.alert(st, f"it cannot take the new approval: {why}. It stays held until the approved plan is "
+                          "back; for a different run, approve under another slug")
+        return
+    st.pop("reapprove_refused", None)
+    st.update(plan=a["plan"], plan_sha=a["sha256"], approved_at=a["approved_at"], area=area)
+    run.event(st, f"approved again ({a['sha256'][:8]}): the run takes the new plan")
+
+
 def status_line(states: list[dict]) -> str:
     live = [s for s in states if s["status"] not in ("done", "blocked")]
     finished = len(states) - len(live)
@@ -755,9 +789,10 @@ def _guarded(st: dict, key: str, fn) -> None:
 def cycle(forge=None) -> tuple[str, list[str], bool]:
     """One pass. Returns (status line, alerts to show, whether any run state changed)."""
     forge = forge or forge_mod.get()
-    states, before, alerts = {}, {}, []
+    states, before, alerts, approved = {}, {}, [], {}
     for a in approvals():
         key = (a["repo"], a["slug"])
+        approved[key] = a
         try:
             st = _load(*key)
         except Exception as e:  # never new_state over it: only Marco can say what it should have been
@@ -769,6 +804,8 @@ def cycle(forge=None) -> tuple[str, list[str], bool]:
         states[key] = st or run.new_state(a)
         if states[key]["status"] == "waiting":  # nothing started yet: a newer approval simply replaces the older
             states[key].update(plan=a["plan"], plan_sha=a["sha256"], approved_at=a["approved_at"])
+    for key, st in states.items():
+        _guarded(st, "reapprove_error", lambda st=st, a=approved[key]: _adopt_reapproval(st, a, list(states.values())))
     for st in states.values():
         _guarded(st, "reconcile_error", lambda st=st: reconcile(st))
     slots = Slots(states.values(), paths.load_workspace()["limits"])

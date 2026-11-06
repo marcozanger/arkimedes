@@ -10,6 +10,7 @@ import pytest
 from helpers import approve, job, manifest, plan_text
 
 from ark import forge, gitops, integrate, loop, merge, paths, proc, run
+from ark.plan import sha256_file
 
 SLUG = "notes-edit"
 
@@ -1009,3 +1010,88 @@ def test_a_failed_save_does_not_stop_the_cycle(feature, monkeypatch):
     monkeypatch.setattr(run, "save", lambda st: (_ for _ in ()).throw(KeyError("x")))
     line, alerts, changed = loop.cycle()
     assert changed and any("cannot be saved" in a for a in alerts)
+
+
+# -- approving a held run again
+
+def _hold_and_edit(p, text="\n<!-- edited -->\n"):
+    """Edit the plan under a running run, so the loop holds it."""
+    p.write_text(p.read_text() + text)
+
+
+def test_approving_a_held_run_again_releases_it(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_SLEEP", "1")
+    _, p = feature()
+    loop.cycle()
+    assert state()["status"] == "running"
+    _hold_and_edit(p)
+    _, alerts, _ = loop.cycle()
+    assert state()["status"] == "held" and any("plan changed" in a for a in alerts)
+    approve(p, "demo", SLUG)
+    loop.cycle()
+    st = state()
+    assert st["status"] == "running" and st["plan_sha"] == sha256_file(p)
+    assert any("approved again" in e for e in st["events"])
+    drive(jobs_settled)
+    assert all(j["status"] == "merged" for j in state()["jobs"].values())
+
+
+def test_an_edit_with_no_new_approval_stays_held(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_SLEEP", "1")
+    _, p = feature()
+    loop.cycle()
+    _hold_and_edit(p)
+    for _ in range(3):
+        loop.cycle()
+    assert state()["status"] == "held"
+
+
+def _reapproved_with(p, m, repo="demo", slug=SLUG):
+    p.write_text(plan_text(m, repo=repo, slug=slug))
+    approve(p, repo, slug)
+
+
+def test_a_new_approval_that_changes_the_jobs_stays_held_and_says_so(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_SLEEP", "1")
+    _, p = feature()
+    loop.cycle()
+    old = state()["plan_sha"]
+    _reapproved_with(p, manifest(jobs=[job("shell", ["T1", "T2"], ["src/shell/**"]), job("other", ["T3"], ["other/**"])]))
+    alerts = []
+    for _ in range(4):
+        alerts += loop.cycle()[1]
+    st = state()
+    assert st["status"] == "held" and st["plan_sha"] == old
+    assert sum("cannot take the new approval" in a and "jobs" in a for a in alerts) == 1
+
+
+def test_a_new_approval_that_overlaps_another_run_stays_held(feature, make_feature, monkeypatch):
+    monkeypatch.setenv("FAKE_SLEEP", "1")
+    _, p = feature()
+    other = make_feature(plan_text(manifest(jobs=[job("dbx", ["T1", "T2", "T3"], ["src/c/**"])]), slug="second"),
+                         repo="demo", slug="second", create_repo=False)
+    approve(other, "demo", "second")
+    loop.cycle()
+    assert state(slug="second")["status"] == "running"
+    old = state()["plan_sha"]
+    _reapproved_with(p, manifest(jobs=[job("shell", ["T1", "T2"], ["src/c/**"]), job("ui", ["T3"], ["src/ui/**"], after=["shell"])]))
+    alerts = []
+    for _ in range(3):
+        alerts += loop.cycle()[1]
+    st = state()
+    assert st["status"] == "held" and st["plan_sha"] == old
+    assert sum("cannot take the new approval" in a and "second" in a for a in alerts) == 1
+
+
+def test_an_approval_whose_file_differs_is_not_adopted(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_SLEEP", "1")
+    _, p = feature()
+    loop.cycle()
+    old = state()["plan_sha"]
+    _hold_and_edit(p)
+    approve(p, "demo", SLUG)
+    _hold_and_edit(p, "\n<!-- edited after the approval -->\n")
+    for _ in range(3):
+        loop.cycle()
+    st = state()
+    assert st["status"] == "held" and st["plan_sha"] == old
