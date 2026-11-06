@@ -43,3 +43,49 @@ def test_load_corrupt_raises_not_none(ark_home, content):
     f.write_text(content, encoding="utf-8")
     with pytest.raises(run.StateCorrupt, match="state.json"):
         run.load("r", "s")
+
+
+def _planted(ark_home, name):
+    """The tmp path of a save, as a link a worker planted there."""
+    files = {"state": run.state_file("demo", "notes-edit"), "render": paths.run_file("demo", "notes-edit")}
+    link = files[name].with_name(files[name].name + ".tmp")
+    link.parent.mkdir(parents=True, exist_ok=True)
+    return link, ark_home.parent / "victim"
+
+
+@pytest.mark.parametrize("name", ["state", "render"])
+def test_a_save_does_not_write_through_a_planted_tmp_link(ark_home, name):
+    link, victim = _planted(ark_home, name)
+    victim.write_text("mine")
+    link.symlink_to(victim)
+    run.save(run.new_state(APPROVAL))
+    assert victim.read_text() == "mine"
+    assert run.load("demo", "notes-edit")["slug"] == "notes-edit"
+
+
+@pytest.mark.parametrize("name", ["state", "render"])
+def test_a_save_does_not_create_the_target_of_a_dangling_tmp_link(ark_home, name):
+    link, victim = _planted(ark_home, name)
+    link.symlink_to(victim)
+    run.save(run.new_state(APPROVAL))
+    assert not victim.exists()
+
+
+def test_a_tmp_link_to_a_read_only_file_does_not_stop_a_save(ark_home):
+    link, victim = _planted(ark_home, "state")
+    victim.write_text("mine")
+    victim.chmod(0o444)
+    link.symlink_to(victim)
+    run.save(run.new_state(APPROVAL))
+    assert victim.read_text() == "mine"
+    assert run.load("demo", "notes-edit")["slug"] == "notes-edit"
+
+
+def test_a_failed_write_leaves_no_tmp_behind(ark_home, monkeypatch):
+    def refused(*a):
+        raise OSError("disk says no")
+    monkeypatch.setattr(run.os, "replace", refused)
+    f = run.state_file("demo", "notes-edit")
+    with pytest.raises(OSError, match="disk says no"):
+        run._atomic(f, "text")
+    assert list(f.parent.iterdir()) == []

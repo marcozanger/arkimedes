@@ -213,7 +213,9 @@ def _wrapper(run_dir: Path, name: str, cwd: str, pre: list[str], cmd: list[str])
             _start_watcher()
     except OSError as e:
         code, reason = 127, f"cannot start: {e}"
-    with open(run_dir / f"{name}.log", "wb") as log:
+    log_path = run_dir / f"{name}.log"
+    log_path.unlink(missing_ok=True)  # never through what a worker planted there
+    with os.fdopen(os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644), "wb") as log:
         try:
             for p in pre if not code else ():
                 code = subprocess.call(["sh", "-c", p], cwd=cwd, stdin=subprocess.DEVNULL,

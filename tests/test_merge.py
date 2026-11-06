@@ -1102,3 +1102,21 @@ def test_m5_a_gate_that_leaves_the_top_of_the_worktree_read_only_stays_green_and
     assert integrate.integrate("demo", SLUG, "shell", head)["ok"] is True
     assert not scratch_left()
     assert integrate.integrate("demo", SLUG, "shell", head)["ok"] is True  # no wedge
+
+
+def test_a_record_does_not_write_through_a_planted_tmp_link(tmp_path):
+    d, victim = tmp_path / "run", tmp_path / "victim"
+    d.mkdir()
+    victim.write_text("mine")
+    (d / "shell.gate.json.tmp").symlink_to(victim)
+    merge.record(d, "shell", "gate", {"ok": True, "head": "abc"})
+    assert victim.read_text() == "mine"
+    assert json.loads((d / "shell.gate.json").read_text())["head"] == "abc"
+
+
+def test_a_record_does_not_create_the_target_of_a_dangling_tmp_link(tmp_path):
+    d, victim = tmp_path / "run", tmp_path / "victim"
+    d.mkdir()
+    (d / "shell.gate.json.tmp").symlink_to(victim)
+    merge.record(d, "shell", "gate", {"ok": True, "head": "abc"})
+    assert not victim.exists()

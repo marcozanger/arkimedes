@@ -667,3 +667,35 @@ def test_cwd_holders_does_not_read_a_failure_as_nothing(tmp_path, monkeypatch, c
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: r)
     with pytest.raises(proc.CwdHoldersError):
         proc.cwd_holders(tmp_path)
+
+
+@pytest.mark.parametrize("name", ["shell.gate", "_decisions.tick"])
+def test_output_does_not_go_through_a_planted_log_link(tmp_path, name):
+    d, victim = tmp_path / "run", tmp_path / "victim"
+    d.mkdir()
+    victim.write_text("mine")
+    (d / f"{name}.log").symlink_to(victim)
+    proc.start(d, name, ["sh", "-c", "echo gate-output"], cwd=d, env=dict(os.environ), minutes=1)
+    wait_receipt(d, name)
+    assert victim.read_text() == "mine"
+    assert not (d / f"{name}.log").is_symlink() and (d / f"{name}.log").read_text() == "gate-output\n"
+    assert "gate-output" in proc.consume(d, name)["result"]
+
+
+def test_output_does_not_create_the_target_of_a_dangling_log_link(tmp_path):
+    d, victim = tmp_path / "run", tmp_path / "victim"
+    d.mkdir()
+    (d / "shell.gate.log").symlink_to(victim)
+    proc.start(d, "shell.gate", ["sh", "-c", "echo gate-output"], cwd=d, env=dict(os.environ), minutes=1)
+    wait_receipt(d, "shell.gate")
+    assert not victim.exists()
+
+
+def test_output_does_not_go_into_a_planted_hard_link(tmp_path):
+    d, victim = tmp_path / "run", tmp_path / "victim"
+    d.mkdir()
+    victim.write_text("mine")
+    os.link(victim, d / "shell.gate.log")
+    proc.start(d, "shell.gate", ["sh", "-c", "echo gate-output"], cwd=d, env=dict(os.environ), minutes=1)
+    wait_receipt(d, "shell.gate")
+    assert victim.read_text() == "mine"

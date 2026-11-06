@@ -31,9 +31,7 @@ def record(run_dir, job: str, kind: str, data: dict) -> None:
     """A gate / verdict / integrate result, written by the runner (never by a model)."""
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
-    tmp = run_dir / f"{job}.{kind}.json.tmp"
-    tmp.write_text(json.dumps({**data, "at": run.now()}, indent=2), encoding="utf-8")
-    tmp.replace(run_dir / f"{job}.{kind}.json")
+    run._atomic(run_dir / f"{job}.{kind}.json", json.dumps({**data, "at": run.now()}, indent=2))
 
 
 def drop_records(run_dir, job: str) -> None:
