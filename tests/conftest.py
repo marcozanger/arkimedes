@@ -1,3 +1,25 @@
+import os
+import pwd
+import shutil
+import tempfile
+from pathlib import Path as _Path
+
+# Suite sandbox: plain os.environ, before anything else, so monkeypatch.undo() lands HERE and never on
+# real values. A test that loses its patches sees an empty home and shims named gh and claude.
+_REAL_CLAUDE_DIR = _Path(pwd.getpwuid(os.getuid()).pw_dir).resolve() / ".claude"  # from the OS, not from $HOME
+_SANDBOX = _Path(tempfile.mkdtemp(prefix="ark-suite-")).resolve()
+_TRIPWIRE = _SANDBOX / "tripwire"
+(_SANDBOX / "home").mkdir()
+(_SANDBOX / "bin").mkdir()
+for _name in ("gh", "claude"):
+    _shim = _SANDBOX / "bin" / _name
+    _shim.write_text(f'#!/bin/sh\necho "{_name} $*" >> "{_TRIPWIRE}"\nexit 97\n')
+    _shim.chmod(0o755)
+os.environ.update(HOME=str(_SANDBOX / "home"), ARK_HOME=str(_SANDBOX / "ark"), ARK_WORKTREES=str(_SANDBOX / "wt"),
+                  PATH=f"{_SANDBOX / 'bin'}:{os.environ['PATH']}")
+for _k in ("ARK_CLAUDE", "ARK_FORGE", "ARK_ROLE", "FAKE_STATE", "ANTHROPIC_API_KEY", "GH_TOKEN", "GITHUB_TOKEN"):
+    os.environ.pop(_k, None)
+
 import json
 import subprocess
 
@@ -87,3 +109,25 @@ def runner(ark_home, make_repo, tmp_path, monkeypatch):
         git("remote", "set-head", "origin", "master", cwd=repo)
         return repo
     return seed
+
+
+def _assert_contained():
+    from ark import paths
+    for p in (paths.ark_home(), paths.worktrees_dir()):
+        assert not p.resolve().is_relative_to(_REAL_CLAUDE_DIR), f"a test reached the real home: {p}"
+
+
+@pytest.fixture(autouse=True)
+def _suite_guard():
+    """Checks before and after each test, so a test that drops the env fails even if nothing else looks."""
+    _assert_contained()
+    yield
+    _assert_contained()
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """A shim call inside a try/except would pass its test; the run still fails here."""
+    if _TRIPWIRE.exists():
+        print(f"\nreal program called during the suite:\n{_TRIPWIRE.read_text()}")
+        session.exitstatus = 1
+    shutil.rmtree(_SANDBOX, ignore_errors=True)
