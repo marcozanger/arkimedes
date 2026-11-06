@@ -417,7 +417,6 @@ def _save_now(st: dict) -> None:
 
 
 def consume_receipts(c: Ctx) -> None:
-    proc.reap(c.dir)
     for name in proc.finished(c.dir):
         r = proc.consume(c.dir, name)
         if r is None:
@@ -710,13 +709,12 @@ def step(st: dict, states: list[dict], forge, slots: Slots) -> None:
         if not try_start(st, states):
             return
         _save_now(st)  # the jobs exist now: a crash below finds its worker by them, not by chance
-    d = paths.run_dir(st["repo"], st["slug"])
+    proc.reap(paths.run_dir(st["repo"], st["slug"]))  # first: nothing below can excuse a process from its deadline
     if not plan_ok(st):
         if st["status"] != "held":
             st["status"] = "held"
             run.alert(st, "the plan changed after its approval: nothing new is dispatched. Running "
                           "processes finish; their results wait until the approved plan is back.")
-        proc.reap(d)
         return
     if st["status"] == "held":
         st["status"] = "running"

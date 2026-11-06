@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -1510,3 +1511,16 @@ def test_a_save_that_fails_between_receipts_loses_none_of_them(feature, monkeypa
         m.setattr(run, "save", lambda st: (_ for _ in ()).throw(OSError("disk full")))
         loop.cycle()
     assert proc.finished(d) == []
+
+
+# -- a run whose repo is gone keeps its deadlines
+
+def test_a_run_whose_repo_is_gone_keeps_enforcing_the_time_limits(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_SLEEP", "1")
+    repo, _ = feature()
+    loop.cycle()
+    shutil.rmtree(repo)
+    reaped, real = [], proc.reap
+    monkeypatch.setattr(proc, "reap", lambda d: (reaped.append(d), real(d))[1])
+    alerts = loop.cycle()[1]
+    assert reaped == [paths.run_dir("demo", SLUG)] and any("runner error" in a for a in alerts)
