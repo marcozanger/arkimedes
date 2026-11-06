@@ -22,6 +22,7 @@ INFRA_QUICK = 120         # seconds: a model process that dies sooner, with no a
 INFRA_LIMIT = 200         # tries before a job stops waiting for the model; about 50 hours at the ceiling
 BACKOFF_FIRST = 15        # seconds before the first retry; it doubles each time
 BACKOFF_MAX = 900         # seconds, the ceiling of that wait
+SKIP_ALERT_AFTER = 3      # integration checks that could not run before Marco hears about it
 
 # What a job's status says is running, and where the job goes back to if that process is not there.
 RUNNING = {"working": "worker", "gating": "gate", "reviewing": "review", "integrating": "integrate", "judging": "judge"}
@@ -29,6 +30,18 @@ WAITING = {"worker": "needs_worker", "gate": "needs_gate", "review": "needs_revi
            "integrate": "needs_integrate", "judge": "needs_judge"}
 
 _said: set[tuple] = set()  # what was already alerted about a run with no state to remember it in
+
+
+def _clean(x):
+    """Text from a model or a worker ends up in argv, in briefs and in the state: a NUL or a lone surrogate
+    there raises on every cycle, for ever. Anything that comes from them passes through here first."""
+    if isinstance(x, str):
+        return x.replace("\0", "").encode("utf-8", "replace").decode("utf-8")
+    if isinstance(x, list):
+        return [_clean(v) for v in x]
+    if isinstance(x, dict):
+        return {_clean(k): _clean(v) for k, v in x.items()}
+    return x
 
 
 def approvals() -> list[dict]:
@@ -75,7 +88,7 @@ class Ctx:
         f = self.report(job)
         if f.is_symlink() or not f.exists():
             return None
-        return f.read_text(encoding="utf-8", errors="replace")
+        return _clean(f.read_text(encoding="utf-8", errors="replace"))
 
 
 # ---- runs -------------------------------------------------------------------------------------
@@ -141,12 +154,13 @@ def try_start(st: dict, others: list[dict]) -> bool:
 # ---- job transitions ---------------------------------------------------------------------------
 
 def fail(c: Ctx, job: str, why: str) -> None:
-    j = c.st["jobs"][job]
+    j, why = c.st["jobs"][job], _clean(why)
     j.update(status="needs_judge", failure=why, tier_attempts=j["tier_attempts"] + 1)
     run.event(c.st, f"{job} failed ({j['tier']}, attempt {j['tier_attempts']} at this tier): {why}")
 
 
 def block(c: Ctx, job: str, why: str) -> None:
+    why = _clean(why)
     c.st["jobs"][job].update(status="blocked", reason=why)
     run.alert(c.st, f"{job} blocked: {why}")
 
@@ -162,19 +176,26 @@ def allowed_actions(j: dict) -> list[str]:
 
 
 def _error(c: Ctx, job: str, e: Exception) -> None:
-    """A git / gh / disk error while moving a job: it stays where it is and is retried next cycle, since
-    a laptop offline must not block anything. Marco hears about it once, if it does not go away."""
-    text = f"{type(e).__name__}: {e}"
+    """A git / gh error while moving a job: it stays where it is and is retried next cycle, since a laptop
+    offline must not block anything. Marco hears about it once, if it does not go away. Any other error
+    is not known to heal, and a job retrying it for ever is a job nobody looks at, so that one blocks."""
+    text = _clean(f"{type(e).__name__}: {e}")
     j = c.st["jobs"][job]
     j["errors"] = j.get("errors", 0) + 1
     if j.get("error") != text:
         j["error"] = text
         run.event(c.st, f"{job}: {text} (retrying)")
     if j["errors"] == ERROR_ALERT_AFTER:
+        if not isinstance(e, (gitops.GitError, forge_mod.ForgeError)):
+            return block(c, job, f"the same step failed for {ERROR_ALERT_AFTER} cycles: {text}")
         run.alert(c.st, f"{job} has been failing for {ERROR_ALERT_AFTER} cycles, still retrying: {text}")
 
 
 # ---- receipts ---------------------------------------------------------------------------------
+
+def _answer(r: dict):
+    return _clean(brief.parse_json_line(r["result"]))
+
 
 def _clean_exit(r: dict) -> bool:
     return not r["reason"] and r["exit"] == 0 and not r.get("is_error")
@@ -214,7 +235,7 @@ def on_worker(c: Ctx, job: str, r: dict) -> None:
 
 def on_gate(c: Ctx, job: str, r: dict) -> None:
     ok = r["exit"] == 0 and not r["reason"]
-    tail = (r["result"] or "")[-2000:]
+    tail = _clean(r["result"] or "")[-2000:]
     merge.record(c.dir, job, "gate", {"ok": ok, "head": r["meta"].get("head"), "exit": r["exit"], "tail": tail})
     if ok:
         c.st["jobs"][job]["status"] = "needs_pr"
@@ -225,7 +246,7 @@ def on_gate(c: Ctx, job: str, r: dict) -> None:
 
 def _review_answer(r: dict) -> tuple[str, list] | None:
     """(verdict, findings) from an answer of exactly the agreed shape; None for anything else."""
-    d = brief.parse_json_line(r["result"]) if _clean_exit(r) else None
+    d = _answer(r) if _clean_exit(r) else None
     if not isinstance(d, dict) or set(d) != {"verdict", "findings"}:
         return None
     verdict, findings = d["verdict"], d["findings"]
@@ -270,7 +291,7 @@ def _integrate_again(c: Ctx, job: str, counter: str) -> int:
 
 def on_integrate(c: Ctx, job: str, r: dict) -> None:
     j = c.st["jobs"][job]
-    out = None if r["reason"] else brief.parse_json_line(r["result"])
+    out = None if r["reason"] else _answer(r)
     if not isinstance(out, dict) or "ok" not in out:  # a stop or a death: nothing was learned about the job
         why = r["reason"] or "ark-integrate gave no result"
         if _integrate_again(c, job, "integrate_lost") >= 2:
@@ -280,13 +301,17 @@ def on_integrate(c: Ctx, job: str, r: dict) -> None:
     ok = out["ok"] is True and isinstance(out.get("base"), str)
     reason = out.get("reason", "")
     if not ok and out.get("base") is None:  # the check never ran: not the worker's doing
-        n = _integrate_again(c, job, "integrate_skips")
+        j["status"] = "needs_integrate"
+        n = _wait_longer(j, "integrate_skips")  # no slot while it waits: the next heavy job is not starved
+        if n >= INFRA_LIMIT:
+            return block(c, job, f"the integration check could not run, {n} times: {reason}")
         if n == 1:
             run.event(c.st, f"{job}: the integration check could not run: {reason}")
-        if n == ERROR_ALERT_AFTER:
-            run.alert(c.st, f"{job}: the integration check could not run for {n} cycles: {reason}")
+        if n == SKIP_ALERT_AFTER:
+            run.alert(c.st, f"{job}: the integration check could not run, {n} times: {reason}")
         return
     j["integrate_lost"] = j["integrate_skips"] = 0
+    j.pop("not_before", None)
     merge.record(c.dir, job, "integrate", {"ok": ok, "base": out.get("base"),
                                            "head": out.get("head") or r["meta"].get("head"),
                                            "reason": reason, "tail": out.get("tail", "")})
@@ -304,7 +329,7 @@ def on_integrate(c: Ctx, job: str, r: dict) -> None:
 
 def _judge_answer(r: dict) -> tuple[object, str]:
     """(action, note) from an answer of exactly the agreed shape; (None, "") for anything else."""
-    d = brief.parse_json_line(r["result"]) if _clean_exit(r) else None
+    d = _answer(r) if _clean_exit(r) else None
     if not isinstance(d, dict) or set(d) != {"action", "note"} or not isinstance(d["note"], str):
         return None, ""
     return d["action"], d["note"].strip()[:1000]
@@ -381,7 +406,7 @@ def consume_receipts(c: Ctx) -> None:
         job, _, kind = name.rpartition(".")
         j = c.st["jobs"].get(job)
         if j is None or kind not in HANDLERS or RUNNING.get(j["status"]) != kind:
-            run.event(c.st, f"ignored the result of {name}: nothing was waiting for it")
+            run.event(c.st, f"ignored the result of {_clean(name)}: nothing was waiting for it")
             continue
         j["usd"] = round(j["usd"] + _usd(r.get("usd")), 4)
         if r.get("survivors"):

@@ -389,15 +389,43 @@ def test_a_check_with_no_result_is_not_a_red_gate(tmp_path, r):
     assert j["status"] == "blocked" and "twice without a result" in j["reason"]
 
 
+SKIPPED = json.dumps({"ok": False, "base": None, "head": "abc", "reason": "the plan changed after its approval", "tail": ""})
+
+
 def test_a_check_that_could_not_run_is_not_charged_to_the_worker(tmp_path):
     c = bare(tmp_path, status="integrating")
-    line = json.dumps({"ok": False, "base": None, "head": "abc", "reason": "the plan changed after its approval", "tail": ""})
-    for _ in range(loop.ERROR_ALERT_AFTER + 2):
-        loop.on_integrate(c, "shell", receipt(line, exit=1))
+    for _ in range(loop.SKIP_ALERT_AFTER + 5):
+        loop.on_integrate(c, "shell", receipt(SKIPPED, exit=1))
     j = c.st["jobs"]["shell"]
     assert j["status"] == "needs_integrate" and j["integrate_fails"] == 0 and j["attempts"] == 0
     assert merge.read_record(tmp_path, "shell", "integrate") is None
     assert len(c.st["alerts"]) == 1
+
+
+def test_a_check_that_could_not_run_gives_its_heavy_slot_to_the_next_job(tmp_path):
+    c = bare(tmp_path, status="integrating", heavy=True)
+    loop.on_integrate(c, "shell", receipt(SKIPPED, exit=1))
+    j = c.st["jobs"]["shell"]
+    assert j["not_before"] > time.time()
+    slots = loop.Slots([c.st], {"writers_per_repo": 1, "writers_total": 1, "heavy_gates": 1})
+    assert loop._next_step(c, "shell", j, slots) is None and slots.heavy == 0
+
+
+def test_a_check_that_never_runs_finally_blocks(tmp_path, monkeypatch):
+    monkeypatch.setattr(loop, "INFRA_LIMIT", 3)
+    c = bare(tmp_path, status="integrating")
+    for _ in range(2):
+        loop.on_integrate(c, "shell", receipt(SKIPPED, exit=1))
+    assert c.st["jobs"]["shell"]["status"] == "needs_integrate"
+    loop.on_integrate(c, "shell", receipt(SKIPPED, exit=1))
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "blocked" and "could not run" in j["reason"]
+
+
+def test_a_check_that_ran_ends_the_waiting(tmp_path):
+    c = bare(tmp_path, status="integrating", integrate_skips=3, not_before=time.time() + 60)
+    loop.on_integrate(c, "shell", receipt(json.dumps({"ok": True, "base": "b" * 40, "head": "abc", "reason": "", "tail": ""})))
+    assert "not_before" not in c.st["jobs"]["shell"] and c.st["jobs"]["shell"]["integrate_skips"] == 0
 
 
 @pytest.mark.parametrize("ok", [False, 1, "true"])
@@ -492,12 +520,24 @@ def test_a_worktree_that_will_not_go_does_not_unmerge_a_job(feature, monkeypatch
 
 # -- errors while moving a job
 
-def test_an_error_keeps_retrying_and_alerts_once(tmp_path):
+@pytest.mark.parametrize("e", [gitops.GitError("offline"), forge.ForgeError("offline")])
+def test_a_git_or_forge_error_keeps_retrying_and_alerts_once(tmp_path, e):
     c = bare(tmp_path, status="needs_merge")
     for _ in range(loop.ERROR_ALERT_AFTER * 2):
-        loop._error(c, "shell", OSError("offline"))
+        loop._error(c, "shell", e)
     assert c.st["jobs"]["shell"]["status"] == "needs_merge"
     assert len(c.st["alerts"]) == 1 and "offline" in c.st["alerts"][0]
+
+
+@pytest.mark.parametrize("e", [ValueError("embedded null byte"), OSError("is a directory")])
+def test_any_other_error_blocks_after_the_limit_because_it_will_not_heal(tmp_path, e):
+    c = bare(tmp_path, status="needs_worker")
+    for _ in range(loop.ERROR_ALERT_AFTER - 1):
+        loop._error(c, "shell", e)
+    assert c.st["jobs"]["shell"]["status"] == "needs_worker" and not c.st["alerts"]
+    loop._error(c, "shell", e)
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "blocked" and str(e) in j["reason"] and len(c.st["alerts"]) == 1
 
 
 def test_a_step_that_works_clears_the_error_and_one_job_does_not_stop_the_next(tmp_path, monkeypatch):
@@ -811,3 +851,79 @@ def test_is_ancestor(feature):
     child = gitops.git(repo, "commit-tree", gitops.git(repo, "rev-parse", "HEAD^{tree}"), "-p", "HEAD", "-m", "c")
     assert gitops.is_ancestor(repo, head, child) and not gitops.is_ancestor(repo, child, head)
     assert not gitops.is_ancestor(repo, "0" * 40, head)
+
+
+# -- text from a model or a worker
+
+BAD_TEXT = [("nul", "a\x00b", "ab"), ("surrogate", "a\ud800b", "a?b")]
+
+
+@pytest.mark.parametrize("name,dirty,clean", BAD_TEXT)
+def test_clean_makes_text_safe_at_every_depth(name, dirty, clean):
+    assert loop._clean(dirty) == clean
+    assert loop._clean({"k": [dirty, {"x": dirty}], "n": 1, "t": None}) == {"k": [clean, {"x": clean}], "n": 1, "t": None}
+    assert loop._clean("é ok\n") == "é ok\n"
+
+
+@pytest.mark.parametrize("name,dirty,clean", BAD_TEXT)
+def test_a_review_finding_with_bad_text_is_stored_clean(tmp_path, name, dirty, clean):
+    c = bare(tmp_path, status="reviewing")
+    loop.on_review(c, "shell", receipt(json.dumps({"verdict": "FIX", "findings": [dirty]})))
+    j = c.st["jobs"]["shell"]
+    assert clean in j["resume_msg"] and dirty not in j["resume_msg"]
+    assert merge.read_record(tmp_path, "shell", "verdict")["findings"] == [clean]
+
+
+@pytest.mark.parametrize("name,dirty,clean", BAD_TEXT)
+def test_a_judge_note_with_bad_text_is_stored_clean(tmp_path, name, dirty, clean):
+    c = bare(tmp_path, status="judging", failure="red", session="s")
+    loop.on_judge(c, "shell", receipt(json.dumps({"action": "retry", "note": dirty})))
+    j = c.st["jobs"]["shell"]
+    assert j["note"] == clean and clean in j["resume_msg"] and dirty not in j["resume_msg"]
+
+
+@pytest.mark.parametrize("name,dirty,clean", BAD_TEXT)
+def test_a_red_check_with_bad_text_is_stored_clean(tmp_path, name, dirty, clean):
+    c = bare(tmp_path, status="integrating")
+    line = json.dumps({"ok": False, "base": "b" * 40, "head": "abc", "reason": dirty, "tail": dirty})
+    loop.on_integrate(c, "shell", receipt(line))
+    assert dirty not in c.st["jobs"]["shell"]["resume_msg"] and clean in c.st["jobs"]["shell"]["resume_msg"]
+    assert merge.read_record(tmp_path, "shell", "integrate")["tail"] == clean
+
+
+@pytest.mark.parametrize("name,dirty,clean", BAD_TEXT)
+def test_a_failure_or_block_with_bad_text_is_stored_clean(tmp_path, name, dirty, clean):
+    c = bare(tmp_path)
+    loop.fail(c, "shell", dirty)
+    assert c.st["jobs"]["shell"]["failure"] == clean
+    loop.block(c, "shell", dirty)
+    assert c.st["jobs"]["shell"]["reason"] == clean and dirty not in c.st["alerts"][0]
+    run.render(c.st).encode("utf-8")
+
+
+@pytest.mark.parametrize("name,dirty,clean", BAD_TEXT)
+def test_a_red_gate_with_bad_text_is_stored_clean(tmp_path, name, dirty, clean):
+    c = bare(tmp_path, status="gating")
+    loop.on_gate(c, "shell", receipt(dirty, exit=1))
+    assert merge.read_record(tmp_path, "shell", "gate")["tail"] == clean
+
+
+@pytest.mark.parametrize("finding", [r'"a\u0000b"', r'"a\ud800b"'])
+def test_a_finding_with_bad_text_cannot_wedge_the_job(feature, monkeypatch, finding):
+    monkeypatch.setenv("FAKE_FIX", "shell")
+    monkeypatch.setenv("FAKE_FINDING", finding)
+    feature()
+    drive(jobs_settled)
+    j = state()["jobs"]["shell"]
+    assert j["status"] == "merged" and j["attempts"] == 2
+
+
+def test_a_report_with_a_nul_byte_cannot_wedge_the_job(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_FAIL", "shell:1")
+    feature()
+    d = paths.run_dir("demo", SLUG)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "shell.report.md").write_bytes(b"before\x00after \xff")
+    drive(jobs_settled)
+    j = state()["jobs"]["shell"]
+    assert j["status"] == "merged" and "errors" not in j

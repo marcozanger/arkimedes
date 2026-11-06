@@ -91,7 +91,8 @@ if ROLE == "worker":
 elif ROLE == "reviewer":
     job = os.environ["ARK_JOB"]
     if listed("FAKE_FIX", job) and bump(f"{job}.review") == 1:
-        emit('one problem\n{"verdict": "FIX", "findings": ["src/x:1 — fix it"]}')
+        finding = os.environ.get("FAKE_FINDING", '"src/x:1 — fix it"')  # raw JSON: it can hold any escape
+        emit('one problem\n{"verdict": "FIX", "findings": [' + finding + ']}')
     else:
         emit('{"verdict": "CLEAN", "findings": []}')
 elif ROLE == "tick":
