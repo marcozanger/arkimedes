@@ -551,6 +551,8 @@ def start_review(c: Ctx, job: str) -> None:
 
 def start_integrate(c: Ctx, job: str) -> None:
     j = c.st["jobs"][job]
+    if j["pr"] and merge.confirmed(c.st, job, c.forge, c.repo):  # a crash lost it: a red check now would pay a worker
+        return _merged(c, job)
     cmd = [str(paths.code_dir() / "bin" / "ark-integrate"), f"{c.st['repo']}/{c.st['slug']}", job, j["head"]]
     env = claude.runner_env("integrate", origin_url=gitops.origin_url(c.repo))  # it runs tests a worker wrote
     # Above the check's own timeout, or a slow gate dies here with no result instead of red with its reason.

@@ -1599,3 +1599,23 @@ def test_a_second_attempt_resumes_in_the_worktree_it_has(feature, monkeypatch):
     drive(jobs_settled)
     j = state()["jobs"]["shell"]
     assert j["status"] == "merged" and j["attempts"] == 2 and j["base"]
+
+
+# -- a merged job stays merged
+
+def test_a_merge_the_state_never_recorded_is_seen_before_the_next_check(at_merge, monkeypatch, tmp_path):
+    repo, st, c = at_merge
+    merge.merge(st, "shell", c.forge, repo)  # then a crash: the state still says it has to be checked
+    st["jobs"]["shell"]["status"] = "needs_integrate"
+    monkeypatch.setattr(proc, "start", lambda *a, **k: pytest.fail("a check of a merged job"))
+    loop.start_integrate(c, "shell")
+    assert st["jobs"]["shell"]["status"] == "merged"
+
+
+def test_a_job_with_no_pr_goes_to_its_check(at_merge, monkeypatch):
+    _, st, c = at_merge
+    started = []
+    monkeypatch.setattr(proc, "start", lambda d, name, *a, **k: started.append(name))
+    st["jobs"]["shell"].update(status="needs_integrate", pr=None)
+    loop.start_integrate(c, "shell")
+    assert st["jobs"]["shell"]["status"] == "integrating" and started == ["shell.integrate"]
