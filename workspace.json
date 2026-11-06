@@ -1,5 +1,5 @@
 {
-  "roots": ["~/Documents/workspace"],
+  "roots": ["~/Documents/workspace", "~/.claude"],
   "exclude": [],
   "limits": { "writers_per_repo": 3, "writers_total": 6, "heavy_gates": 1 },
   "tick_minutes": 15,
