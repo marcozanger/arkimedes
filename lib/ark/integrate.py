@@ -21,8 +21,9 @@ STOPS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
 
 # A step runs in its own session, so nothing sent to this process's group reaches it. The first line
 # ties the step's group to this process: the pipe's end of file means ark-integrate is gone, however it
-# went (SIGKILL included). It is not a job of the shell that runs the command, so `wait` ignores it.
-STEP = '(read _ <&{fd}; kill -9 0) >/dev/null 2>&1 &\nexec sh -c "$1"'
+# went (SIGKILL included). The extra subshell makes it no child of the command, which replaces this
+# shell: neither a `wait` nor a program waiting until it has no children waits for it.
+STEP = '( (read _ <&{fd}; kill -9 0) >/dev/null 2>&1 & )\nexec sh -c "$1"'
 
 
 def _step(cmd: str, cwd, timeout: float, alive_fd: int) -> tuple[subprocess.Popen, str, bool]:

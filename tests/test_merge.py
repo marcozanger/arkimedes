@@ -707,6 +707,15 @@ def test_a_gate_past_the_timeout_is_red_with_its_output_and_its_group_is_killed(
     assert is_gone(int((tmp_path / "pid").read_text()))
 
 
+def test_a_gate_whose_top_process_waits_for_all_its_children_is_not_held_by_the_reader(ready, monkeypatch):
+    """The gate's one command replaces the shell, so it must not inherit the watching reader as a child."""
+    monkeypatch.setattr(integrate, "GATE_TIMEOUT", 5)
+    gate = f"{sys.executable} -c 'import os\ntry:\n    while True: os.wait()\nexcept ChildProcessError: pass'"
+    st, f, repo, d, plan, base = ready(manifest(integration_gate=gate))
+    out = integrate.integrate("demo", SLUG, "shell", st["jobs"]["shell"]["head"])
+    assert out["ok"] is True, out
+
+
 def test_setup_and_gate_share_one_timeout(ready, monkeypatch):
     monkeypatch.setattr(integrate, "GATE_TIMEOUT", 2)
     st, f, repo, d, plan, base = ready(manifest(setup=["sleep 1.5"], integration_gate="sleep 1.5"))
