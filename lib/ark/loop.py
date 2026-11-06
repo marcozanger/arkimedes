@@ -5,13 +5,17 @@ run whose plan changed; consume process receipts; move every job forward within 
 Claude runs only as workers, reviewers and two read-only ticks (judge, decisions)."""
 from __future__ import annotations
 
+import fcntl
+import hashlib
 import json
 import math
 import os
 import stat
+import sys
 import tempfile
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 from . import brief, claude, forge as forge_mod, gitops, integrate, merge, paths, proc, run
@@ -579,7 +583,7 @@ def start_integrate(c: Ctx, job: str) -> None:
     cmd = [str(paths.code_dir() / "bin" / "ark-integrate"), f"{c.st['repo']}/{c.st['slug']}", job, j["head"]]
     env = claude.runner_env("integrate", origin_url=gitops.origin_url(c.repo))  # it runs tests a worker wrote
     # Above the check's own timeout, or a slow gate dies here with no result instead of red with its reason.
-    proc.start(c.dir, f"{job}.integrate", cmd, cwd=c.repo, env=env,
+    proc.start(c.dir, f"{job}.integrate", cmd, cwd=paths.code_dir(), env=env,
                minutes=integrate.GATE_TIMEOUT / 60 + 30, meta={"head": j["head"]})
     j["status"] = "integrating"
 
@@ -1024,6 +1028,7 @@ def _orphans(known, alerts: list[str]) -> None:
 def cycle(forge=None) -> tuple[str, list[str], bool]:
     """One pass. Returns (status line, alerts to show, whether any run state changed)."""
     forge = forge or forge_mod.get()
+    limits = paths.load_workspace()["limits"]  # first: if it raises, no alert was consumed and lost
     states, before, alerts, approved = {}, {}, [], {}
     for a in approvals():
         key = (a["repo"], a["slug"])
@@ -1044,7 +1049,7 @@ def cycle(forge=None) -> tuple[str, list[str], bool]:
         _guarded(st, "reapprove_error", lambda st=st, a=approved[key]: _adopt_reapproval(st, a, list(states.values()), forge))
     for st in states.values():
         _guarded(st, "reconcile_error", lambda st=st: reconcile(st))
-    slots = Slots(states.values(), paths.load_workspace()["limits"])
+    slots = Slots(states.values(), limits)
     home = str(paths.ark_home())
     for key, st in states.items():
         if (home, "unsaved", *key) in _said:  # moving it on would pay again for work it cannot remember
@@ -1065,3 +1070,134 @@ def cycle(forge=None) -> tuple[str, list[str], bool]:
                 _once(("unsaved", *key), f"{key[0]}/{key[1]}: the run state cannot be saved: "
                                          f"{type(e).__name__}: {e}", alerts)
     return status_line(list(states.values())), alerts, changed
+
+
+# ---- main ---------------------------------------------------------------------------------------
+
+def _mtime(path: Path) -> int:
+    try:
+        return path.stat().st_mtime_ns
+    except (OSError, ValueError):  # gone, a dangling link, a NUL in a path: approvals() tolerates them too
+        return 0
+
+
+def signature() -> str:
+    """Cheap fingerprint of what can wake the loop: approvals, plan files, receipts, processes past
+    their deadline or dead without a receipt. A change runs a cycle before the next full tick."""
+    h = hashlib.sha256()
+    for f in sorted(paths.approvals_dir().glob("**/*.json")):
+        h.update(f"{f}:{_mtime(f)}\n".encode())
+    for a in approvals():
+        p = Path(a["plan"])
+        h.update(f"{p}:{_mtime(p)}\n".encode("utf-8", "replace"))
+    for f in sorted(paths.runs_dir().glob("**/*.receipt.json")):
+        h.update(f"{f}\n".encode())
+    for d in sorted({f.parent for f in paths.runs_dir().glob("**/*.proc")}):
+        for n in proc.overdue(d):
+            h.update(f"{d}/{n}:overdue\n".encode())
+        for n in proc.active(d):
+            info = proc._read(d / f"{n}.proc")
+            if not (d / f"{n}.receipt.json").exists() and not (info and proc._alive(d, n, info["pid"])):
+                h.update(f"{d}/{n}:dead\n".encode())
+    return h.hexdigest()
+
+
+def _retry_due() -> bool:
+    """What a cycle retries on its own clock, with nothing on disk to change the signature: a step that
+    failed, a worktree still held, a wait that is over. Those count in cycles (ERROR_ALERT_AFTER) and
+    in seconds (BACKOFF_FIRST), so they cannot wait for the tick."""
+    now = time.time()
+    for a in approvals():
+        try:
+            st = _load(a["repo"], a["slug"])
+        except Exception:  # the cycle says so, once
+            continue
+        if not st or st["status"] != "running":
+            continue
+        if st.get("closing_errors") and st.get("closing_wait", 0) <= now:
+            return True
+        for j in st["jobs"].values():
+            if j["status"] in run.TERMINAL or j["status"] in RUNNING:
+                continue
+            if j.get("errors") or "holders_since" in j or 0 < j.get("not_before", 0) <= now:
+                return True
+    return False
+
+
+def _setting(ws: dict, key: str) -> float:
+    """A positive number: a sleep of a bad value ends the loop, and of 0 it spins."""
+    v = ws[key]
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 < v <= 86400:
+        raise ValueError(f"workspace.json: {key} must be a positive number, not {v!r}")
+    return v
+
+
+def _polling(once: bool) -> int:
+    poll_default = paths.DEFAULTS["poll_seconds"]
+    last_line, last_sig, last_full, last_error = None, None, 0.0, None
+    while True:
+        poll = poll_default
+        try:
+            ws = paths.load_workspace()
+            poll, tick = _setting(ws, "poll_seconds"), _setting(ws, "tick_minutes") * 60
+            sig = signature()
+            if once or sig != last_sig or time.time() - last_full >= tick or _retry_due():
+                for _ in range(5):                   # follow-up passes while things move
+                    line, alerts, changed = cycle()
+                    for a in alerts:
+                        print(f"⚠ {a}", flush=True)
+                    if not changed or _retry_due():  # a retry waits for the next poll, not for the next pass
+                        break
+                last_full, last_sig = time.time(), None if changed else signature()  # None: go on at the next poll
+                if line != last_line:
+                    print(f"{datetime.now():%H:%M} {line}", flush=True)
+                    last_line = line
+            last_error = None
+        except Exception as e:  # a bad edit of workspace.json, a passing failure: the runner stays up
+            text = f"{type(e).__name__}: {e}"
+            if text != last_error:
+                print(f"⚠ el ciclo falló, reintentando en cada poll: {text}", flush=True)
+            last_error, last_sig = text, None
+            if once:
+                return 1
+        if once:
+            return 0
+        time.sleep(poll)
+
+
+def main(argv=None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if set(argv) - {"--once"}:  # a typo must not start something that spends money
+        print("uso: ark-loop [--once]", file=sys.stderr)
+        return 2
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        print("ark-loop no corre con ANTHROPIC_API_KEY: los workers facturarían por token en vez de usar "
+              "tu suscripción. Hacé `unset ANTHROPIC_API_KEY` y volvé a correrlo.", file=sys.stderr)
+        return 2
+    if os.environ.get("ARK_ROLE"):
+        print("ark-loop no corre dentro de un proceso del runner.", file=sys.stderr)
+        return 2
+    sys.stdout.reconfigure(errors="backslashreplace")  # an alert the terminal cannot show must not raise
+    paths.runs_dir().mkdir(parents=True, exist_ok=True)
+    lock_file = paths.runs_dir() / ".loop.lock"
+    try:  # never through a link, never truncated; the kernel releases it on any death
+        lock = os.open(lock_file, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    except OSError as e:
+        print(f"ark-loop no puede abrir su lock {lock_file}: {e}", file=sys.stderr)
+        return 1
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(lock)
+        print("ark-loop ya está corriendo.", file=sys.stderr)
+        return 1
+    try:
+        return _polling("--once" in argv)
+    except KeyboardInterrupt:  # Ctrl-C is how it stops; workers live in their own sessions and go on
+        return 130
+    finally:
+        os.close(lock)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

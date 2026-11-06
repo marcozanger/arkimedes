@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# ark-dispatch stop <repo>/<slug> <job> — stop a job's running process; the job ends blocked.
+set -euo pipefail
+CODE="$(cd "$(dirname "$(realpath "$0")")/.." && pwd)"
+cd "$CODE"   # `python -m` imports from the cwd first
+if [ "${1:-}" != stop ]; then
+  echo "uso: ark-dispatch stop <repo>/<slug> <job>" >&2
+  exit 2
+fi
+export PYTHONPATH="$CODE/lib${PYTHONPATH:+:$PYTHONPATH}"
+exec "$CODE/.venv/bin/python" -m ark.proc "$@"

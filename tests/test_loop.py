@@ -2378,3 +2378,239 @@ def test_a_new_approval_of_a_finished_run_is_not_silently_ignored(feature):
         alerts += loop.cycle()[1]
     mine = [a for a in alerts if "already finished" in a]
     assert len(mine) == 1 and state()["status"] == "done"
+
+
+# ---- main: the polling around cycle() -----------------------------------------------------------
+
+def test_idle_cycle_and_drafts(runner, make_feature):
+    runner()
+    make_feature(plan_text(), create_repo=False)          # a draft: never picked up
+    line, alerts, changed = loop.cycle()
+    assert line == "idle" and alerts == [] and changed is False
+    assert not paths.run_dir("demo", SLUG).exists()
+
+
+def test_signature_changes_with_an_approval(runner, make_feature):
+    runner()
+    p = make_feature(plan_text(), create_repo=False)
+    before = loop.signature()
+    approve(p)
+    assert loop.signature() != before
+
+
+def test_signature_changes_when_an_approved_plan_is_edited(runner, make_feature):
+    runner()
+    p = make_feature(plan_text(), create_repo=False)
+    approve(p)
+    before = loop.signature()
+    os.utime(p, (1, 1))  # an edit: the run has to stop on the stale approval without waiting for the tick
+    assert loop.signature() != before
+
+
+def test_signature_survives_a_broken_approval(ark_home):
+    d = paths.approvals_dir() / "demo"
+    d.mkdir(parents=True)
+    (d / "gone.json").symlink_to(d / "nowhere")
+    (d / "nul.json").write_text(json.dumps({"repo": "demo", "slug": "nul", "plan": "a\0b", "sha256": "x", "approved_at": "1"}))
+    assert loop.signature() == loop.signature()
+
+
+def test_signature_changes_with_what_a_process_needs_from_the_loop(runner, tmp_path):
+    runner()
+    d = paths.run_dir("demo", SLUG)
+    info = proc.start(d, "x.worker", ["sleep", "30"], cwd=tmp_path, env=dict(os.environ), minutes=5)
+    try:
+        alive = loop.signature()
+        assert loop.signature() == alive
+        f = d / "x.worker.proc"
+        good = f.read_text()
+        f.write_text(json.dumps({**json.loads(good), "deadline": 1}))
+        assert loop.signature() != alive                                        # past its deadline
+        f.write_text("not json")
+        assert loop.signature() != alive                                        # the cycle gives it a receipt
+        f.write_text(good)
+        assert loop.signature() == alive
+        os.killpg(info["pid"], signal.SIGKILL)
+        proc._children[str(d / "x.worker")].wait()
+        assert loop.signature() != alive                                        # dead with no receipt
+    finally:
+        try:
+            os.killpg(info["pid"], signal.SIGKILL)
+        except OSError:
+            pass
+        proc._children.pop(str(d / "x.worker")).wait()
+
+
+def test_signature_changes_with_a_receipt(ark_home):
+    d = paths.run_dir("demo", SLUG)
+    d.mkdir(parents=True)
+    before = loop.signature()
+    (d / "x.worker.receipt.json").write_text("{}")
+    assert loop.signature() != before
+
+
+QUIET = ("idle", [], False)
+
+
+class Polling:
+    """loop.main with its sleep replaced: `each(n)` runs at the n-th poll, and the last poll is a Ctrl-C."""
+
+    def __init__(self, monkeypatch):
+        self.monkeypatch, self.cycles, self.sleeps = monkeypatch, 0, []
+
+    def run(self, polls, cycle=lambda n: QUIET, each=lambda n: None, argv=()):
+        self.cycles, self.sleeps = 0, []
+
+        def counted(forge=None):
+            self.cycles += 1
+            return cycle(self.cycles)
+
+        def sleep(seconds):
+            self.sleeps.append(seconds)
+            if len(self.sleeps) >= polls:
+                raise KeyboardInterrupt
+            each(len(self.sleeps))
+        with self.monkeypatch.context() as m:
+            m.setattr(loop, "cycle", counted)
+            m.setattr(loop.time, "sleep", sleep)
+            return loop.main(list(argv))
+
+
+@pytest.fixture
+def polling(ark_home, monkeypatch):
+    return Polling(monkeypatch)
+
+
+def set_workspace(ark_home, **over):
+    f = ark_home / "workspace.json"
+    f.write_text(json.dumps({**json.loads(f.read_text()), **over}))
+
+
+def running_run(ark_home, **job_fields):
+    """A running run on disk with one job, without starting anything."""
+    a = {"repo": "demo", "slug": SLUG, "plan": str(ark_home / "plan.md"), "sha256": "x", "approved_at": "1"}
+    f = paths.approval_file("demo", SLUG)
+    f.parent.mkdir(parents=True)
+    f.write_text(json.dumps(a))
+    st = run.new_state(a)
+    st["status"] = "running"
+    st["jobs"] = {"shell": {**run.new_job({"tier": "T1"}), "status": "needs_push", **job_fields}}
+    run.save(st)
+    return st
+
+
+def test_a_quiet_loop_polls_without_cycling(polling, capsys):
+    assert polling.run(4) == 130
+    assert polling.cycles == 1 and polling.sleeps == [15, 15, 15, 15]
+    assert capsys.readouterr().out.count("idle") == 1
+
+
+def test_a_change_wakes_the_loop_before_the_tick(polling, runner, make_feature):
+    runner()
+    p = make_feature(plan_text(), create_repo=False)
+    polling.run(4, each=lambda n: approve(p) if n == 2 else None)
+    assert polling.cycles == 2
+
+
+def test_the_tick_runs_a_cycle_with_nothing_changed(polling, ark_home):
+    set_workspace(ark_home, tick_minutes=1e-9)
+    polling.run(4)
+    assert polling.cycles == 4
+
+
+@pytest.mark.parametrize("fields", [{"errors": 1}, {"holders_since": 1.0}, {"not_before": 1.0}])
+def test_what_a_cycle_retries_gets_a_cycle_every_poll_and_one_pass(polling, ark_home, fields):
+    """_error says "retried next cycle" and its alert comes after 20 of them, about 5 minutes: not 5 hours,
+    and not 20 passes in a second, though each one changes the state."""
+    running_run(ark_home, **fields)
+    polling.run(4, cycle=lambda n: ("x", [], True))
+    assert polling.cycles == 4
+
+
+@pytest.mark.parametrize("fields", [
+    {"errors": 1, "status": "merged"}, {"holders_since": 1.0, "status": "blocked"},
+    {"not_before": 1.0, "status": "working"}, {"not_before": 9e12}, {}])
+def test_nothing_to_retry_leaves_the_loop_quiet(polling, ark_home, fields):
+    running_run(ark_home, **fields)
+    polling.run(4)
+    assert polling.cycles == 1
+
+
+def test_a_closing_retry_gets_a_cycle_when_its_wait_is_over(polling, ark_home):
+    st = running_run(ark_home)
+    st.update(closing_errors=1, closing_wait=9e12)
+    run.save(st)
+    polling.run(3)
+    assert polling.cycles == 1
+    st.update(closing_wait=1)
+    run.save(st)
+    polling.run(3)
+    assert polling.cycles == 3
+
+
+@pytest.mark.parametrize("status", ["held", "blocked", "done"])
+def test_a_run_that_takes_no_step_has_nothing_to_retry(polling, ark_home, status):
+    st = running_run(ark_home, errors=1)
+    st["status"] = status
+    run.save(st)
+    polling.run(4)
+    assert polling.cycles == 1
+
+
+def test_a_run_still_moving_after_the_last_pass_goes_on_at_the_next_poll(polling):
+    polling.run(4, cycle=lambda n: ("x", [], n < 8))
+    assert polling.cycles == 8                                                  # 5 passes, then 3 until it settles
+
+
+def test_a_broken_workspace_alerts_once_and_the_loop_stays_up(polling, ark_home, capsys):
+    f = ark_home / "workspace.json"
+    good = f.read_text()
+    f.write_text("{not json")
+    polling.run(5, each=lambda n: f.write_text(good) if n == 3 else None)
+    out = capsys.readouterr().out
+    assert out.count("⚠") == 1 and "JSONDecodeError" in out
+    assert polling.cycles == 1 and "idle" in out                                # healed: it works again
+
+
+def test_a_cycle_that_raises_does_not_end_the_loop(polling, capsys):
+    def cycle(n):
+        if n <= 2:
+            raise forge.ForgeError("the same trouble")
+        return QUIET
+    assert polling.run(4, cycle=cycle) == 130
+    out = capsys.readouterr().out
+    assert out.count("the same trouble") == 1 and "idle" in out
+    assert polling.cycles == 3
+
+
+def test_once_reports_a_failed_cycle_in_its_exit_code(polling, ark_home, capsys):
+    (ark_home / "workspace.json").write_text("{not json")
+    assert polling.run(9, argv=["--once"]) == 1
+    assert "⚠" in capsys.readouterr().out and polling.sleeps == []
+
+
+@pytest.mark.parametrize("key", ["poll_seconds", "tick_minutes"])
+@pytest.mark.parametrize("value", ["15", 0, -1, None, True, float("inf")])
+def test_a_bad_timing_setting_alerts_and_never_spins(polling, ark_home, capsys, key, value):
+    set_workspace(ark_home, **{key: value})
+    assert polling.run(3) == 130
+    out = capsys.readouterr().out
+    assert out.count("⚠") == 1 and key in out
+    assert polling.sleeps == [15, 15, 15] and polling.cycles == 0
+
+
+def test_a_broken_workspace_loses_no_alert_of_the_cycle(feature, ark_home):
+    feature()
+    paths.run_dir("demo", SLUG).mkdir(parents=True)
+    run.state_file("demo", SLUG).write_text("{damaged")
+    good = (ark_home / "workspace.json").read_text()
+    (ark_home / "workspace.json").write_text("{not json")
+    with pytest.raises(ValueError):
+        loop.cycle()
+    (ark_home / "workspace.json").write_text(good)
+    assert any("skipped until its state is repaired" in a for a in loop.cycle()[1])
+
+
+def test_the_lock_is_free_again_after_main_returns(polling):
+    assert polling.run(1, argv=["--once"]) == 0
+    assert polling.run(1, argv=["--once"]) == 0
