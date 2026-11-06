@@ -415,13 +415,14 @@ def consume_receipts(c: Ctx) -> None:
             continue
         job, _, kind = name.rpartition(".")
         j = c.st["jobs"].get(job)
+        if j is not None:  # spent and alive whether or not anything still waits for the answer
+            j["usd"] = round(j["usd"] + _usd(r.get("usd")), 4)
+        if r.get("survivors"):
+            run.alert(c.st, f"{_clean(job)}: processes of its {_clean(kind)} outlived it ({r['reason'] or 'it ended'}): "
+                            "look for leftovers before they touch its worktree")
         if j is None or kind not in HANDLERS or RUNNING.get(j["status"]) != kind:
             run.event(c.st, f"ignored the result of {_clean(name)}: nothing was waiting for it")
             continue
-        j["usd"] = round(j["usd"] + _usd(r.get("usd")), 4)
-        if r.get("survivors"):
-            run.alert(c.st, f"{job}: processes of its {kind} outlived it ({r['reason'] or 'it ended'}): "
-                            "look for leftovers before they touch its worktree")
         if r["reason"] == "stopped by Marco":
             block(c, job, "stopped by Marco")
             continue

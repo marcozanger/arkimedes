@@ -1420,3 +1420,19 @@ def test_a_session_resumes_only_with_something_to_say(worker_starts):
     loop.start_worker(c, "shell")
     cmd = starts[-1]["cmd"]
     assert cmd[cmd.index("--resume") + 1] == "s1" and cmd[cmd.index("-p") + 1] == "fix this"
+
+
+# -- an ignored receipt still counts
+
+def test_an_ignored_receipt_still_charges_and_still_warns_of_survivors(tmp_path, monkeypatch):
+    c = bare(tmp_path, status="needs_gate")  # the job moved on: nothing waits for this worker's result
+    consume_one(monkeypatch, c, "shell.worker", receipt(usd=0.5, survivors=[123], reason="over its time limit"))
+    assert c.st["jobs"]["shell"]["status"] == "needs_gate" and c.st["jobs"]["shell"]["usd"] == 0.5
+    assert any("outlived" in a for a in c.st["alerts"])
+    assert any("ignored" in e for e in c.st["events"])
+
+
+def test_a_receipt_of_no_known_job_warns_of_survivors_and_charges_nobody(tmp_path, monkeypatch):
+    c = bare(tmp_path)
+    consume_one(monkeypatch, c, "ghost.worker", receipt(usd=0.5, survivors=[123]))
+    assert c.st["jobs"]["shell"]["usd"] == 0 and any("ghost" in a and "outlived" in a for a in c.st["alerts"])
