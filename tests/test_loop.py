@@ -1094,10 +1094,10 @@ def test_an_approval_whose_file_differs_is_not_adopted(feature, monkeypatch):
     _hold_and_edit(p)
     approve(p, "demo", SLUG)
     _hold_and_edit(p, "\n<!-- edited after the approval -->\n")
-    for _ in range(3):
-        loop.cycle()
+    alerts = [a for _ in range(3) for a in loop.cycle()[1]]
     st = state()
     assert st["status"] == "held" and st["plan_sha"] == old
+    assert not [a for a in alerts if "new approval" in a]  # an edit in progress is no refusal: nothing to say yet
 
 
 # -- the guards, one by one: each test fails when its guard is removed
