@@ -35,7 +35,9 @@ STATE = Path(os.environ["FAKE_STATE"])
 def bump(name):
     f = STATE / f"{name}.count"
     n = int(f.read_text()) + 1 if f.exists() else 1
-    f.write_text(str(n))
+    tmp = STATE / f".{name}.{os.getpid()}"  # whole or not at all: a test or another fake reads it
+    tmp.write_text(str(n))
+    os.replace(tmp, f)
     return n
 
 
