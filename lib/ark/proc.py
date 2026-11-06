@@ -76,7 +76,9 @@ def _read(path: Path) -> dict | None:
 
 def parse_output(text: str) -> dict:
     """The last `{"type": "result"}` line of claude's json / stream-json output. For any other
-    program, the tail of its output."""
+    program, the tail of its output. With no result line (killed, crashed, never reached the model), what
+    the other lines tell: its session, and `spoke`, whether anything but claude's own start-up was logged."""
+    session, spoke = None, False
     for line in reversed(text.splitlines()):
         line = line.strip()
         if not line.startswith("{"):
@@ -85,10 +87,15 @@ def parse_output(text: str) -> dict:
             d = json.loads(line)
         except ValueError:
             continue
-        if isinstance(d, dict) and d.get("type") == "result":
+        if not isinstance(d, dict):
+            continue
+        if d.get("type") == "result":
             return {"result": str(d.get("result") or ""), "usd": d.get("total_cost_usd"),
                     "session": d.get("session_id"), "is_error": bool(d.get("is_error"))}
-    return {"result": text[-4000:], "usd": None, "session": None, "is_error": None}
+        spoke = spoke or d.get("type") != "system"
+        if session is None and isinstance(d.get("session_id"), str):
+            session = d["session_id"]
+    return {"result": text[-4000:], "usd": None, "session": session, "is_error": None, "spoke": spoke}
 
 
 def _receipt(run_dir: Path, name: str, code: int, reason: str, **extra) -> None:

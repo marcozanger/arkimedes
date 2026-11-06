@@ -658,7 +658,8 @@ def test_a_repo_that_went_away_alerts_once(feature, monkeypatch):
 
 def down(**over):
     now = time.time()
-    return receipt("Could not reach the model", **{"exit": 1, "is_error": None, "start": now - 1, "end": now, **over})
+    return receipt("Could not reach the model",
+                   **{"exit": 1, "is_error": None, "spoke": False, "start": now - 1, "end": now, **over})
 
 
 @pytest.mark.parametrize("r", [down(), down(is_error=True, usd=0), down(is_error=True), down(exit=-9)])
@@ -670,10 +671,13 @@ def test_a_process_that_learned_nothing_charges_nothing(tmp_path, monkeypatch, r
     j = c.st["jobs"]["shell"]
     assert j["status"] == back and j["tier_attempts"] == 0 and j["review_errors"] == 0 and j["tier_path"] == ["T1"]
     assert j["not_before"] > time.time() and j["infra_tries"] == 1
+    assert not c.st["alerts"]                                                   # one try may be a lost session: it heals alone
+    j["status"] = status
+    consume_one(monkeypatch, c, f"shell.{kind}", r)
     assert len(c.st["alerts"]) == 1 and "unreachable" in c.st["alerts"][0]
 
 
-@pytest.mark.parametrize("r", [down(is_error=True, usd=0.5), down(start=time.time() - 1000), down(start=None),
+@pytest.mark.parametrize("r", [down(is_error=True, usd=0.5), down(start=time.time() - 1000), down(start=None), down(spoke=True),
                                down(reason="timeout: over its time limit"), down(reason="setup failed: x"),
                                down(exit=0)])
 def test_a_process_that_did_something_is_charged_as_usual(tmp_path, monkeypatch, r):
@@ -766,7 +770,7 @@ def test_a_retry_after_the_model_was_down_keeps_the_feedback(feature, monkeypatc
         return real(run_dir, name, cmd, **kw)
     monkeypatch.setattr(proc, "start", spy)
     drive(jobs_settled)
-    assert len(started) == 3 and "src/x:1" in " ".join(started[2]) and "--resume" in started[2]
+    assert len(started) == 3 and "src/x:1" in " ".join(started[2]) and "--resume" not in started[2]
     j = state()["jobs"]["shell"]
     assert j["status"] == "merged" and not j["resume_msg"] and j["attempts"] == 2
 
@@ -1809,3 +1813,73 @@ def test_a_new_approval_brings_the_fields_the_job_copied_from_the_plan(feature, 
     shell, ui = state()["jobs"]["shell"], state()["jobs"]["ui"]
     assert shell["heavy"] is True and shell["tier"] == "T1"                     # it already runs at the tier it has
     assert ui["heavy"] is True and ui["tier"] == "T2" and ui["tier_path"] == ["T2"]
+
+
+# -- what counts as "the model never got to work"
+
+@pytest.mark.parametrize("end", ["exit 1", "kill -KILL $$"])
+def test_a_worker_that_worked_and_crashed_is_charged(feature, monkeypatch, tmp_path, end):
+    monkeypatch.setattr(loop, "BACKOFF_FIRST", 0)
+    shim(tmp_path, monkeypatch, f'''
+if [ "$ARK_ROLE" = worker ]; then
+  n=$(cat "$FAKE_STATE/w" 2>/dev/null || echo 0); echo $((n+1)) > "$FAKE_STATE/w"
+  echo '{{"type":"system","subtype":"init"}}'; echo '{{"type":"assistant","message":{{"usage":{{"output_tokens":9000}}}}}}'
+  git commit -q --allow-empty -m "real work $n"
+  {end}
+fi
+exec "$REAL_FAKE" "$@"
+''')
+    feature()
+    drive(jobs_settled)
+    j = state()["jobs"]["shell"]
+    assert j["status"] == "blocked" and "infra_tries" not in j
+    assert int((tmp_path / "fake" / "w").read_text()) == j["attempts"] <= 6
+
+
+def test_a_setup_blip_starts_fresh_and_never_resumes_what_never_ran(feature, monkeypatch, tmp_path):
+    monkeypatch.setattr(loop, "BACKOFF_FIRST", 0)
+    mark = tmp_path / "setupfailed"
+    shim(tmp_path, monkeypatch, '''
+case " $* " in *" --resume "*) echo "$*" >> "$FAKE_STATE/resumes"; echo 'No conversation found' >&2; exit 1;; esac
+exec "$REAL_FAKE" "$@"
+''')
+    feature(manifest(setup=[f"test -f {mark} || {{ touch {mark}; exit 1; }}"]))
+    alerts = []
+    for _ in range(300):
+        alerts += loop.cycle()[1]
+        if jobs_settled():
+            break
+        time.sleep(0.05)
+    st = state()
+    assert [j["status"] for j in st["jobs"].values()] == ["merged", "merged"], st["events"][-8:]
+    assert not (tmp_path / "fake" / "resumes").exists()
+    assert not [a for a in alerts if "unreachable" in a]
+
+
+def test_a_session_that_cannot_be_resumed_is_dropped_after_one_quick_failure(feature, monkeypatch, tmp_path):
+    monkeypatch.setattr(loop, "BACKOFF_FIRST", 0)
+    monkeypatch.setenv("FAKE_FIX", "shell")
+    shim(tmp_path, monkeypatch, '''
+case " $* " in *" --resume "*) n=$(cat "$FAKE_STATE/r" 2>/dev/null || echo 0); echo $((n+1)) > "$FAKE_STATE/r"; exit 1;; esac
+exec "$REAL_FAKE" "$@"
+''')
+    started, real = [], proc.start
+    monkeypatch.setattr(proc, "start", lambda d, name, cmd, **k: (started.append(cmd) if name == "shell.worker" else 0,
+                                                                  real(d, name, cmd, **k))[1])
+    feature()
+    alerts = []
+    for _ in range(300):
+        alerts += loop.cycle()[1]
+        if jobs_settled():
+            break
+        time.sleep(0.05)
+    assert state()["jobs"]["shell"]["status"] == "merged"
+    assert (tmp_path / "fake" / "r").read_text().strip() == "1"                 # tried once, never again
+    assert "--resume" not in started[-1] and "src/x:1" in " ".join(started[-1])  # the feedback still reaches it
+    assert not [a for a in alerts if "unreachable" in a]                        # healed at once: nothing to tell
+
+
+def test_a_timed_out_worker_can_still_be_resumed(tmp_path, monkeypatch):
+    c = bare(tmp_path, status="working", session="old")
+    consume_one(monkeypatch, c, "shell.worker", receipt(reason="timeout: over its time limit", exit=-15, session="s1"))
+    assert c.st["jobs"]["shell"]["session"] == "s1"

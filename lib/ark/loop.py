@@ -216,8 +216,7 @@ def _printable(name: str) -> str:
 def on_worker(c: Ctx, job: str, r: dict) -> None:
     j = c.st["jobs"][job]
     j.update(resume_msg=None, note=None)  # kept until now: a worker that never ran still needs them
-    if r.get("session"):
-        j["session"] = r["session"]
+    j["session"] = r.get("session")  # only a process that says it had one can be resumed
     if not r["reason"]:  # any reason may mean setup never finished: it runs again
         j["setup_done"] = True
     if r["reason"]:
@@ -379,13 +378,17 @@ def _wait_longer(j: dict, counter: str) -> int:
 
 def _learned_nothing(r: dict) -> bool:
     """A model process that died right away with no answer and no cost: offline, auth expired, model
-    down. Not knowing how long it lived counts as having worked, so the job is charged as usual."""
+    down. Not knowing how long it lived, or a log with more than claude's start-up in it, counts as having
+    worked, so the job is charged as usual."""
     try:
         quick = r["end"] - r["start"] < INFRA_QUICK
     except (KeyError, TypeError):
         return False
-    return quick and not r["reason"] and r["exit"] != 0 and (r.get("is_error") is None
-                                                             or bool(r.get("is_error")) and not r.get("usd"))
+    if not quick or r["reason"] or r["exit"] == 0:
+        return False
+    if r.get("is_error") is None:  # no result line: its log is all there is to go by
+        return r.get("spoke") is False
+    return bool(r.get("is_error")) and not r.get("usd")
 
 
 def _model_unreachable(c: Ctx, job: str, kind: str) -> None:
@@ -395,10 +398,11 @@ def _model_unreachable(c: Ctx, job: str, kind: str) -> None:
     if kind == "worker":
         j["setup_done"] = True  # no reason on the receipt: setup got through
         j["attempts"] = max(0, j["attempts"] - 1)
+        j["session"] = None  # the same death as a session that cannot be resumed: the next try starts fresh
     n = _wait_longer(j, "infra_tries")
     if n >= INFRA_LIMIT:
         return block(c, job, f"the model stayed unreachable for {n} tries")
-    if n == 1:
+    if n == 2:  # the first may have been a lost session, which the fresh start above heals
         run.alert(c.st, f"{job}: the model is unreachable (offline or auth expired?): nothing is charged, "
                         "it keeps retrying with a growing wait")
     run.event(c.st, f"{job}: its {kind} got no answer from the model; try {n}")
@@ -488,12 +492,12 @@ def start_worker(c: Ctx, job: str) -> bool:
     if resume:
         prompt = j["resume_msg"]
     else:
-        j["session"] = str(uuid.uuid4())
+        j["session"] = None  # known again only when this process says what it had: one may never start
         prompt = brief.worker_brief(c.st, job, mj, c.plan, worktree=wt, report=report,
                                     note=j["note"] or j["resume_msg"], previous_report=c.read_report(job))
     env = claude.runner_env("worker", origin_url=gitops.origin_url(c.repo), worktree=wt, area=json.dumps(mj["area"]),
                             report=report, gate=mj["gate"], run_dir=c.dir, job=job)
-    cmd = claude.agent_cmd("worker", claude.MODELS[j["tier"]], prompt, session=j["session"], resume=resume,
+    cmd = claude.agent_cmd("worker", claude.MODELS[j["tier"]], prompt, session=j["session"] or str(uuid.uuid4()), resume=resume,
                            usd=mj["budget"]["usd"])
     proc.start(c.dir, f"{job}.worker", cmd, cwd=wt, env=env, minutes=claude.TIER_MINUTES[j["tier"]], pre=pre)
     j.update(status="working", attempts=j["attempts"] + 1, error=None)

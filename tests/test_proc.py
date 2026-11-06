@@ -122,6 +122,18 @@ def test_receipt_reads_claude_result_line(tmp_path):
     assert list((tmp_path / "done").glob("j.worker-*.json")) and list((tmp_path / "done").glob("j.worker-*.log"))
 
 
+@pytest.mark.parametrize("lines,session,spoke", [
+    (["Could not reach the model"], None, False),
+    (['{"type":"system","subtype":"init","session_id":"s1"}'], "s1", False),
+    (['{"type":"system","subtype":"init","session_id":"s1"}', '{"type":"assistant"}', "killed"], "s1", True),
+    (['{"type":"something new"}'], None, True),                                 # not known to be nothing: counts as work
+    (['{"type":"assistant"'], None, False),                                     # half a line, cut off
+])
+def test_output_with_no_result_line_tells_what_the_model_did(lines, session, spoke):
+    r = proc.parse_output("\n".join(lines))
+    assert r["is_error"] is None and (r["session"], r["spoke"]) == (session, spoke)
+
+
 def test_plain_command_gives_its_tail_and_exit(tmp_path):
     proc.start(tmp_path, "j.gate", ["sh", "-c", "echo red; exit 3"], cwd=tmp_path, env=dict(os.environ), minutes=1)
     wait_receipt(tmp_path, "j.gate")
