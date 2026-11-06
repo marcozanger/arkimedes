@@ -3787,3 +3787,32 @@ Clean up when Marco says so: `gh repo delete ark-sandbox` is his call, not the s
 - Re-approval of a changed plan while its run is held.
 - `steps.jsonl` and `history/` (insights, lessons, repo analysis).
 - Whether runner processes should skip Marco's user hooks (see the Task 15 smoke note).
+
+## P2 smoke results (2026-11-06)
+
+Run on `ark-sandbox` with real `claude` and `gh`.
+
+- **Step 1, sandbox repo:** created by Marco; `main` protected (PR required, enforce_admins, no force, no delete).
+- **Steps 2-3, first run `calc-ops`:** ended `blocked` in 2 minutes. The plan's gate used `python3 -m pytest` and the system Python has no pytest (PEP 668). A plan gap, not a runner bug. The worker reported FAILED rather than claim a gate it had not run, the judge blocked without retrying, `mul` was blocked by its dependency, no PR opened, `main` untouched.
+- **Step 4, second run `calc-ops-2` (venv in `setup`):** done in 4 minutes, 0.35 USD, no retries. PRs #1 and #2 merged into `ark/calc-ops-2` with the manifest titles; final PR #3 opened with its body starting at the decisions path. `main` stayed unchanged until Marco merged #3 by hand.
+- **Step 5, guards:** no `deny` in the worker logs, no `git push` or `gh pr` from a worker, auto mode ran tests and commits without prompts. The 3 `SessionStart` hooks ran in workers with empty stdout, and nothing reached the transcript.
+- **Step 5, stop:** on `calc-stop`, `ark-dispatch stop` printed `detenido: div.worker`. The next cycle, 8 s later, showed `div` blocked with `stopped by Marco`. Worker exit -15, no process left behind.
+- **TERM on a real `claude -p`:** one run, haiku. TERM to its group: `claude` exited 143 and the shell's wait was gone within 3 s; the marker never appeared. The Bash shell runs in its own process group, so the group signal doesn't reach it directly; how it died is unknown.
+- **Direct push to `main`:** rejected by the server (GH006, PR required), from a temporary clone on the account the workers use.
+- **`gh pr view` lag:** none seen. PRs opened on the head just pushed and merged without trouble.
+
+### What surprised
+
+- A worker tried `pip install` on the system Python; PEP 668 stopped it, not a guard. It then built a venv in `/tmp`. Bash writes outside the job's area are not covered by area-guard.
+- That worker's report called a venv pytest run "the job gate". The FAILED status and the judge handled it correctly.
+- The Bash tool blocks a foreground `sleep`, so a plan can't use one as a wait: use `python3 -c 'import time; time.sleep(N)'`.
+- A blocked run never restarts: the loop skips it and a re-approval is refused, so a retry needs a new slug.
+- `ark-dispatch` is not on PATH; only `ark`, `ark-loop` and `planner` are linked in `~/.local/bin`. Step 5 assumes it is.
+- Every transition waits a tick: a gate that takes 0 s reports green 15 s after the push. About 1 minute of each job's 1m40 is waiting.
+
+### Not checked
+
+- `onFailure` and the settings `env` on a real `claude`.
+- A SIGKILL of `claude`, where its shell may survive; `cwd_holders` before a retry is the guard.
+- A push to `main` from inside a worker.
+- Whether the `SessionStart` hooks seen in workers are the coach's: P3 decides on `worker-settings.json`.
