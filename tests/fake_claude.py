@@ -3,7 +3,7 @@
 
 worker    appends "attempt <n>" to <area[0] with ** -> <job>.txt> (or outside/<job>.txt when the job
           is in FAKE_OUTSIDE), commits, writes the report, ends STATUS: DONE. FAKE_FAIL=job:n,...
-          makes attempt n end FAILED. FAKE_SLEEP=seconds delays it. FAKE_STATE/max_active records
+          makes attempt n end FAILED. FAKE_SLEEP=seconds delays it. FAKE_HOLD=file keeps it alive until the file exists.FAKE_STATE/max_active records
           the most workers alive at once.
 reviewer  FIX on the first review of a job in FAKE_FIX, CLEAN otherwise.
 tick      the decisions file when asked for one, else a judge answer `retry`.
@@ -76,6 +76,10 @@ if ROLE == "worker":
     try:
         n = bump(f"{job}.worker")
         time.sleep(float(os.environ.get("FAKE_SLEEP", "0")))
+        hold = os.environ.get("FAKE_HOLD")  # stays alive until this file exists (or a generous timeout)
+        deadline = time.time() + 60
+        while hold and not Path(hold).exists() and time.time() < deadline:
+            time.sleep(0.05)
         if f"{job}:{n}" in os.environ.get("FAKE_FAIL", "").split(","):
             emit("tests are red\nSTATUS: FAILED — tests are red")
             sys.exit(0)

@@ -2749,11 +2749,28 @@ def test_a_fifo_as_state_tells_marco_once(feature, must_not_hang):
 # -- across runs
 
 def test_writer_limit_holds_across_repos(feature, ark_home, tmp_path, monkeypatch):
-    monkeypatch.setenv("FAKE_SLEEP", "0.5")  # or the workers never overlap, limit or no limit
+    release = tmp_path / "release"
+    monkeypatch.setenv("FAKE_HOLD", str(release))  # a worker lives until we have seen the limit bite
     limits(ark_home, writers_total=1)
     one = manifest(jobs=[manifest()["jobs"][0]])
     feature(one, repo="demo", tasks=("T1", "T2"))                 # T3 belongs to no job here
     feature(one, repo="other", tasks=("T1", "T2"))
+
+    def held_back():  # one repo's worker is alive, the other's run is running with its job still pending
+        sts = [state(r) for r in ("demo", "other")]
+        if not all(sts):
+            return False
+        jobs = sorted(st["jobs"]["shell"]["status"] for st in sts)
+        return jobs == ["pending", "working"] and all(st["status"] == "running" for st in sts)
+
+    try:
+        drive(held_back)
+        for _ in range(5):  # and it stays held while the first worker lives
+            loop.cycle()
+            assert sorted(state(r)["jobs"]["shell"]["status"] for r in ("demo", "other")) == ["pending", "working"]
+            time.sleep(0.05)
+    finally:
+        release.touch()
     drive(lambda: jobs_settled("demo") and jobs_settled("other"))
     assert state("demo")["jobs"]["shell"]["status"] == "merged"
     assert state("other")["jobs"]["shell"]["status"] == "merged"
@@ -2784,10 +2801,15 @@ def test_changed_plan_holds_the_run(feature, monkeypatch):
     assert state()["status"] == "held" and "held" in line
     assert any("changed after its approval" in a for a in alerts)
     assert "Status: held" in paths.run_file("demo", SLUG).read_text()
-    time.sleep(1.5)
+    d = paths.run_dir("demo", SLUG)
+    for _ in range(600):  # the worker finishes whenever it finishes; the held run must not consume it
+        loop.cycle()
+        if proc.finished(d) == ["shell.worker"]:
+            break
+        time.sleep(0.05)
+    assert proc.finished(d) == ["shell.worker"]
     loop.cycle()
     st = state()
     assert st["status"] == "held" and st["jobs"]["shell"]["status"] == "working"   # receipt waits
     assert gitops.remote_sha(repo, f"ark/{SLUG}-shell") is None
-    d = paths.run_dir("demo", SLUG)
     assert proc.finished(d) == ["shell.worker"]
