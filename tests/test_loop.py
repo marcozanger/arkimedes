@@ -2813,3 +2813,273 @@ def test_changed_plan_holds_the_run(feature, monkeypatch):
     assert st["status"] == "held" and st["jobs"]["shell"]["status"] == "working"   # receipt waits
     assert gitops.remote_sha(repo, f"ark/{SLUG}-shell") is None
     assert proc.finished(d) == ["shell.worker"]
+
+
+# -- branch names across runs: ark/<slug>-<job> of one run can be a branch of another
+
+def plan_in(make_feature, slug, *jobs, repo="demo", at="2026-11-05T11:00:00+00:00"):
+    """Approve one more plan in a repo that already exists."""
+    tasks = [f"T{i + 1}" for i in range(len(jobs))]
+    m = manifest(jobs=[job(j, [t], [f"src/{slug}-{j}/**"]) for j, t in zip(jobs, tasks)])
+    p = make_feature(plan_text(m, tasks=tasks, repo=repo, slug=slug), repo=repo, slug=slug, create_repo=False)
+    approve(p, repo, slug, at=at)
+    return p
+
+
+def first_plan(feature, slug, *jobs, repo="demo"):
+    tasks = tuple(f"T{i + 1}" for i in range(len(jobs)))
+    m = manifest(jobs=[job(j, [t], [f"src/{slug}-{j}/**"]) for j, t in zip(jobs, tasks)])
+    return feature(m, repo=repo, slug=slug, tasks=tasks)
+
+
+@pytest.fixture
+def held(tmp_path, monkeypatch):
+    """Workers live until the test releases them; released in any case, so none outlives the test."""
+    release = tmp_path / "release"
+    monkeypatch.setenv("FAKE_HOLD", str(release))
+    yield release
+    release.touch()
+
+
+def cycles_alerts(n=3):
+    return [a for _ in range(n) for a in loop.cycle()[1]]
+
+
+def test_a_job_branch_of_a_live_run_is_never_the_integration_branch_of_another(feature, make_feature, held):
+    """The final review's reproduction: foo's worker is alive when foo-bar is approved."""
+    repo, _ = first_plan(feature, "foo", "bar")
+    drive(lambda: state(slug="foo")["jobs"]["bar"]["status"] == "working")
+    plan_in(make_feature, "foo-bar", "z")
+    alerts = cycles_alerts()
+    second = state(slug="foo-bar")
+    assert second["status"] == "waiting" and not second["jobs"]
+    assert gitops.remote_sha(repo, "ark/foo-bar") is None                       # it wrote nothing
+    mine = [a for a in alerts if a.startswith("demo/foo-bar:")]
+    assert len(mine) == 1 and "ark/foo-bar" in mine[0] and "demo/foo" in mine[0] and "job bar" in mine[0]
+    held.touch()
+    drive(lambda: state(slug="foo")["status"] in ("done", "blocked"))
+    assert state(slug="foo")["status"] == "done"
+    second = state(slug="foo-bar")                                              # its name is still taken on origin
+    assert second["status"] == "waiting" and "already exists" in second["reason"]
+    gitops.fetch(repo)
+    log = gitops.git(repo, "log", "--format=%s", "origin/ark/foo-bar").splitlines()
+    assert "feat: z" not in log and not [p for p in forge.LocalForge().list(repo) if p["base"] == "ark/foo-bar"]
+
+
+def test_the_collision_also_stops_the_run_whose_job_branch_is_the_live_integration_branch(feature, make_feature, held):
+    repo, _ = first_plan(feature, "foo-bar", "z")
+    drive(lambda: state(slug="foo-bar")["jobs"]["z"]["status"] == "working")
+    plan_in(make_feature, "foo", "bar")
+    alerts = cycles_alerts()
+    st = state(slug="foo")
+    assert st["status"] == "waiting" and gitops.remote_sha(repo, "ark/foo") is None
+    mine = [a for a in alerts if a.startswith("demo/foo:")]
+    assert len(mine) == 1 and "ark/foo-bar" in mine[0] and "demo/foo-bar" in mine[0]
+
+
+def test_two_job_branches_collide_even_with_neither_on_origin(feature, make_feature, held):
+    repo, _ = first_plan(feature, "foo", "bar-baz")
+    drive(lambda: state(slug="foo")["jobs"]["bar-baz"]["status"] == "working")
+    plan_in(make_feature, "foo-bar", "baz")
+    alerts = cycles_alerts()
+    assert gitops.remote_sha(repo, "ark/foo-bar-baz") is None
+    st = state(slug="foo-bar")
+    assert st["status"] == "waiting" and "ark/foo-bar-baz" in st["reason"]
+    assert gitops.remote_sha(repo, "ark/foo-bar") is None
+    assert sum("ark/foo-bar-baz" in a for a in alerts) == 1
+
+
+def test_a_collision_is_heard_even_when_the_areas_overlap_too(feature, make_feature, held):
+    repo, _ = first_plan(feature, "foo", "bar")
+    drive(lambda: state(slug="foo")["jobs"]["bar"]["status"] == "working")
+    m = manifest(jobs=[job("z", ["T1"], ["src/foo-bar/**"])])                   # the same area as foo's job
+    p = make_feature(plan_text(m, tasks=("T1",), slug="foo-bar"), slug="foo-bar", create_repo=False)
+    approve(p, "demo", "foo-bar", at="2026-11-05T11:00:00+00:00")
+    alerts = cycles_alerts()
+    assert sum(a.startswith("demo/foo-bar:") and "ark/foo-bar" in a for a in alerts) == 1
+
+
+def test_a_held_run_keeps_its_branch_names(feature, make_feature, held):
+    repo, plan = first_plan(feature, "foo", "bar")
+    drive(lambda: state(slug="foo")["jobs"]["bar"]["status"] == "working")
+    plan.write_text(plan.read_text() + "\nedited after approval\n")
+    loop.cycle()
+    assert state(slug="foo")["status"] == "held"
+    plan_in(make_feature, "foo-bar", "z")
+    loop.cycle()
+    assert state(slug="foo-bar")["status"] == "waiting" and "held plan demo/foo" in state(slug="foo-bar")["reason"]
+    assert gitops.remote_sha(repo, "ark/foo-bar") is None
+
+
+def test_a_live_run_with_no_approval_keeps_its_branch_names(feature, make_feature, held):
+    """It takes no step now, but it goes on when the approval is back."""
+    repo, _ = first_plan(feature, "foo", "bar")
+    drive(lambda: state(slug="foo")["jobs"]["bar"]["status"] == "working")
+    paths.approval_file("demo", "foo").unlink()
+    plan_in(make_feature, "foo-bar", "z")
+    loop.cycle()
+    assert state(slug="foo-bar")["status"] == "waiting" and "demo/foo" in state(slug="foo-bar")["reason"]
+    assert gitops.remote_sha(repo, "ark/foo-bar") is None
+
+
+def test_a_run_with_an_unreadable_state_keeps_every_branch_under_its_slug(feature, make_feature, held):
+    """Its jobs cannot be read, so nothing that could be one of its branches starts. Other names do."""
+    repo, _ = first_plan(feature, "foo", "bar")
+    drive(lambda: state(slug="foo")["jobs"]["bar"]["status"] == "working")
+    run.state_file("demo", "foo").write_text("{ not json")
+    plan_in(make_feature, "foo-bar", "z")
+    plan_in(make_feature, "other", "z", at="2026-11-05T12:00:00+00:00")
+    alerts = cycles_alerts()
+    st = state(slug="foo-bar")
+    assert st["status"] == "waiting" and "ark/foo-bar" in st["reason"] and "demo/foo" in st["reason"]
+    assert gitops.remote_sha(repo, "ark/foo-bar") is None
+    assert state(slug="other")["status"] == "running"
+    assert sum(a.startswith("demo/foo-bar:") for a in alerts) == 1
+
+
+def test_the_same_names_in_another_repo_are_no_collision(feature, make_feature, held):
+    first_plan(feature, "foo", "bar")
+    other, _ = first_plan(feature, "foo-bar", "z", repo="other")
+    loop.cycle()
+    assert state(slug="foo")["status"] == "running" and state("other", "foo-bar")["status"] == "running"
+
+
+def test_two_checkouts_of_one_origin_are_one_repo_for_branch_names(feature, make_feature, tmp_path, held):
+    repo, _ = first_plan(feature, "foo", "bar")
+    drive(lambda: state(slug="foo")["jobs"]["bar"]["status"] == "working")
+    clone = tmp_path / "ws" / "clone"
+    subprocess.run(["git", "clone", "-q", gitops.origin_url(repo), str(clone)], check=True, capture_output=True)
+    subprocess.run(["git", "remote", "set-head", "origin", "master"], cwd=clone, check=True, capture_output=True)
+    plan_in(make_feature, "foo-bar", "z", repo="clone")
+    loop.cycle()
+    st = state("clone", "foo-bar")
+    assert st["status"] == "waiting" and "demo/foo" in st["reason"]
+    assert gitops.remote_sha(repo, "ark/foo-bar") is None
+
+
+def test_a_finished_run_gives_its_names_back(feature, make_feature):
+    repo, _ = first_plan(feature, "foo", "bar")
+    drive(lambda: state(slug="foo")["status"] == "done")
+    plan_in(make_feature, "foo-bar", "z")
+    loop.cycle()
+    assert "already exists" in state(slug="foo-bar")["reason"]                  # origin still has it: as before
+    gitops.git(repo, "push", "-q", "origin", "--delete", "ark/foo-bar")
+    loop.cycle()
+    assert state(slug="foo-bar")["status"] == "running"
+
+
+# -- a lost wake-up: what lands during a cycle that changed nothing
+
+def test_a_receipt_written_during_an_idle_cycle_wakes_the_next_poll(ark_home, monkeypatch):
+    class Stop(BaseException):
+        pass
+    (ark_home / "workspace.json").write_text(json.dumps({"roots": [], "exclude": [], "tick_minutes": 60, "poll_seconds": 1}))
+    d = paths.run_dir("demo", SLUG)
+    d.mkdir(parents=True)
+    cycles, polls = [], []
+
+    def idle_cycle():
+        cycles.append(1)
+        if len(cycles) == 1:  # the tail of the pass, after the receipts were looked at
+            (d / "shell.worker.receipt.json").write_text("{}")
+        return "idle", [], False
+
+    def poll(_):
+        polls.append(1)
+        if len(polls) == 4:
+            raise Stop
+    monkeypatch.setattr(loop, "cycle", idle_cycle)
+    monkeypatch.setattr(loop.time, "sleep", poll)
+    with pytest.raises(Stop):
+        loop._polling(False)
+    assert len(cycles) == 2                                                     # woken once, then quiet again
+
+
+# -- what is planted where a receipt must be archived stalls nothing for ever
+
+def test_a_file_at_done_blocks_the_job_and_finishes_the_run(feature, make_feature, monkeypatch):
+    monkeypatch.setattr(loop, "ERROR_ALERT_AFTER", 3)
+    feature(manifest(jobs=[job("shell", ["T1"], ["src/shell/**"])]), tasks=("T1",))
+    d = paths.run_dir("demo", SLUG)
+    d.mkdir(parents=True)
+    (d / "done").write_text("planted")
+    drive(lambda: state()["status"] in ("done", "blocked"))
+    st = state()
+    alerts = [e for e in st["events"] if "ALERT" in e]
+    assert st["status"] == "blocked" and st["jobs"]["shell"]["status"] == "blocked"
+    assert str(d / "done") in st["jobs"]["shell"]["reason"]
+    assert not [a for a in alerts if "runner error" in a]
+    assert sum("shell blocked" in a for a in alerts) == 1
+    assert not (d / "shell.worker.proc").exists()
+
+
+def test_a_job_that_cannot_be_archived_does_not_hold_back_the_others(feature, monkeypatch):
+    monkeypatch.setattr(loop, "ERROR_ALERT_AFTER", 1000)
+    jobs = [job("a", ["T1"], ["src/a/**"]), job("b", ["T2"], ["src/b/**"])]
+    feature(manifest(jobs=jobs), tasks=("T1", "T2"))
+    loop.cycle()
+    d = paths.run_dir("demo", SLUG)
+    real = proc.consume
+
+    def refuses_a(run_dir, name):
+        if name.startswith("a."):
+            raise IsADirectoryError(f"planted at {name}")
+        return real(run_dir, name)
+    monkeypatch.setattr(proc, "consume", refuses_a)
+    drive(lambda: state()["jobs"]["b"]["status"] == "merged" and proc.finished(d) == ["a.worker"])
+    assert state()["jobs"]["a"]["status"] == "working" and state()["jobs"]["a"]["errors"]
+    assert loop._retry_due()                                                    # its limit counts cycles: no waiting for the tick
+
+
+def test_removing_what_was_planted_heals_the_job(feature, monkeypatch):
+    monkeypatch.setattr(loop, "ERROR_ALERT_AFTER", 1000)
+    feature(manifest(jobs=[job("shell", ["T1"], ["src/shell/**"])]), tasks=("T1",))
+    d = paths.run_dir("demo", SLUG)
+    d.mkdir(parents=True)
+    (d / "done").write_text("planted")
+    drive(lambda: (loop.cycle(), state()["jobs"]["shell"].get("errors"))[1])
+    (d / "done").unlink()
+    drive(lambda: state()["status"] in ("done", "blocked"))
+    assert state()["status"] == "done"
+    assert "errors" not in state()["jobs"]["shell"] and "error" not in state()["jobs"]["shell"]
+
+
+def test_a_directory_at_a_proc_blocks_the_job_and_finishes_the_run(feature, monkeypatch, held):
+    monkeypatch.setattr(loop, "ERROR_ALERT_AFTER", 3)
+    feature(manifest(jobs=[job("shell", ["T1"], ["src/shell/**"])]), tasks=("T1",))
+    drive(lambda: state()["jobs"]["shell"]["status"] == "working")
+    d = paths.run_dir("demo", SLUG)
+    (d / "shell.worker.proc").unlink()
+    (d / "shell.worker.proc").mkdir()
+    (d / "shell.worker.proc" / "inside").write_text("planted")
+    held.touch()
+    drive(lambda: state()["status"] in ("done", "blocked"))
+    st = state()
+    assert st["status"] == "blocked" and st["jobs"]["shell"]["status"] == "blocked"
+    assert not os.path.lexists(d / "shell.worker.proc") and not proc.active(d)
+
+
+def test_the_decisions_tick_that_cannot_be_archived_stops_the_close(feature, monkeypatch):
+    monkeypatch.setattr(loop, "ERROR_ALERT_AFTER", 3)
+    feature(manifest(jobs=[job("shell", ["T1"], ["src/shell/**"])]), tasks=("T1",))
+    real = proc.consume
+
+    def refuses_the_tick(run_dir, name):
+        if name == loop.DECISIONS:
+            raise FileExistsError(f"planted, {name}")
+        return real(run_dir, name)
+    monkeypatch.setattr(proc, "consume", refuses_the_tick)
+    drive(lambda: state()["status"] in ("done", "blocked"))
+    assert state()["status"] == "blocked" and state()["closing"] == "done"
+    alerts = [e for e in state()["events"] if "ALERT" in e]
+    assert sum("run blocked" in a and "FileExistsError" in a for a in alerts) == 1
+    assert not [a for a in alerts if "runner error" in a]
+
+
+def test_a_planted_name_of_no_job_goes_at_once(feature):
+    feature(manifest(jobs=[job("shell", ["T1"], ["src/shell/**"])]), tasks=("T1",))
+    d = paths.run_dir("demo", SLUG)
+    d.mkdir(parents=True)
+    (d / "evil.worker.proc").mkdir()
+    drive(lambda: state()["status"] in ("done", "blocked"))
+    assert state()["status"] == "done" and not os.path.lexists(d / "evil.worker.proc")

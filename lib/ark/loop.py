@@ -109,20 +109,80 @@ class Ctx:
 
 # ---- runs -------------------------------------------------------------------------------------
 
+def _branch_names(slug: str, jobs) -> dict[str, str]:
+    """Every branch a run writes, and what it is to that run."""
+    return {f"ark/{slug}": "integration branch", **{f"ark/{slug}-{j}": f"branch of job {j}" for j in jobs}}
+
+
+def _started_runs(st: dict, others: list[dict]) -> list[tuple[str, str, str, list | None]]:
+    """(repo, slug, status, jobs) of every other run that may still write a branch. From the disk too, since a
+    cycle's list leaves out two kinds that go on once repaired: a run with no approval, and one whose state cannot be
+    read (jobs None). Only a state that says it finished is taken for finished. A waiting run has written no job
+    branch, and it passes try_start before it writes anything, so it is the one that stops."""
+    idle = ("waiting", "done", "blocked")
+    out = [(o["repo"], o["slug"], o["status"], list(o["jobs"])) for o in others if o is not st and o["status"] not in idle]
+    seen = {(o["repo"], o["slug"]) for o in others} | {(st["repo"], st["slug"])}
+    root = paths.runs_dir()
+    for f in sorted(root.glob("**/state.json")):
+        rel = f.parent.relative_to(root)
+        key = (str(rel.parent), rel.name)
+        if key in seen:
+            continue
+        try:
+            o = _load(*key)
+        except Exception:
+            out.append((*key, "unreadable", None))
+            continue
+        if o and o["status"] not in idle:
+            out.append((*key, o["status"], list(o["jobs"])))
+    return out
+
+
+def _same_origin(repo: Path, other: str) -> bool:
+    """Two checkouts of one origin share its branches. What cannot be told counts as the same."""
+    there = paths.find_repo(other)
+    try:
+        return there is None or gitops.origin_url(repo) == gitops.origin_url(there)
+    except gitops.GitError:
+        return True
+
+
+def _branch_collision(st: dict, jobs: list, repo: Path, others: list[dict]) -> str:
+    """Why this run may not start: ark/<slug>-<job> can spell another run's branch ("foo" with job "bar", and "foo-bar"),
+    and a push onto it would land on that run's branch with no gate. Whether the branch is on origin yet says nothing:
+    a job branch appears only when its worker ends. Only the run about to start can stop without losing work."""
+    mine = _branch_names(st["slug"], jobs)
+    for o_repo, slug, status, o_jobs in _started_runs(st, others):
+        if o_jobs is None:  # its jobs are unknown, but its names are not: ark/<slug> and ark/<slug>-*
+            theirs = {b: "possible branch" for b in mine if b == f"ark/{slug}" or b.startswith(f"ark/{slug}-")}
+        else:
+            theirs = _branch_names(slug, o_jobs)
+        clash = sorted(set(mine) & set(theirs))
+        if clash and (o_repo == st["repo"] or _same_origin(repo, o_repo)):
+            b = clash[0]
+            return (f"branch collision: {b} would be this plan's {mine[b]}, and it is the {theirs[b]} of the {status} plan "
+                    f"{o_repo}/{slug}. Nothing is pushed. Approve under another slug, or let that plan end and delete the branch")
+    return ""
+
+
 def try_start(st: dict, others: list[dict]) -> bool:
-    """waiting → running: the approved plan still validates, the repo is there, no running run in
-    the same repo has an overlapping area, ark/<slug> and its job branches do not exist yet. Then
-    push ark/<slug>."""
+    """waiting → running: the approved plan still validates, the repo is there, none of its branches is a
+    branch of another started run, no running run in the same repo has an overlapping area, ark/<slug> and
+    its job branches do not exist yet. Then push ark/<slug>. The only way into "running", and one loop runs
+    at a time, so two started runs never share a branch: a new approval cannot change a started run's jobs."""
     plan = Path(st["plan"])
     problems = validate(plan, approved=True)
-    reason, repo, default, area, existing, normal = "", None, None, [], None, False
+    reason, repo, default, area, existing, normal, mjobs = "", None, None, [], None, False, []
     if problems:
         reason = f"the plan does not validate: {problems[0].message}"
     else:
         repo = paths.find_repo(st["repo"])
-        area = [g for j in load_plan(plan).manifest["jobs"] for g in j["area"]]
+        mjobs = load_plan(plan).manifest["jobs"]  # once: what is checked is what starts
+        area = [g for j in mjobs for g in j["area"]]
         if repo is None:
             reason = f"repo {st['repo']} not found under a workspace root"
+    if not reason:  # before the overlap: that wait ends by itself and says nothing, and this one needs Marco
+        reason = _branch_collision(st, [j["id"] for j in mjobs], repo, others)
     if not reason:
         for o in others:
             if o is not st and o["repo"] == st["repo"] and o["status"] in ("running", "held") \
@@ -136,7 +196,7 @@ def try_start(st: dict, others: list[dict]) -> bool:
             existing = gitops.remote_sha(repo, f"ark/{st['slug']}")
             if existing and existing != st["base_sha"]:
                 reason = f"ark/{st['slug']} already exists on origin: delete it, or approve under another slug"
-            for job in () if reason else load_plan(plan).manifest["jobs"]:
+            for job in () if reason else mjobs:
                 branch = f"ark/{st['slug']}-{job['id']}"
                 if gitops.remote_sha(repo, branch):  # a job's push could never fast-forward over it
                     reason = f"{branch} already exists on origin: delete it, or approve under another slug"
@@ -156,7 +216,7 @@ def try_start(st: dict, others: list[dict]) -> bool:
         run.save(st)  # on disk before the branch exists: the next cycle knows that branch is ours
         gitops.push_ref(repo, base, f"ark/{st['slug']}")
     st.update(status="running", reason="", default_branch=default, base_sha=base, area=area)
-    for mj in load_plan(plan).manifest["jobs"]:
+    for mj in mjobs:
         st["jobs"][mj["id"]] = run.new_job(mj)
     run.event(st, f"started: ark/{st['slug']} from {default} @ {base[:8]}")
     return True
@@ -431,15 +491,40 @@ def consume_receipts(c: Ctx) -> bool:
     """Whether all it learned is on disk."""
     saved = True
     for name in proc.finished(c.dir):
-        r = proc.consume(c.dir, name)
+        try:
+            r = proc.consume(c.dir, name)
+        except OSError as e:
+            _cannot_archive(c, name, e)
+            continue
         if r is None:
             continue
+        j = c.st["jobs"].get(name.rpartition(".")[0])
+        if j is not None:
+            j.pop("error", None)
+            j.pop("errors", None)
+        elif name == DECISIONS:
+            _forget_retries(c.st)
         _on_receipt(c, name, r)
         if _save_now(c.st):  # the receipt is gone: a crash now must not run this process again
             proc.forget_stop(c.dir, name)
         else:
             saved = False
     return saved
+
+
+def _cannot_archive(c: Ctx, name: str, e: OSError) -> None:
+    """Something sits where a result must be archived (a file at done/, a directory at <name>.proc). It stays one
+    process's trouble: the rest of the run moves on, it retries in case he removes it, and then the job blocks. A
+    process that nothing waits for any more is forgotten, or the run could never close."""
+    if name == DECISIONS:
+        return _closing_failed(c, e)
+    job = name.rpartition(".")[0]
+    j = c.st["jobs"].get(job)
+    if j is not None and j["status"] not in run.TERMINAL:
+        _error(c, job, e)
+    if (j is None or j["status"] in run.TERMINAL) and proc.discard(c.dir, name):
+        run.event(c.st, f"forgot {_clean(name)}, its result could not be archived; if it was still running, "
+                        "it was not signalled")
 
 
 def _on_receipt(c: Ctx, name: str, r: dict) -> None:
@@ -1121,9 +1206,11 @@ def _retry_due() -> bool:
         if st.get("closing_errors") and st.get("closing_wait", 0) <= now:
             return True
         for j in st["jobs"].values():
-            if j["status"] in run.TERMINAL or j["status"] in RUNNING:
+            if j["status"] in run.TERMINAL:
                 continue
-            if j.get("errors") or "holders_since" in j or 0 < j.get("not_before", 0) <= now:
+            if j.get("errors"):  # a running job has them only while its result cannot be archived
+                return True
+            if j["status"] not in RUNNING and ("holders_since" in j or 0 < j.get("not_before", 0) <= now):
                 return True
     return False
 
@@ -1147,12 +1234,13 @@ def _polling(once: bool) -> int:
             sig = signature()
             if once or sig != last_sig or time.time() - last_full >= tick or _retry_due():
                 for _ in range(5):                   # follow-up passes while things move
+                    sig = signature()                # before the pass: what lands during it wakes the next poll
                     line, alerts, changed = cycle()
                     for a in alerts:
                         print(f"⚠ {a}", flush=True)
                     if not changed or _retry_due():  # a retry waits for the next poll, not for the next pass
                         break
-                last_full, last_sig = time.time(), None if changed else signature()  # None: go on at the next poll
+                last_full, last_sig = time.time(), None if changed else sig  # None: go on at the next poll
                 if line != last_line:
                     print(f"{datetime.now():%H:%M} {line}", flush=True)
                     last_line = line

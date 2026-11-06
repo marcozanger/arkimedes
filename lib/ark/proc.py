@@ -31,6 +31,7 @@ import calendar
 import json
 import math
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -474,6 +475,24 @@ def consume(run_dir, name: str) -> dict | None:
     if child is not None:
         child.poll()
     return r
+
+
+def discard(run_dir, name: str) -> bool:
+    """Forget a process whose result cannot be archived and that nothing waits for any more. Whether it is gone.
+    What sits at these names may be planted: a link is removed, not followed, and a directory goes whole."""
+    run_dir = Path(run_dir)
+    for path in (run_dir / f"{name}.proc", run_dir / f"{name}.receipt.json", _mark(run_dir, name)):
+        try:
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink(missing_ok=True)
+        except OSError:
+            pass
+    child = _children.pop(str(run_dir / name), None)
+    if child is not None:
+        child.poll()
+    return not os.path.lexists(run_dir / f"{name}.proc")
 
 
 class CwdHoldersError(RuntimeError):
