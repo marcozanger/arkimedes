@@ -111,7 +111,7 @@ def try_start(st: dict, others: list[dict]) -> bool:
     push ark/<slug>."""
     plan = Path(st["plan"])
     problems = validate(plan, approved=True)
-    reason, repo, default, area, existing = "", None, None, [], None
+    reason, repo, default, area, existing, normal = "", None, None, [], None, False
     if problems:
         reason = f"the plan does not validate: {problems[0].message}"
     else:
@@ -123,7 +123,7 @@ def try_start(st: dict, others: list[dict]) -> bool:
         for o in others:
             if o is not st and o["repo"] == st["repo"] and o["status"] in ("running", "held") \
                     and areas_overlap(area, o.get("area") or []):
-                reason = f"its area overlaps the running plan {o['slug']}"
+                reason, normal = f"its area overlaps the running plan {o['slug']}", True
                 break
     if not reason:
         try:
@@ -141,8 +141,8 @@ def try_start(st: dict, others: list[dict]) -> bool:
             reason = str(e)
     if reason:
         if reason != st["reason"]:
-            st["reason"] = reason
-            run.event(st, f"waiting: {reason}")
+            st["reason"] = reason  # remembered, so he hears each reason once; only an overlap ends by itself
+            (run.event if normal else run.alert)(st, f"waiting: {reason}")
         return False
     if existing:  # this run pushed it and died before saving "running"
         base = existing
@@ -192,9 +192,9 @@ def _error(c: Ctx, job: str, e: Exception) -> None:
     if j.get("error") != text:
         j["error"] = text
         run.event(c.st, f"{job}: {text} (retrying)")
+    if j["errors"] >= ERROR_ALERT_AFTER and not isinstance(e, (gitops.GitError, forge_mod.ForgeError)):
+        return block(c, job, f"the same step failed for {ERROR_ALERT_AFTER} cycles: {text}")
     if j["errors"] == ERROR_ALERT_AFTER:
-        if not isinstance(e, (gitops.GitError, forge_mod.ForgeError)):
-            return block(c, job, f"the same step failed for {ERROR_ALERT_AFTER} cycles: {text}")
         run.alert(c.st, f"{job} has been failing for {ERROR_ALERT_AFTER} cycles, still retrying: {text}")
 
 
@@ -408,22 +408,26 @@ def _model_unreachable(c: Ctx, job: str, kind: str) -> None:
     run.event(c.st, f"{job}: its {kind} got no answer from the model; try {n}")
 
 
-def _save_now(st: dict) -> None:
-    """Progress on disk before the next step pays for anything. A failure here costs at most a repeated
-    process; the save at the end of the cycle tries again, and that one tells Marco."""
+def _save_now(st: dict) -> bool:
+    """Progress on disk before the next step pays for anything. Whether it got there: if not, nothing new
+    starts in this cycle; the save at the end of the cycle tries again, and that one tells Marco."""
     try:
         run.save(st)
+        return True
     except Exception:
-        pass
+        return False
 
 
-def consume_receipts(c: Ctx) -> None:
+def consume_receipts(c: Ctx) -> bool:
+    """Whether all it learned is on disk."""
+    saved = True
     for name in proc.finished(c.dir):
         r = proc.consume(c.dir, name)
         if r is None:
             continue
         _on_receipt(c, name, r)
-        _save_now(c.st)  # the receipt is gone: a crash now must not run this process again
+        saved = _save_now(c.st) and saved  # the receipt is gone: a crash now must not run this process again
+    return saved
 
 
 def _on_receipt(c: Ctx, name: str, r: dict) -> None:
@@ -514,8 +518,9 @@ def push_job(c: Ctx, job: str) -> None:
     except gitops.GitError:
         remote = gitops.remote_sha(c.repo, branch)
         if remote and remote != j["head"] and not gitops.is_ancestor(c.repo, remote, j["head"]):
-            return block(c, job, f"non-fast-forward: {branch} on origin holds {remote[:8]}, which is not part "
-                                 "of this work; delete that branch or look at it")
+            return block(c, job, f"non-fast-forward: {branch} on origin holds {remote[:8]}, which this head does "
+                                 "not descend from: the worker amended or rebased, or someone else pushed there. "
+                                 "Delete that branch or look at it")
         raise
     j["status"] = "needs_gate"
     run.event(c.st, f"{job}: head {j['head'][:8]} pushed")
@@ -713,7 +718,8 @@ def step(st: dict, states: list[dict], forge, slots: Slots) -> None:
     if st["status"] == "waiting":
         if not try_start(st, states):
             return
-        _save_now(st)  # the jobs exist now: a crash below finds its worker by them, not by chance
+        if not _save_now(st):  # the jobs exist now: a crash below finds its worker by them, not by chance
+            return
     proc.reap(paths.run_dir(st["repo"], st["slug"]))  # first: nothing below can excuse a process from its deadline
     if merge.plan_reason(st):  # the same question ark-merge asks: a run it would refuse takes no step
         if st["status"] != "held":
@@ -727,8 +733,8 @@ def step(st: dict, states: list[dict], forge, slots: Slots) -> None:
         st.pop("reapprove_refused", None)
         run.event(st, "the approved plan is back: running again")
     c = Ctx(st, forge)
-    consume_receipts(c)
-    schedule(c, slots)
+    if consume_receipts(c):
+        schedule(c, slots)
 
 
 def _adopt_reapproval(st: dict, a: dict, states: list[dict], forge) -> None:

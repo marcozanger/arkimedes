@@ -1704,6 +1704,23 @@ def _at_gating(feature, gate="sleep 1"):
     return r, p
 
 
+def test_a_crash_while_taking_a_new_approval_keeps_no_old_green(at_merge, monkeypatch):
+    _, st, _ = at_merge
+    p = Path(st["plan"])
+    sha = st["plan_sha"]
+    _hold_and_edit(p)
+    loop.cycle()
+    approve(p, "demo", SLUG)
+    with monkeypatch.context() as m:
+        m.setattr(run, "save", lambda st: (_ for _ in ()).throw(OSError("disk full")))
+        loop.cycle()
+    assert state()["plan_sha"] == sha and not merge.read_record(paths.run_dir("demo", SLUG), "shell", "gate")
+    drive(jobs_settled)
+    st = state()
+    assert st["plan_sha"] == sha256_file(p) and st["jobs"]["shell"]["status"] == "merged"
+    assert runs_of("shell", "gate") >= 2                                        # a gate that ran unsaved repeats, never counts
+
+
 def test_a_gate_that_started_under_the_old_plan_does_not_count(feature, monkeypatch):
     monkeypatch.setattr(loop, "BACKOFF_FIRST", 0)
     _, p = _at_gating(feature)
@@ -1883,3 +1900,84 @@ def test_a_timed_out_worker_can_still_be_resumed(tmp_path, monkeypatch):
     c = bare(tmp_path, status="working", session="old")
     consume_one(monkeypatch, c, "shell.worker", receipt(reason="timeout: over its time limit", exit=-15, session="s1"))
     assert c.st["jobs"]["shell"]["session"] == "s1"
+
+
+# -- a refused start says so, once
+
+def test_a_leftover_job_branch_alerts_once(feature):
+    repo, _ = feature()
+    gitops.push_ref(repo, gitops.rev(repo, "HEAD"), f"ark/{SLUG}-ui")
+    alerts = turn(4, 0)
+    assert sum(f"ark/{SLUG}-ui already exists" in a for a in alerts) == 1
+
+
+def test_a_leftover_integration_branch_alerts_once(feature):
+    repo, _ = feature()
+    gitops.push_ref(repo, gitops.rev(repo, "HEAD"), f"ark/{SLUG}")
+    alerts = turn(4, 0)
+    assert sum(f"ark/{SLUG} already exists" in a for a in alerts) == 1
+
+
+def test_a_plan_that_does_not_validate_alerts_once(feature):
+    _, p = feature()
+    (p.parent / "spec.md").unlink()
+    alerts = turn(4, 0)
+    assert sum("does not validate" in a for a in alerts) == 1
+
+
+def test_an_overlap_is_a_normal_wait_and_alerts_nothing(feature, make_feature, monkeypatch):
+    monkeypatch.setenv("FAKE_SLEEP", "1")
+    feature()
+    _second_plan(make_feature)
+    alerts = turn(3, 0)
+    assert "overlaps" in state(slug="second")["reason"] and not [a for a in alerts if "overlap" in a]
+
+
+# -- errors, saves, rework
+
+def test_a_non_git_error_after_many_git_errors_still_blocks(tmp_path):
+    c = bare(tmp_path, status="needs_pr")
+    for _ in range(loop.ERROR_ALERT_AFTER + 5):
+        loop._error(c, "shell", gitops.GitError("offline"))
+    assert c.st["jobs"]["shell"]["status"] == "needs_pr" and len(c.st["alerts"]) == 1
+    loop._error(c, "shell", ValueError("will not heal"))
+    assert c.st["jobs"]["shell"]["status"] == "blocked" and "will not heal" in c.st["jobs"]["shell"]["reason"]
+
+
+def test_a_save_that_fails_after_a_receipt_starts_nothing_in_that_cycle(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_FIX", "shell")
+    feature()
+    d = paths.run_dir("demo", SLUG)
+    for _ in range(600):
+        if "shell.review" in proc.finished(d):
+            break
+        loop.cycle()
+        for _ in range(4):
+            if "shell.review" in proc.finished(d):
+                break
+            time.sleep(0.02)
+    assert "shell.review" in proc.finished(d)
+    with monkeypatch.context() as m:
+        m.setattr(run, "save", lambda st: (_ for _ in ()).throw(OSError("disk full")))
+        loop.cycle()
+    assert "shell.worker" not in proc.active(d)
+    drive(jobs_settled)
+    assert all(j["status"] == "merged" for j in state()["jobs"].values())
+    assert not [e for e in state()["events"] if "ignored the result" in e]      # the FIX was not dropped
+
+
+def test_a_rewritten_branch_says_what_probably_happened(tmp_path, monkeypatch):
+    c = bare(tmp_path, status="needs_push", head="b" * 40)
+    def refused(*a):
+        raise gitops.GitError("non-fast-forward")
+    monkeypatch.setattr(gitops, "push_ref", refused)
+    monkeypatch.setattr(gitops, "remote_sha", lambda *a: "a" * 40)
+    monkeypatch.setattr(gitops, "is_ancestor", lambda *a: False)
+    loop.push_job(c, "shell")
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "blocked" and "amend" in j["reason"]
+
+
+def test_workers_are_told_not_to_rewrite_their_history():
+    text = (Path(loop.__file__).resolve().parents[2] / "agents" / "ark-dev.md").read_text()
+    assert "amend" in text and "rebase" in text
