@@ -7,6 +7,9 @@ worker    appends "attempt <n>" to <area[0] with ** -> <job>.txt> (or outside/<j
           the most workers alive at once.
 reviewer  FIX on the first review of a job in FAKE_FIX, CLEAN otherwise.
 tick      the decisions file when asked for one, else a judge answer `retry`.
+
+FAKE_DOWN=1 makes every role end at once with exit 1 and no result line, as an unreachable model
+does; FAKE_STATE/down.count counts those.
 """
 import fcntl
 import json
@@ -56,6 +59,11 @@ def emit(result, stream=True):
     print(json.dumps({"type": "result", "result": result, "session_id": SESSION,
                       "total_cost_usd": 0.01, "is_error": False}))
 
+
+if os.environ.get("FAKE_DOWN"):
+    bump("down")
+    print("Could not reach the model")
+    sys.exit(1)
 
 if ROLE == "worker":
     job, wt = os.environ["ARK_JOB"], Path(os.environ["ARK_WORKTREE"])

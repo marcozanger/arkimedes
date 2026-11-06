@@ -18,6 +18,10 @@ from .validate import validate
 
 ERROR_ALERT_AFTER = 20    # cycles (about 5 minutes) a step keeps failing before Marco hears about it
 HOLDERS_PATIENCE = 900    # seconds a job waits for leftovers in its worktree before it blocks
+INFRA_QUICK = 120         # seconds: a model process that dies sooner, with no answer, never got to work
+INFRA_LIMIT = 200         # tries before a job stops waiting for the model; about 50 hours at the ceiling
+BACKOFF_FIRST = 15        # seconds before the first retry; it doubles each time
+BACKOFF_MAX = 900         # seconds, the ceiling of that wait
 
 # What a job's status says is running, and where the job goes back to if that process is not there.
 RUNNING = {"working": "worker", "gating": "gate", "reviewing": "review", "integrating": "integrate", "judging": "judge"}
@@ -177,6 +181,7 @@ def _printable(name: str) -> str:
 
 def on_worker(c: Ctx, job: str, r: dict) -> None:
     j = c.st["jobs"][job]
+    j.update(resume_msg=None, note=None)  # kept until now: a worker that never ran still needs them
     if r.get("session"):
         j["session"] = r["session"]
     if not r["reason"]:  # any reason may mean setup never finished: it runs again
@@ -319,12 +324,47 @@ def on_judge(c: Ctx, job: str, r: dict) -> None:
     j.update(note=note, status="needs_worker")
 
 
+MODEL_KINDS = ("worker", "review", "judge")  # the others run a program of ours, not the model
 HANDLERS = {"worker": on_worker, "gate": on_gate, "review": on_review, "integrate": on_integrate, "judge": on_judge}
 
 
 def _usd(value) -> float:
     ok = isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
     return value if ok else 0
+
+
+def _wait_longer(j: dict, counter: str) -> int:
+    """Count one more try and hold the job back, doubling up to the ceiling. Returns the count."""
+    n = j[counter] = j.get(counter, 0) + 1
+    j["not_before"] = time.time() + min(BACKOFF_MAX, BACKOFF_FIRST * 2 ** (n - 1))
+    return n
+
+
+def _learned_nothing(r: dict) -> bool:
+    """A model process that died right away with no answer and no cost: offline, auth expired, model
+    down. Not knowing how long it lived counts as having worked, so the job is charged as usual."""
+    try:
+        quick = r["end"] - r["start"] < INFRA_QUICK
+    except (KeyError, TypeError):
+        return False
+    return quick and not r["reason"] and r["exit"] != 0 and (r.get("is_error") is None
+                                                             or bool(r.get("is_error")) and not r.get("usd"))
+
+
+def _model_unreachable(c: Ctx, job: str, kind: str) -> None:
+    """Nothing was learned about the job: no tier, attempt or review is spent. It waits and tries again."""
+    j = c.st["jobs"][job]
+    j["status"] = WAITING[kind]
+    if kind == "worker":
+        j["setup_done"] = True  # no reason on the receipt: setup got through
+        j["attempts"] = max(0, j["attempts"] - 1)
+    n = _wait_longer(j, "infra_tries")
+    if n >= INFRA_LIMIT:
+        return block(c, job, f"the model stayed unreachable for {n} tries")
+    if n == 1:
+        run.alert(c.st, f"{job}: the model is unreachable (offline or auth expired?): nothing is charged, "
+                        "it keeps retrying with a growing wait")
+    run.event(c.st, f"{job}: its {kind} got no answer from the model; try {n}")
 
 
 def consume_receipts(c: Ctx) -> None:
@@ -345,6 +385,12 @@ def consume_receipts(c: Ctx) -> None:
         if r["reason"] == "stopped by Marco":
             block(c, job, "stopped by Marco")
             continue
+        if kind in MODEL_KINDS:
+            if _learned_nothing(r):
+                _model_unreachable(c, job, kind)
+                continue
+            j.pop("infra_tries", None)
+            j.pop("not_before", None)
         try:
             HANDLERS[kind](c, job, r)
         except Exception as e:  # the receipt is gone: never leave the job waiting for it
@@ -397,7 +443,7 @@ def start_worker(c: Ctx, job: str) -> bool:
     cmd = claude.agent_cmd("worker", claude.MODELS[j["tier"]], prompt, session=j["session"], resume=resume,
                            usd=mj["budget"]["usd"])
     proc.start(c.dir, f"{job}.worker", cmd, cwd=wt, env=env, minutes=claude.TIER_MINUTES[j["tier"]], pre=pre)
-    j.update(status="working", attempts=j["attempts"] + 1, resume_msg=None, note=None, error=None)
+    j.update(status="working", attempts=j["attempts"] + 1, error=None)
     run.event(c.st, f"{job}: worker {j['tier']} attempt {j['attempts']}{' (resumed)' if resume else ''}")
     return True
 
@@ -523,6 +569,8 @@ def _start_writer(c: Ctx, job: str, slots: Slots) -> None:
 def _next_step(c: Ctx, job: str, j: dict, slots: Slots):
     """What moves this job now, or None while it has to wait. Asking takes the slot the step needs."""
     s, repo = j["status"], c.st["repo"]
+    if j.get("not_before", 0) > time.time():
+        return None
     if s == "pending":
         deps = [c.st["jobs"][d]["status"] for d in c.mjobs[job].get("after") or []]
         if "blocked" in deps:

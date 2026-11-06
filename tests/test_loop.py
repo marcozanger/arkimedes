@@ -606,3 +606,120 @@ def test_a_repo_that_went_away_alerts_once(feature, monkeypatch):
         alerts = loop.cycle()[1] + loop.cycle()[1]
     assert len([a for a in alerts if "not found" in a]) == 1
     drive(jobs_settled)
+
+
+# -- a model that cannot be reached
+
+def down(**over):
+    now = time.time()
+    return receipt("Could not reach the model", **{"exit": 1, "is_error": None, "start": now - 1, "end": now, **over})
+
+
+@pytest.mark.parametrize("r", [down(), down(is_error=True, usd=0), down(is_error=True), down(exit=-9)])
+@pytest.mark.parametrize("status,kind,back", [("working", "worker", "needs_worker"), ("reviewing", "review", "needs_review"),
+                                              ("judging", "judge", "needs_judge")])
+def test_a_process_that_learned_nothing_charges_nothing(tmp_path, monkeypatch, r, status, kind, back):
+    c = bare(tmp_path, status=status, attempts=1, failure="red")
+    consume_one(monkeypatch, c, f"shell.{kind}", r)
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == back and j["tier_attempts"] == 0 and j["review_errors"] == 0 and j["tier_path"] == ["T1"]
+    assert j["not_before"] > time.time() and j["infra_tries"] == 1
+    assert len(c.st["alerts"]) == 1 and "unreachable" in c.st["alerts"][0]
+
+
+@pytest.mark.parametrize("r", [down(is_error=True, usd=0.5), down(start=time.time() - 1000), down(start=None),
+                               down(reason="timeout: over its time limit"), down(reason="setup failed: x"),
+                               down(exit=0)])
+def test_a_process_that_did_something_is_charged_as_usual(tmp_path, monkeypatch, r):
+    c = bare(tmp_path, status="working")
+    consume_one(monkeypatch, c, "shell.worker", r)
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "needs_judge" and j["tier_attempts"] == 1 and "not_before" not in j
+
+
+@pytest.mark.parametrize("status,kind", [("gating", "gate"), ("integrating", "integrate")])
+def test_a_gate_is_not_the_model_so_it_never_counts_as_down(tmp_path, monkeypatch, status, kind):
+    c = bare(tmp_path, status=status)
+    consume_one(monkeypatch, c, f"shell.{kind}", down())
+    assert "infra_tries" not in c.st["jobs"]["shell"]
+
+
+def test_a_job_waiting_out_a_backoff_takes_no_slot(tmp_path):
+    c = bare(tmp_path, status="needs_worker", not_before=time.time() + 60)
+    slots = loop.Slots([c.st], {"writers_per_repo": 1, "writers_total": 1, "heavy_gates": 1})
+    assert loop._next_step(c, "shell", c.st["jobs"]["shell"], slots) is None
+    assert slots.writers == {}
+    c.st["jobs"]["shell"]["not_before"] = time.time() - 1
+    assert loop._next_step(c, "shell", c.st["jobs"]["shell"], slots) is not None
+
+
+def test_the_backoff_grows_and_has_a_ceiling(tmp_path, monkeypatch):
+    c = bare(tmp_path, status="working")
+    j = c.st["jobs"]["shell"]
+    waits = []
+    for _ in range(9):
+        j["status"] = "working"
+        consume_one(monkeypatch, c, "shell.worker", down())
+        waits.append(round(j["not_before"] - time.time()))
+    assert waits == [15, 30, 60, 120, 240, 480, 900, 900, 900]
+    assert len(c.st["alerts"]) == 1
+
+
+def test_a_model_down_for_too_long_finally_blocks(tmp_path, monkeypatch):
+    monkeypatch.setattr(loop, "INFRA_LIMIT", 3)
+    c = bare(tmp_path, status="working")
+    j = c.st["jobs"]["shell"]
+    for _ in range(3):
+        assert j["status"] != "blocked"
+        j["status"] = "working"
+        consume_one(monkeypatch, c, "shell.worker", down())
+    assert j["status"] == "blocked" and "unreachable" in j["reason"] and j["tier_attempts"] == 0
+
+
+def test_a_real_answer_ends_the_waiting(tmp_path, monkeypatch):
+    c = bare(tmp_path, status="working", infra_tries=4, not_before=1.0)
+    consume_one(monkeypatch, c, "shell.worker", receipt("STATUS: FAILED — no"))
+    j = c.st["jobs"]["shell"]
+    assert "infra_tries" not in j and "not_before" not in j and j["tier_attempts"] == 1
+
+
+def test_model_down_blocks_nothing_and_the_run_goes_on_when_it_returns(feature, monkeypatch, tmp_path):
+    monkeypatch.setattr(loop, "BACKOFF_FIRST", 0)
+    monkeypatch.setenv("FAKE_DOWN", "1")
+    feature()
+    count = tmp_path / "fake" / "down.count"
+    alerts = []
+    for _ in range(200):
+        alerts += loop.cycle()[1]
+        if count.exists() and int(count.read_text()) >= 6:
+            break
+        time.sleep(0.05)
+    assert int(count.read_text()) >= 6
+    st = state()
+    j = st["jobs"]["shell"]
+    assert j["tier_attempts"] == 0 and j["tier_path"] == ["T1"] and j["status"] in ("needs_worker", "working")
+    assert st["jobs"]["ui"]["status"] == "pending"
+    assert len([a for a in alerts if "unreachable" in a]) == 1
+    monkeypatch.delenv("FAKE_DOWN")
+    drive(jobs_settled)
+    st = state()
+    assert [j["status"] for j in st["jobs"].values()] == ["merged", "merged"]
+    assert st["jobs"]["shell"]["attempts"] == 1 and st["jobs"]["shell"]["tier"] == "T1"
+
+
+def test_a_retry_after_the_model_was_down_keeps_the_feedback(feature, monkeypatch):
+    monkeypatch.setattr(loop, "BACKOFF_FIRST", 0)
+    monkeypatch.setenv("FAKE_FIX", "shell")
+    feature()
+    started, real = [], proc.start
+    def spy(run_dir, name, cmd, **kw):
+        if name == "shell.worker":
+            started.append(cmd)
+            if len(started) == 2:                                               # the one the review sent back
+                kw["env"]["FAKE_DOWN"] = "1"
+        return real(run_dir, name, cmd, **kw)
+    monkeypatch.setattr(proc, "start", spy)
+    drive(jobs_settled)
+    assert len(started) == 3 and "src/x:1" in " ".join(started[2]) and "--resume" in started[2]
+    j = state()["jobs"]["shell"]
+    assert j["status"] == "merged" and not j["resume_msg"] and j["attempts"] == 2

@@ -373,7 +373,7 @@ def consume(run_dir, name: str) -> dict | None:
     r = {"name": name, "exit": -1, "reason": "unreadable receipt", "result": "", "usd": None, "session": None,
          "is_error": None, "end": None, **(_read(receipt) or {})}
     info = _read(run_dir / f"{name}.proc") or {}
-    r["meta"] = info.get("meta", {})
+    r["meta"], r["start"] = info.get("meta", {}), info.get("start")
     done = run_dir / "done"
     done.mkdir(exist_ok=True)
     end = r["end"]
