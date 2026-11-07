@@ -316,7 +316,8 @@ def test_load_takes_only_questions_of_the_right_shape(feature):
         run.save({**st, "questions": good})
         assert loop._load("demo", SLUG)["questions"] == good
     for bad in (None, 5, "q1", {}, [5], [{"id": "q1"}], [{**GOOD_QUESTION, "id": 1}], [{**GOOD_QUESTION, "kind": None}],
-                [{**GOOD_QUESTION, "text": 5}], [{**GOOD_QUESTION, "job": 5}], [GOOD_QUESTION, []]):
+                [{**GOOD_QUESTION, "text": 5}], [{**GOOD_QUESTION, "job": 5}], [GOOD_QUESTION, []],
+                [{k: v for k, v in GOOD_QUESTION.items() if k != "job"}]):
         run.save({**st, "questions": bad})
         with pytest.raises(run.StateCorrupt):
             loop._load("demo", SLUG)

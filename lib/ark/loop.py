@@ -1226,7 +1226,7 @@ def _good_questions(st: dict) -> bool:
         return True
     return isinstance(st["questions"], list) and all(
         isinstance(q, dict) and all(isinstance(q.get(k), str) for k in ("id", "kind", "text"))
-        and (q.get("job") is None or isinstance(q["job"], str)) for q in st["questions"])
+        and "job" in q and (q["job"] is None or isinstance(q["job"], str)) for q in st["questions"])
 
 
 def _load(repo: str, slug: str) -> dict | None:
