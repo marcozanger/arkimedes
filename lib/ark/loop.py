@@ -304,6 +304,10 @@ def on_worker(c: Ctx, job: str, r: dict) -> None:
     j.update(resume_msg=None, note=None)  # kept until now: a worker that never ran still needs them
     # only a process that says it had one can be resumed, or one we stopped ourselves
     j["session"] = r.get("session") or ((r.get("meta") or {}).get("session") if r["reason"] in OURS else None)
+    if j.pop("attaching", None):  # whatever the worker was doing, the job is Marco's now
+        j["status"] = "attached"
+        run.event(c.st, f"{job}: handed to Marco")
+        return
     if then and r["reason"] == INTERVENED:
         return _after_stop(c.st, job, then)
     if steering and r["reason"] == STEERED:
@@ -533,6 +537,7 @@ def _model_unreachable(c: Ctx, job: str, kind: str) -> None:
     j = c.st["jobs"][job]
     j["status"] = WAITING[kind]
     if kind == "worker":
+        j.pop("attaching", None)
         j.pop("steering", None)
         j.pop("stop_then", None)
         j["setup_done"] = True  # no reason on the receipt: setup got through
@@ -684,7 +689,7 @@ def _on_receipt(c: Ctx, name: str, r: dict) -> None:
         run.event(c.st, f"ignored the result of {_clean(name)}: nothing was waiting for it")
         return
     if kind in MODEL_KINDS:
-        if _learned_nothing(r):
+        if _learned_nothing(r) and not j.get("attaching"):
             _model_unreachable(c, job, kind)
             return
         j.pop("infra_tries", None)
@@ -1128,6 +1133,8 @@ def _gone_worker(st: dict, job: str, j: dict) -> bool:
         _after_stop(st, job, then)
     elif steering:
         j.update(note=steering, status="needs_worker")
+    elif j.pop("attaching", None):
+        j["status"] = "attached"
     else:
         return False
     run.event(st, f"{job}: its worker is gone, as was decided")
@@ -1297,8 +1304,41 @@ def _apply_steer(st: dict, item: dict) -> None:
     _steer(st, job, text)
 
 
+def _apply_attach(st: dict, item: dict) -> None:
+    job = item.get("job")
+    j = st["jobs"].get(job)
+    if j is not None and j["status"] == "working":
+        j["attaching"] = True
+        proc.stop(paths.run_dir(st["repo"], st["slug"]), f"{job}.worker", ATTACHED)
+    elif j is not None and j["status"] == "waiting_answer":
+        questions.drop_kind(st, "worker", job=job)
+        j.pop("question", None)
+        j["status"] = "attached"
+        run.event(st, f"{job}: handed to Marco")
+    else:
+        run.event(st, f"an attach for {_clean(str(job))} found nothing to hand over")
+
+
+def _apply_attach_done(st: dict, item: dict) -> None:
+    j = st["jobs"].get(item.get("job"))
+    if j is not None and j["status"] == "attached":
+        j["attach_done"] = True
+
+
+def _finish_attach(c: Ctx) -> None:
+    """He left a clean worktree: what he did takes the same road as a worker that ended DONE."""
+    for job, j in c.st["jobs"].items():
+        if j["status"] == "attached" and j.pop("attach_done", None):
+            done = {"reason": "", "exit": 0, "result": "STATUS: DONE", "session": j["session"], "is_error": False, "meta": {}}
+            try:
+                on_worker(c, job, done)
+            except Exception as e:
+                fail(c, job, f"runner error after attach: {type(e).__name__}: {e}")
+
+
 ANSWERS = {"worker": _answered_worker, "plan_changed": _answered_plan_changed, "cap_run": _answered_cap_run}
-INBOX = {"answer": _apply_answer, "stop": _apply_stop, "steer": _apply_steer}
+INBOX = {"answer": _apply_answer, "stop": _apply_stop, "steer": _apply_steer,
+         "attach": _apply_attach, "attach_done": _apply_attach_done}
 
 
 def apply_inbox(st: dict) -> None:
@@ -1352,6 +1392,7 @@ def step(st: dict, states: list[dict], forge, slots: Slots) -> None:
         questions.drop_kind(st, "plan_changed")
         run.event(st, "the approved plan is back: running again")
     c = Ctx(st, forge)
+    _finish_attach(c)
     if consume_receipts(c):
         _check_run_cap(c)
         if slots.capped:  # closing pays for a tick too

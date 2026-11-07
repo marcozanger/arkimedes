@@ -3,12 +3,14 @@ writer, so anything that changes a run goes through the inbox or through a proce
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import time
 
-from . import inbox, paths, proc, questions, run, usage
+from . import claude, gitops, inbox, paths, proc, questions, run, usage
 
 FOLLOW_POLL = 1.0   # seconds between looks at a log being followed
+ATTACH_WAIT = 60  # seconds for ark-loop to hand a job over
 _sleep = time.sleep  # a test replaces this to run the loop while a command waits for it
 
 
@@ -241,6 +243,42 @@ def cmd_steer(args) -> int:
     return 0
 
 
+def _wait_attached(repo: str, slug: str, job: str) -> dict:
+    for _ in range(ATTACH_WAIT):
+        j = run.load(repo, slug)["jobs"][job]
+        if j["status"] == "attached":
+            return j
+        if j["status"] not in ("working", "waiting_answer"):
+            raise CtlError(f"{job} pasó a {j['status']}: no se puede tomar")
+        _sleep(1)
+    raise CtlError(f"ark-loop no entregó {job} en {ATTACH_WAIT} s. ¿Está corriendo? El pedido sigue en pie.")
+
+
+@_cmd
+def cmd_attach(args) -> int:
+    _writer()
+    if not sys.stdin.isatty():
+        raise CtlError("ark attach abre una sesión interactiva: necesita una terminal")
+    repo, slug, job = _resolve(args.job)
+    st = run.load(repo, slug)
+    if st["status"] != "running":
+        raise CtlError(f"el run {repo}/{slug} está {st['status']}: no se puede tomar un job")
+    status = st["jobs"][job]["status"]
+    if status not in ("working", "waiting_answer", "attached"):
+        raise CtlError(f"{job} no se puede tomar: {status}")
+    if status != "attached":
+        inbox.post(repo, slug, "attach", job=job)
+    j = _wait_attached(repo, slug, job)
+    wt = paths.worktrees_dir() / repo / slug / job
+    subprocess.run([claude.claude_bin()] + (["--resume", j["session"]] if j["session"] else []), cwd=wt)
+    if not gitops.is_clean(wt):
+        raise CtlError(f"quedaron cambios sin commitear en {wt}. Commiteá y corré `ark attach {args.job}` otra vez; "
+                       "el job sigue en tus manos.")
+    inbox.post(repo, slug, "attach_done", job=job)
+    print(f"{job} vuelve al runner: gate, review y merge")
+    return 0
+
+
 def register(sub) -> None:
     s = sub.add_parser("ps", help="qué corre: job, tiempo, tokens, último mensaje")
     s.set_defaults(fn=cmd_ps)
@@ -260,3 +298,6 @@ def register(sub) -> None:
     s.add_argument("job", help="<job> o <repo>/<slug>:<job>")
     s.add_argument("text", help="la instrucción")
     s.set_defaults(fn=cmd_steer)
+    s = sub.add_parser("attach", help="tomar un worker en una sesión interactiva; al salir vuelve al runner")
+    s.add_argument("job", help="<job> o <repo>/<slug>:<job>")
+    s.set_defaults(fn=cmd_attach)
