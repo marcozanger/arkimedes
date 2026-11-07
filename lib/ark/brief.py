@@ -318,7 +318,7 @@ def _pr_reason(reason: str | None) -> str:
     return _no_mentions(" ".join((reason or "").split())[:PR_REASON_CHARS])
 
 
-def final_pr_body(st: dict) -> str:
+def final_pr_body(st: dict, summary_md: str = "") -> str:
     rows = [f"| {jid} | {j['status']} | {j['pr']['url'] if j.get('pr') else '-'} |" for jid, j in st["jobs"].items()]
     blocked = [f"- `{jid}`: {_pr_reason(j['reason'])}" for jid, j in st["jobs"].items() if j["status"] == "blocked"]
     parts = [f"**Decisions:** `docs/decisions/{st['slug']}.md` (in this PR)", "",
@@ -326,6 +326,8 @@ def final_pr_body(st: dict) -> str:
              "| job | status | PR |", "|---|---|---|", *rows]
     if blocked:
         parts += ["", "**Blocked jobs** (not in this PR):", *blocked]
+    if summary_md:
+        parts += ["", summary_md.rstrip("\n")]
     return "\n".join(parts) + "\n"
 
 
