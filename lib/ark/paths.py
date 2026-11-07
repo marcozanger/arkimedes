@@ -51,6 +51,7 @@ DEFAULTS = {
     "limits": {"writers_per_repo": 3, "writers_total": 6, "heavy_gates": 1},
     "tick_minutes": 15,
     "poll_seconds": 15,
+    "notify": [],
 }
 
 

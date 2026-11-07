@@ -18,7 +18,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from . import brief, claude, forge as forge_mod, gitops, integrate, merge, paths, proc, run
+from . import brief, claude, forge as forge_mod, gitops, integrate, merge, notify, paths, proc, run
 from .globs import areas_overlap, match_any
 from .plan import load_plan, sha256_file
 from .validate import validate
@@ -39,6 +39,7 @@ WAITING = {"worker": "needs_worker", "gate": "needs_gate", "review": "needs_revi
            "integrate": "needs_integrate", "judge": "needs_judge"}
 CHECK_KINDS = ("gate", "review", "integrate")  # what a new approval makes a job earn again
 REWOUND = ("gating", "needs_pr", "needs_review", "reviewing", "needs_integrate", "integrating", "needs_merge")
+WAITS_FOR_MARCO = ("waiting_answer", "attached")  # statuses only Marco can move
 
 _said: set[tuple] = set()  # what was already alerted about a run with no state to remember it in
 
@@ -230,14 +231,14 @@ def fail(c: Ctx, job: str, why: str) -> None:
     run.event(c.st, f"{job} failed ({j['tier']}, attempt {j['tier_attempts']} at this tier): {why}")
 
 
-def _block(st: dict, job: str, why: str) -> None:
+def _block(st: dict, job: str, why: str, critical: bool = False) -> None:
     why = _clean(why)
     st["jobs"][job].update(status="blocked", reason=why)
-    run.alert(st, f"{job} blocked: {why}")
+    run.alert(st, f"{job} blocked: {why}", critical=critical)
 
 
-def block(c: Ctx, job: str, why: str) -> None:
-    _block(c.st, job, why)
+def block(c: Ctx, job: str, why: str, critical: bool = False) -> None:
+    _block(c.st, job, why, critical=critical)
 
 
 def allowed_actions(j: dict) -> list[str]:
@@ -395,7 +396,7 @@ def on_integrate(c: Ctx, job: str, r: dict) -> None:
         return
     j["integrate_fails"] += 1
     if j["integrate_fails"] >= 2:
-        return block(c, job, f"integration gate failed twice: {reason}")
+        return block(c, job, f"integration gate failed twice: {reason}", critical=True)
     j["resume_msg"] = brief.resume_message("integrate", f"{reason}\n\n{out.get('tail', '')}", c.st["slug"])
     j["status"] = "needs_worker"
     run.event(c.st, f"{job}: integration gate red ({reason}); back to the worker")
@@ -473,7 +474,7 @@ def _model_unreachable(c: Ctx, job: str, kind: str) -> None:
         return block(c, job, f"the model stayed unreachable for {n} tries")
     if n == 2:  # the first may have been a lost session, which the fresh start above heals
         run.alert(c.st, f"{job}: the model is unreachable (offline or auth expired?): nothing is charged, "
-                        "it keeps retrying with a growing wait")
+                        "it keeps retrying with a growing wait", critical=True)
     run.event(c.st, f"{job}: its {kind} got no answer from the model; try {n}")
 
 
@@ -697,7 +698,7 @@ def do_merge(c: Ctx, job: str) -> None:
     try:
         merge.merge(c.st, job, c.forge, c.repo)
     except merge.MergeRefused as e:
-        return block(c, job, f"ark-merge refused: {e}")
+        return block(c, job, f"ark-merge refused: {e}", critical=True)
     _merged(c, job)
 
 
@@ -801,7 +802,8 @@ def _stop_closing(c: Ctx, why: str) -> None:
     st.update(status="blocked", closing="done")
     file = f"The decisions file is on ark/{st['slug']}" if st.get("decisions_sha") else \
         f"The decisions file was not committed; its text, if it could be written, is at {c.dir / 'decisions.md'}"
-    run.alert(st, f"run blocked: {why}. {file}, and no final PR was opened: the rest is by hand")
+    run.alert(st, f"run blocked: {why}. {file}, and no final PR was opened: the rest is by hand",
+              critical=True)
 
 
 def _closing_failed(c: Ctx, e: Exception) -> None:
@@ -842,7 +844,7 @@ def publish(c: Ctx) -> None:
     all_merged = all(j["status"] == "merged" for j in st["jobs"].values())
     st.update(status="done" if all_merged else "blocked", closing="done")
     pr = f"final PR {st['final_pr']['url']}" if st["final_pr"] else "no job merged, no final PR"
-    run.alert(st, f"run {st['status']}: {pr}")
+    run.alert(st, f"run {st['status']}: {pr}", critical=True)
 
 
 # ---- scheduling -------------------------------------------------------------------------------
@@ -1071,11 +1073,14 @@ def _load(repo: str, slug: str) -> dict | None:
     return st
 
 
-def _once(key: tuple, text: str, alerts: list[str]) -> None:
+def _once(key: tuple, text: str, alerts: list[str]) -> bool:
+    """Whether this is the first time."""
     key = (str(paths.ark_home()), *key)
-    if key not in _said:
-        _said.add(key)
-        alerts.append(text)
+    if key in _said:
+        return False
+    _said.add(key)
+    alerts.append(text)
+    return True
 
 
 def _guarded(st: dict, key: str, fn) -> None:
@@ -1115,6 +1120,35 @@ def _orphans(known, alerts: list[str]) -> None:
                                               f"{type(e).__name__}: {e}", alerts)
 
 
+def _nothing_to_advance(states: list[dict], capped: bool = False) -> bool:
+    """Called after every run took its step: there are live runs, no process alive anywhere, and each run is
+    held or waits for Marco. A pending job beside a waiting one only waits for it: this pass started all it could."""
+    live = [st for st in states if st["status"] not in ("done", "blocked", "waiting")]
+    if not live or any(proc.active(paths.run_dir(st["repo"], st["slug"])) for st in live):
+        return False
+    if capped:
+        return True
+    for st in live:
+        if st["status"] == "held" or st.get("cap_hold"):
+            continue
+        statuses = [j["status"] for j in st["jobs"].values() if j["status"] not in run.TERMINAL]
+        if not any(s in WAITS_FOR_MARCO for s in statuses):
+            return False
+        if any(s not in WAITS_FOR_MARCO and s != "pending" for s in statuses):
+            return False
+    return True
+
+
+def _flag_stuck(states: list[dict], capped: bool, alerts: list[str], critical: list[str]) -> None:
+    key = ("stuck",)
+    if not _nothing_to_advance(states, capped):
+        _said.discard((str(paths.ark_home()), *key))
+        return
+    text = "nothing left to advance: every live run waits for you. See `ark ps` and `ark answer`."
+    if _once(key, text, alerts):
+        critical.append(text)
+
+
 def cycle(forge=None) -> tuple[str, list[str], bool]:
     """One pass. Returns (status line, alerts to show, whether any run state changed)."""
     forge = forge or forge_mod.get()
@@ -1146,9 +1180,10 @@ def cycle(forge=None) -> tuple[str, list[str], bool]:
             _guarded(st, "error", lambda d=paths.run_dir(*key): proc.reap(d))
         else:
             _guarded(st, "error", lambda st=st: step(st, list(states.values()), forge, slots))
-    changed = False
+    changed, critical = False, []
     for key, st in states.items():
         alerts += st["alerts"]
+        critical += st.pop("critical", [])
         st["alerts"] = []
         dirty = json.dumps(st, sort_keys=True) != before[key]
         changed = changed or dirty
@@ -1157,8 +1192,13 @@ def cycle(forge=None) -> tuple[str, list[str], bool]:
                 run.save(st)
                 _said.discard((home, "unsaved", *key))
             except Exception as e:  # until a save works this run only reaps; then reconcile() catches up
-                _once(("unsaved", *key), f"{key[0]}/{key[1]}: the run state cannot be saved: "
-                                         f"{type(e).__name__}: {e}", alerts)
+                text = f"{key[0]}/{key[1]}: the run state cannot be saved: {type(e).__name__}: {e}"
+                if _once(("unsaved", *key), text, alerts):
+                    critical.append(text)
+    _flag_stuck(list(states.values()), False, alerts, critical)
+    problem = notify.deliver(alerts, critical)  # never raises: it says what went wrong
+    if problem:
+        _once(("notify",), problem, alerts)
     return status_line(list(states.values())), alerts, changed
 
 
