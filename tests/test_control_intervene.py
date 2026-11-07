@@ -245,3 +245,43 @@ def test_ps_shows_the_worker_while_a_tick_looks_at_it(feature, monkeypatch, tmp_
     (d / "shell.intervene.proc").unlink()
     go.touch()
     drive(settled)
+
+
+from control_helpers import ark as ark_cmd
+
+from ark import inbox
+
+
+def test_ark_steer_redirects_a_running_worker(feature, monkeypatch, tmp_path, capsys):
+    go = holding(feature, monkeypatch, tmp_path)
+    capsys.readouterr()
+    assert ark_cmd(capsys, "steer", "shell", "use the other store")[0] == 0
+    drive(second_worker_got("use the other store"))
+    j = state()["jobs"]["shell"]
+    assert j["tier_attempts"] == 0 and "steers" not in j      # his own steer uses none of the tick's
+    assert "--resume" in json.loads(fake_file("shell.worker.2.argv").read_text())
+    go.touch()
+    drive(settled)
+    assert state()["jobs"]["shell"]["status"] == "merged"
+
+
+def test_ark_steer_refuses_what_it_cannot_do(feature, monkeypatch, tmp_path, capsys):
+    go = holding(feature, monkeypatch, tmp_path)
+    capsys.readouterr()
+    assert ark_cmd(capsys, "steer", "shell", "   ")[0] == 1
+    assert ark_cmd(capsys, "steer", "ui", "x")[0] == 1          # pending: nothing to redirect
+    monkeypatch.setenv("ARK_ROLE", "worker")
+    assert ark_cmd(capsys, "steer", "shell", "x")[0] == 1
+    monkeypatch.delenv("ARK_ROLE")
+    assert inbox.pending("demo", SLUG) == []
+    go.touch()
+    drive(settled)
+
+
+def test_a_steer_that_arrives_too_late_says_so(feature, capsys):
+    feature()
+    drive(lambda: job_status("shell") == "merged")
+    inbox.post("demo", SLUG, "steer", job="shell", text="late")
+    _, alerts, _ = loop.cycle()
+    assert any("not delivered" in a for a in alerts)
+    drive(settled)

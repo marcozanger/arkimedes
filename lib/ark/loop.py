@@ -1277,8 +1277,16 @@ def _retry_stops(st: dict) -> None:
                 break
 
 
+def _apply_steer(st: dict, item: dict) -> None:
+    job, text = item.get("job"), item.get("text")
+    j = st["jobs"].get(job)
+    if j is None or j["status"] != "working" or any(k in j for k in ("stop_then", "attaching")) or not isinstance(text, str):
+        return run.alert(st, f"the steer for {_clean(str(job))} was not delivered: its worker is not running")
+    _steer(st, job, text)
+
+
 ANSWERS = {"worker": _answered_worker, "plan_changed": _answered_plan_changed, "cap_run": _answered_cap_run}
-INBOX = {"answer": _apply_answer, "stop": _apply_stop}
+INBOX = {"answer": _apply_answer, "stop": _apply_stop, "steer": _apply_steer}
 
 
 def apply_inbox(st: dict) -> None:
