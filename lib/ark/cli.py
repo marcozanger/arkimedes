@@ -1,6 +1,6 @@
 """`ark` subcommands that need no model: status, plans, validate, estimate, approve, report, stats, and the run control ones.
 
-`ark` with no arguments is handled by bin/ark (it starts Claude); planning sessions use bin/planner.
+`ark` with no arguments is handled by bin/ark (it starts Claude); planning is the /ark-plan skill.
 """
 from __future__ import annotations
 
