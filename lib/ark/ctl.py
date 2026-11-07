@@ -76,7 +76,7 @@ def _ps_row(st: dict, job: str, j: dict) -> list[str]:
     infos = proc.job_processes(d, job)
     elapsed, tokens, last = "-", "-", ""
     if infos:
-        info = infos[0]
+        info = next((i for i in infos if i["name"].endswith(".worker")), infos[0])  # a tick may be looking at it
         if isinstance(info.get("start"), (int, float)):
             elapsed = _age(time.time() - info["start"])
         seen = usage.scan(d / f"{info['name']}.log")
@@ -226,6 +226,21 @@ def cmd_answer(args) -> int:
     return 0
 
 
+@_cmd
+def cmd_steer(args) -> int:
+    _writer()
+    repo, slug, job = _resolve(args.job)
+    text = args.text.strip()
+    if not text:
+        raise CtlError("la instrucción está vacía")
+    status = run.load(repo, slug)["jobs"][job]["status"]
+    if status != "working":
+        raise CtlError(f"{job} no está trabajando: {status}")
+    inbox.post(repo, slug, "steer", job=job, text=text)
+    print(f"{job}: anotado; ark-loop lo detiene y retoma su sesión con la instrucción")
+    return 0
+
+
 def register(sub) -> None:
     s = sub.add_parser("ps", help="qué corre: job, tiempo, tokens, último mensaje")
     s.set_defaults(fn=cmd_ps)
@@ -241,3 +256,7 @@ def register(sub) -> None:
     s.add_argument("--list", action="store_true", help="mostrarlas sin responder")
     s.add_argument("--run", nargs=3, metavar=("REPO/SLUG", "ID", "TEXTO"), help="responder una sola")
     s.set_defaults(fn=cmd_answer)
+    s = sub.add_parser("steer", help="detener un worker y retomar su sesión con una instrucción")
+    s.add_argument("job", help="<job> o <repo>/<slug>:<job>")
+    s.add_argument("text", help="la instrucción")
+    s.set_defaults(fn=cmd_steer)

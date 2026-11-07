@@ -11,6 +11,9 @@ from . import paths
 
 MODELS = {"T0": "haiku", "T1": "sonnet", "T2": "opus"}
 TIER_MINUTES = {"T0": 20, "T1": 60, "T2": 120}
+TIER_TOKENS = {"T0": 150_000, "T1": 400_000, "T2": 800_000}  # per process: input + cache creation + output
+STALL_MINUTES = 20  # no new line in the log for this long
+HARD_FACTOR = 2     # the tier minutes call the intervene tick; the process dies at this many times them
 NEXT_TIER = {"T0": "T1", "T1": "T2"}
 TICK_MODEL = {"judge": "opus", "decisions": "sonnet"}
 ROLE_FILES = {"worker": "ark-dev.md", "reviewer": "ark-reviewer.md"}
