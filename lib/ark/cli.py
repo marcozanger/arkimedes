@@ -11,7 +11,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import desk, paths, validate
+from . import ctl, desk, paths, validate
 from .plan import load_plan, set_status, sha256_file
 
 
@@ -119,7 +119,7 @@ def cmd_approve(args) -> int:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(prog="ark", description="Arkimedes desk (sin modelo).")
+    ap = argparse.ArgumentParser(prog="ark", description="Arkimedes desk y control de runs (sin modelo).")
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("status", help="features del desk por repo")
     s.add_argument("repo", nargs="?")
@@ -133,6 +133,7 @@ def main(argv=None) -> int:
     s = sub.add_parser("approve", help="cerrar un plan (Marco confirma)")
     s.add_argument("target", help="<repo>/<slug>")
     s.set_defaults(fn=cmd_approve)
+    ctl.register(sub)
     args = ap.parse_args(argv)
     return args.fn(args)
 
