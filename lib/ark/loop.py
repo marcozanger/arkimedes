@@ -18,7 +18,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from . import brief, caps, claude, forge as forge_mod, gitops, inbox, integrate, merge, notify, paths, proc, questions, run, usage
+from . import brief, caps, claude, forge as forge_mod, gitops, inbox, integrate, merge, notify, paths, proc, questions, reporting, run, usage
 from .globs import areas_overlap, match_any
 from .plan import load_plan, sha256_file
 from .validate import validate
@@ -952,9 +952,10 @@ def _stop_closing(c: Ctx, why: str) -> None:
     st = c.st
     _forget_retries(st)
     st.update(status="blocked", closing="done")
+    _close_report(c, record=True)
     file = f"The decisions file is on ark/{st['slug']}" if st.get("decisions_sha") else \
         f"The decisions file was not committed; its text, if it could be written, is at {c.dir / 'decisions.md'}"
-    run.alert(st, f"run blocked: {why}. {file}, and no final PR was opened: the rest is by hand",
+    run.alert(st, f"run blocked: {why}. {file}, and no final PR was opened: the rest is by hand" + _report_note(st),
               critical=True)
 
 
@@ -975,6 +976,22 @@ def _closing_failed(c: Ctx, e: Exception) -> None:
         st["closing_wait"] = time.time() + BACKOFF_MAX
 
 
+def _close_report(c: Ctx, *, record: bool) -> str:
+    """The run's report, and with `record` its history. Never in the way of the close: a failure is an event.
+    Returns the summary for the final PR body ("" if there is none)."""
+    try:
+        out = reporting.generate(c.st, c.mjobs, c.repo, record=record)
+    except Exception as e:
+        run.event(c.st, f"report not written: {_clean(f'{type(e).__name__}: {e}')[:300]}")
+        return ""
+    c.st["report"] = str(out["path"])
+    return out["markdown"]
+
+
+def _report_note(st: dict) -> str:
+    return f" · report: {st['report']}" if st.get("report") else ""
+
+
 def publish(c: Ctx) -> None:
     """Commit docs/decisions/<slug>.md on ark/<slug>, open the final PR, finish. Retried within _closing_failed."""
     st = c.st
@@ -986,8 +1003,9 @@ def publish(c: Ctx) -> None:
             run.event(st, f"decisions file committed on ark/{st['slug']}")
         merged = any(j["status"] == "merged" for j in st["jobs"].values())
         if merged and not st["final_pr"]:
+            md = _close_report(c, record=False)
             st["final_pr"] = c.forge.create(c.repo, base=st["default_branch"], head=c.base,
-                                            title=c.plan.manifest["final_pr_title"], body=brief.final_pr_body(st))
+                                            title=c.plan.manifest["final_pr_title"], body=brief.final_pr_body(st, md))
     except gitops.PathRefused as e:  # the branch itself is the problem: no retry heals it
         return _stop_closing(c, _clean(f"{type(e).__name__}: {e}"))
     except Exception as e:
@@ -995,8 +1013,9 @@ def publish(c: Ctx) -> None:
     _forget_retries(st)
     all_merged = all(j["status"] == "merged" for j in st["jobs"].values())
     st.update(status="done" if all_merged else "blocked", closing="done")
+    _close_report(c, record=True)
     pr = f"final PR {st['final_pr']['url']}" if st["final_pr"] else "no job merged, no final PR"
-    run.alert(st, f"run {st['status']}: {pr}", critical=True)
+    run.alert(st, f"run {st['status']}: {pr}{_report_note(st)}", critical=True)
 
 
 # ---- scheduling -------------------------------------------------------------------------------
