@@ -18,7 +18,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from . import brief, caps, claude, forge as forge_mod, gitops, inbox, integrate, merge, notify, paths, proc, questions, run
+from . import brief, caps, claude, forge as forge_mod, gitops, inbox, integrate, merge, notify, paths, proc, questions, run, usage
 from .globs import areas_overlap, match_any
 from .plan import load_plan, sha256_file
 from .validate import validate
@@ -658,9 +658,11 @@ def start_worker(c: Ctx, job: str) -> bool:
                             report=report, gate=mj["gate"], run_dir=c.dir, job=job)
     sid = j["session"] or str(uuid.uuid4())  # the worker's id before it says so: a kill may come first
     cmd = claude.agent_cmd("worker", claude.MODELS[j["tier"]], prompt, session=sid, resume=resume, usd=mj["budget"]["usd"])
-    proc.start(c.dir, f"{job}.worker", cmd, cwd=wt, env=env, minutes=claude.TIER_MINUTES[j["tier"]], pre=pre,
+    proc.start(c.dir, f"{job}.worker", cmd, cwd=wt, env=env, minutes=claude.TIER_MINUTES[j["tier"]] * claude.HARD_FACTOR, pre=pre,
                meta={"session": sid, "tier": j["tier"], "attempt": j["attempts"] + 1})
-    j.update(status="working", attempts=j["attempts"] + 1, error=None)
+    now = time.time()
+    j.update(status="working", attempts=j["attempts"] + 1, error=None, soft_deadline=now + claude.TIER_MINUTES[j["tier"]] * 60,
+             watch_from=now, token_factor=1, waited=False, anomaly=None)
     run.event(c.st, f"{job}: worker {j['tier']} attempt {j['attempts']}{' (resumed)' if resume else ''}")
     return True
 
@@ -974,6 +976,34 @@ def _next_step(c: Ctx, job: str, j: dict, slots: Slots):
     return None
 
 
+HANDLING = ("intervening", "stop_then", "steering", "attaching")  # a job with one of these is already being dealt with
+
+
+def _anomaly(j: dict, log: Path, now: float) -> str | None:
+    """What looks wrong with this worker, or None (spec §6)."""
+    if now > j["soft_deadline"]:
+        return f"over its time for tier {j['tier']}"
+    if now - max(_mtime(log) / 1e9, j["watch_from"]) > claude.STALL_MINUTES * 60:
+        return f"no output for over {claude.STALL_MINUTES} minutes"
+    tokens = usage.scan(log)["tokens"]
+    if tokens > claude.TIER_TOKENS[j["tier"]] * j["token_factor"]:
+        return f"{tokens} tokens, over the limit for tier {j['tier']}"
+    return None
+
+
+def watch(c: Ctx) -> None:
+    now, ended = time.time(), proc.finished(c.dir)
+    for job, j in c.st["jobs"].items():
+        name = f"{job}.worker"
+        if (j["status"] != "working" or "soft_deadline" not in j or any(k in j for k in HANDLING)
+                or name in ended or proc.stop_requested(c.dir, name)):
+            continue
+        why = _anomaly(j, c.dir / f"{name}.log", now)
+        if why and why != j.get("anomaly"):
+            j["anomaly"] = why
+            run.event(c.st, f"{job} looks wrong: {why}")
+
+
 def schedule(c: Ctx, slots: Slots) -> None:
     for job, j in c.st["jobs"].items():
         move = _next_step(c, job, j, slots)
@@ -1181,6 +1211,7 @@ def step(st: dict, states: list[dict], forge, slots: Slots) -> None:
             return
         if not st.get("cap_hold"):
             schedule(c, slots)
+            watch(c)
         maybe_close(c)
 
 
@@ -1470,6 +1501,9 @@ def _retry_due() -> bool:
         for j in st["jobs"].values():
             if j["status"] in run.TERMINAL:
                 continue
+            if (j["status"] == "working" and not st.get("cap_hold") and 0 < j.get("soft_deadline", 0) <= now
+                    and not j.get("anomaly") and not any(k in j for k in HANDLING)):
+                return True
             if j.get("errors"):  # a running job has them only while its result cannot be archived
                 return True
             if j["status"] not in RUNNING and ("holders_since" in j or 0 < j.get("not_before", 0) <= now):
