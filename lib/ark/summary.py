@@ -2,7 +2,7 @@
 and the history all read the same dict."""
 from __future__ import annotations
 
-from . import usage
+from . import estimate, paths, usage
 from .steps import num, ts
 
 NOT_PROCESSES = ("merge", "wait-marco")
@@ -68,6 +68,8 @@ def summarize(st: dict, rows: list[dict], mjobs: dict) -> dict:
         "repo": st["repo"], "slug": st["slug"], "status": st.get("status"),
         "started": st.get("started"), "ended": st.get("updated"),
         "wall_minutes": round((ended - started) / 60, 2) if started and ended and ended >= started else None,
+        "estimated_minutes": estimate.end_to_end(list(mjobs.values()),
+                                                 int(paths.load_workspace()["limits"]["writers_per_repo"])),
         "working_minutes": _working(procs),
         "waiting_minutes": round(sum(r["minutes"] or 0 for r in rows if r["kind"] == "wait-marco"), 2),
         "usd": _sum(procs, "usd"), "tokens": int(_sum(procs, "tokens_total")),

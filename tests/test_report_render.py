@@ -77,3 +77,13 @@ def test_final_pr_body_appends_the_summary_and_still_starts_with_decisions():
     body = brief.final_pr_body(st, "## Report\n\nx\n")
     assert body.startswith("**Decisions:**") and body.startswith(plain.rstrip("\n"))
     assert body.endswith("## Report\n\nx\n")
+
+
+def test_total_time_is_shown_against_the_estimate(ark_home):
+    from ark import report, steps, summary
+    from report_helpers import mjobs, run_state
+    st = run_state()
+    s = summary.summarize(st, steps.build(st), mjobs())
+    html = report.render_html(s, [], None)
+    assert "Estimado (punta a punta)" in html and "30 min" in html
+    assert "1 h 00 min wall (estimated 30 min)" in report.summary_md(s, "/x/report.html")

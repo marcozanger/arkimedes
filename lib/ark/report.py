@@ -122,7 +122,8 @@ def decisions_html(text: str | None) -> str:
 
 def _summary(s: dict) -> str:
     est = _est(s["estimated"])
-    tiles = [("Tiempo total", minutes(s["wall_minutes"])), ("Trabajando", minutes(s["working_minutes"])),
+    tiles = [("Tiempo total", minutes(s["wall_minutes"])),
+             ("Estimado (punta a punta)", minutes(s.get("estimated_minutes"))), ("Trabajando", minutes(s["working_minutes"])),
              ("Esperando a Marco", minutes(s["waiting_minutes"])), ("Tokens", tokens(s["tokens"]) + est),
              ("USD equivalente API", usd(s["usd"]) + est), ("Presupuesto", usd(s["budget_usd"])),
              ("PRs mergeados", str(s["merged"])), ("PRs bloqueados", str(s["blocked"])),
@@ -192,12 +193,17 @@ def write(st: dict, s: dict, rows: list[dict]):
     return path
 
 
+def _vs(s: dict) -> str:
+    e = s.get("estimated_minutes")
+    return f" (estimated {minutes(e)})" if e is not None else ""
+
+
 def summary_md(s: dict, path) -> str:
     """The report in a few lines for the final PR body, in English like the rest of it."""
     est = " (some numbers estimated)" if s["estimated"] else ""
     budget = f" of {usd(s['budget_usd'])} budget" if s["budget_usd"] is not None else ""
     lines = ["## Report", "",
-             f"{minutes(s['wall_minutes'])} wall · {minutes(s['working_minutes'])} working · "
+             f"{minutes(s['wall_minutes'])} wall{_vs(s)} · {minutes(s['working_minutes'])} working · "
              f"{minutes(s['waiting_minutes'])} waiting for Marco · {tokens(s['tokens'])} tokens · "
              f"{usd(s['usd'])} API-equivalent{budget}{est}",
              f"{s['merged']} merged · {s['blocked']} blocked · {s['integrate_fails']} integration failures", "",
