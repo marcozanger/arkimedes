@@ -16,7 +16,8 @@ def holding(feature, monkeypatch, tmp_path, **env):
     for k, v in env.items():
         monkeypatch.setenv(k, v)
     feature()
-    drive(lambda: job_status("shell") == "working" and worker_log().exists())  # the state says so before its process does
+    # The state says so before its process does, and a stop before the fake counts its attempt would shift the count.
+    drive(lambda: job_status("shell") == "working" and fake_file("shell.worker.1.prompt").exists())
     return go
 
 
