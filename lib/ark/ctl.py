@@ -76,7 +76,7 @@ def _ps_row(st: dict, job: str, j: dict) -> list[str]:
     infos = proc.job_processes(d, job)
     elapsed, tokens, last = "-", "-", ""
     if infos:
-        info = infos[0]
+        info = next((i for i in infos if i["name"].endswith(".worker")), infos[0])  # a tick may be looking at it
         if isinstance(info.get("start"), (int, float)):
             elapsed = _age(time.time() - info["start"])
         seen = usage.scan(d / f"{info['name']}.log")

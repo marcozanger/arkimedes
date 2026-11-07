@@ -41,6 +41,11 @@ CHECK_KINDS = ("gate", "review", "integrate")  # what a new approval makes a job
 REWOUND = ("gating", "needs_pr", "needs_review", "reviewing", "needs_integrate", "integrating", "needs_merge")
 WAITS_FOR_MARCO = ("waiting_answer", "attached")  # statuses only Marco can move
 TICK_ANSWERS = 2  # questions per job a tick may answer before Marco answers them all
+STEERED = "steered"
+INTERVENED = "stopped by the intervene tick"
+ATTACHED = "handed to Marco"
+OURS = (STEERED, INTERVENED, ATTACHED)  # we stopped it, knowing which session it was
+MAX_STEERS = 2
 
 _said: set[tuple] = set()  # what was already alerted about a run with no state to remember it in
 
@@ -283,10 +288,32 @@ def _printable(name: str) -> str:
     return name.encode("utf-8", "backslashreplace").decode("utf-8")
 
 
+def _after_stop(st: dict, job: str, then: dict) -> None:
+    """What the intervene tick decided, once its worker is gone."""
+    j = st["jobs"][job]
+    if then["action"] == "stop_escalate" and j["tier"] in claude.NEXT_TIER:
+        _escalate(j)
+        j.update(note=then["note"], status="needs_worker")
+    else:
+        _block(st, job, then["note"])
+
+
 def on_worker(c: Ctx, job: str, r: dict) -> None:
     j = c.st["jobs"][job]
+    steering, then = j.pop("steering", None), j.pop("stop_then", None)
     j.update(resume_msg=None, note=None)  # kept until now: a worker that never ran still needs them
-    j["session"] = r.get("session")  # only a process that says it had one can be resumed
+    # only a process that says it had one can be resumed, or one we stopped ourselves
+    j["session"] = r.get("session") or ((r.get("meta") or {}).get("session") if r["reason"] in OURS else None)
+    if then and r["reason"] == INTERVENED:
+        return _after_stop(c.st, job, then)
+    if steering and r["reason"] == STEERED:
+        if j["session"]:
+            j["resume_msg"] = brief.resume_message("steer", steering, c.st["slug"])
+        else:
+            j["note"] = steering
+        j["status"] = "needs_worker"
+        run.event(c.st, f"{job}: redirected: {steering[:300]}")
+        return
     if not r["reason"]:  # any reason may mean setup never finished: it runs again
         j["setup_done"] = True
     if r["reason"]:
@@ -442,6 +469,12 @@ def on_question(c: Ctx, job: str, r: dict) -> None:
     _ask_marco(c, job)
 
 
+def _escalate(j: dict) -> None:
+    j["tier"] = claude.NEXT_TIER[j["tier"]]
+    j["tier_path"].append(j["tier"])
+    j.update(tier_attempts=0, session=None, resume_msg=None, review_rounds=0)
+
+
 def on_judge(c: Ctx, job: str, r: dict) -> None:
     j = c.st["jobs"][job]
     if j.get("question"):
@@ -455,9 +488,7 @@ def on_judge(c: Ctx, job: str, r: dict) -> None:
     if action == "block":
         return block(c, job, note or j["failure"])
     if action == "escalate":
-        j["tier"] = claude.NEXT_TIER[j["tier"]]
-        j["tier_path"].append(j["tier"])
-        j.update(tier_attempts=0, session=None, resume_msg=None, review_rounds=0)
+        _escalate(j)
     elif j["session"]:
         j["resume_msg"] = brief.resume_message("judge", f"{j['failure']}\n\nNote: {note}", c.st["slug"])
     j.update(note=note, status="needs_worker")
@@ -500,6 +531,8 @@ def _model_unreachable(c: Ctx, job: str, kind: str) -> None:
     j = c.st["jobs"][job]
     j["status"] = WAITING[kind]
     if kind == "worker":
+        j.pop("steering", None)
+        j.pop("stop_then", None)
         j["setup_done"] = True  # no reason on the receipt: setup got through
         j["attempts"] = max(0, j["attempts"] - 1)
         j["session"] = None  # the same death as a session that cannot be resumed: the next try starts fresh
@@ -576,6 +609,48 @@ def _charge(st: dict, name: str, r: dict) -> None:
         run.event(st, f"the spending ledger cannot be written: {e}")
 
 
+def _intervene_actions(j: dict) -> list[str]:
+    out = ["stop_block"]
+    if not j.get("waited"):
+        out.append("wait")
+    if j.get("steers", 0) < MAX_STEERS:
+        out.append("steer")
+    if j["tier"] in claude.NEXT_TIER:
+        out.append("stop_escalate")
+    return out
+
+
+def _steer(st: dict, job: str, text: str) -> None:
+    j = st["jobs"][job]
+    j["steering"] = _clean(text)[:4000]
+    proc.stop(paths.run_dir(st["repo"], st["slug"]), f"{job}.worker", STEERED)
+
+
+def on_intervene(c: Ctx, job: str, r: dict) -> None:
+    j = c.st["jobs"][job]
+    j.pop("intervening", None)
+    if (j["status"] != "working" or (r.get("meta") or {}).get("attempt") != j["attempts"]
+            or any(k in j for k in HANDLING)):
+        return run.event(c.st, f"{job}: ignored the intervene tick: the worker it looked at is gone or being handled")
+    allowed = _intervene_actions(j)
+    action, note = _judge_answer(r)
+    if not isinstance(action, str) or action not in allowed:
+        action = next(a for a in ("wait", "stop_escalate", "stop_block") if a in allowed)
+        note = f"the intervene tick gave no usable answer; the runner chose {action}: {j.get('anomaly')}"
+    note = _clean(str(note or j.get("anomaly") or action))
+    run.event(c.st, f"{job} intervene: {action} — {note}")
+    if action == "wait":
+        now = time.time()
+        j.update(waited=True, anomaly=None, watch_from=now, token_factor=j["token_factor"] * 1.5,
+                 soft_deadline=max(j["soft_deadline"], now) + claude.TIER_MINUTES[j["tier"]] * 30)
+    elif action == "steer":
+        j["steers"] = j.get("steers", 0) + 1
+        _steer(c.st, job, note)
+    else:
+        j["stop_then"] = {"action": action, "note": note}
+        proc.stop(c.dir, f"{job}.worker", INTERVENED)
+
+
 def _on_receipt(c: Ctx, name: str, r: dict) -> None:
     _charge(c.st, name, r)
     if name == DECISIONS:
@@ -595,6 +670,13 @@ def _on_receipt(c: Ctx, name: str, r: dict) -> None:
                         "look for leftovers before they touch its worktree")
     if j is not None and r["reason"] == proc.STOPPED_BY_MARCO and j["status"] not in run.TERMINAL:
         block(c, job, proc.STOPPED_BY_MARCO)  # before the check below: whatever the job waits for, it ends here
+        return
+    if j is not None and kind == "intervene":  # never the job's main process: it does not move the job's status
+        try:
+            on_intervene(c, job, r)
+        except Exception as e:
+            j.pop("intervening", None)
+            run.event(c.st, f"{job}: the intervene tick's answer failed: {type(e).__name__}: {_clean(str(e))}")
         return
     if j is None or kind not in HANDLERS or RUNNING.get(j["status"]) != kind:
         run.event(c.st, f"ignored the result of {_clean(name)}: nothing was waiting for it")
@@ -991,6 +1073,18 @@ def _anomaly(j: dict, log: Path, now: float) -> str | None:
     return None
 
 
+def start_intervene(c: Ctx, job: str, why: str) -> None:
+    j = c.st["jobs"][job]
+    log = c.dir / f"{job}.worker.log"
+    prompt = brief.intervene_prompt(c.st, job, c.mjobs[job]["pr_title"], why, usage.scan(log)["last"], log,
+                                    _intervene_actions(j))
+    cmd = claude.agent_cmd("tick", claude.TICK_MODEL["judge"], prompt, session=str(uuid.uuid4()), usd=1)
+    proc.start(c.dir, f"{job}.intervene", cmd, cwd=ticks_dir(), env=claude.runner_env("tick"), minutes=15,
+               meta={"attempt": j["attempts"]})
+    j.update(intervening=True, anomaly=why)
+    run.event(c.st, f"{job} looks wrong: {why}")
+
+
 def watch(c: Ctx) -> None:
     now, ended = time.time(), proc.finished(c.dir)
     for job, j in c.st["jobs"].items():
@@ -999,9 +1093,11 @@ def watch(c: Ctx) -> None:
                 or name in ended or proc.stop_requested(c.dir, name)):
             continue
         why = _anomaly(j, c.dir / f"{name}.log", now)
-        if why and why != j.get("anomaly"):
-            j["anomaly"] = why
-            run.event(c.st, f"{job} looks wrong: {why}")
+        if why:
+            try:
+                start_intervene(c, job, why)
+            except Exception as e:  # the next cycle looks again
+                run.event(c.st, f"{job}: the intervene tick did not start: {type(e).__name__}: {_clean(str(e))}")
 
 
 def schedule(c: Ctx, slots: Slots) -> None:
@@ -1018,6 +1114,19 @@ def schedule(c: Ctx, slots: Slots) -> None:
             j.pop("errors", None)
 
 
+def _gone_worker(st: dict, job: str, j: dict) -> bool:
+    """The worker was being stopped on purpose, and a crash lost its receipt: what was decided still happens."""
+    steering, then = j.pop("steering", None), j.pop("stop_then", None)
+    if then:
+        _after_stop(st, job, then)
+    elif steering:
+        j.update(note=steering, status="needs_worker")
+    else:
+        return False
+    run.event(st, f"{job}: its worker is gone, as was decided")
+    return True
+
+
 def reconcile(st: dict) -> None:
     """The state is saved at the end of a cycle and processes start and end during it, so a crash can
     leave them apart. A process the state does not know about is adopted, never started twice; a status
@@ -1030,11 +1139,16 @@ def reconcile(st: dict) -> None:
         run.event(st, "the decisions tick is gone without a result; starting it again")
     for job, j in st["jobs"].items():
         s = j["status"]
+        if j.get("intervening") and not (d / f"{job}.intervene.proc").exists():
+            j.pop("intervening")
+            run.event(st, f"{job}: its intervene tick is gone without a result")
         if s in RUNNING:
             kind = RUNNING[s]
             if not (d / f"{job}.{kind}.proc").exists():
                 if proc.stop_requested(d, f"{job}.{kind}"):  # consumed, then a crash before the save
                     _block(st, job, proc.STOPPED_BY_MARCO)
+                    continue
+                if kind == "worker" and _gone_worker(st, job, j):
                     continue
                 j["status"] = WAITING[kind]
                 run.event(st, f"{job}: its {kind} is gone without a result; going back to {j['status']}")
@@ -1151,6 +1265,18 @@ def _check_run_cap(c: Ctx) -> None:
                                      "`stop` to end the run.", critical=True)
 
 
+def _retry_stops(st: dict) -> None:
+    """A stop that could not finish in its cycle is asked again: the decision stands in the state."""
+    d = paths.run_dir(st["repo"], st["slug"])
+    for job, j in st["jobs"].items():
+        if j["status"] != "working":
+            continue
+        for key, reason in (("stop_then", INTERVENED), ("steering", STEERED), ("attaching", ATTACHED)):
+            if key in j and (d / f"{job}.worker.proc").exists() and not (d / f"{job}.worker.receipt.json").exists():
+                proc.stop(d, f"{job}.worker", reason)
+                break
+
+
 ANSWERS = {"worker": _answered_worker, "plan_changed": _answered_plan_changed, "cap_run": _answered_cap_run}
 INBOX = {"answer": _apply_answer, "stop": _apply_stop}
 
@@ -1187,6 +1313,7 @@ def step(st: dict, states: list[dict], forge, slots: Slots) -> None:
             return
     proc.reap(paths.run_dir(st["repo"], st["slug"]))  # first: nothing below can excuse a process from its deadline
     apply_inbox(st)
+    _retry_stops(st)
     if st.get("ending"):
         return _finish_ending(st)
     if merge.plan_reason(st):  # the same question ark-merge asks: a run it would refuse takes no step
@@ -1502,7 +1629,7 @@ def _retry_due() -> bool:
             if j["status"] in run.TERMINAL:
                 continue
             if (j["status"] == "working" and not st.get("cap_hold") and 0 < j.get("soft_deadline", 0) <= now
-                    and not j.get("anomaly") and not any(k in j for k in HANDLING)):
+                    and not any(k in j for k in HANDLING)):
                 return True
             if j.get("errors"):  # a running job has them only while its result cannot be archived
                 return True

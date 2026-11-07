@@ -20,6 +20,7 @@ leaves <job>.worker.<n>.argv and .prompt in FAKE_STATE.
 FAKE_USD=<n> is what every process says it cost.
 FAKE_BLOCKED=job:n,... makes attempt n end BLOCKED with the question "which store?". FAKE_QUESTION is the raw answer of a
 tick asked a worker's question; the default answer is not valid there, so the question reaches Marco.
+FAKE_INTERVENE is the raw answer of an intervene tick.
 """
 import fcntl
 import json
@@ -140,6 +141,8 @@ elif ROLE == "tick":
         emit("# Decisions — fake\n\n## shell — merged\n\n- **D1** · a fake decision · _arkimedes_\n", stream=False)
     elif "stopped with a question" in PROMPT and os.environ.get("FAKE_QUESTION"):
         emit(os.environ["FAKE_QUESTION"], stream=False)
+    elif "A running worker looks wrong" in PROMPT and os.environ.get("FAKE_INTERVENE"):
+        emit(os.environ["FAKE_INTERVENE"], stream=False)
     else:
         emit('{"action": "retry", "note": "try again"}', stream=False)
 else:
