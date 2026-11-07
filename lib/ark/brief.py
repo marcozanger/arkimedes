@@ -131,6 +131,7 @@ RESUME = {
                  "the current origin/ark/{slug}. Run `git fetch origin` and `git merge origin/ark/{slug}`, "
                  "fix the failure and commit. The failure:",
     "judge": "Your previous attempt did not finish. What went wrong, and the judge's note:",
+    "answer": "The question you stopped on has an answer. Go on with the job:",
 }
 
 
@@ -183,6 +184,33 @@ def judge_prompt(st: dict, job_id: str, j: dict, mj: dict, allowed: list[str], r
     ]) + "\n"
 
 
+QUESTION_ACTIONS = {
+    "answer": "`answer`: what is below settles it, and `note` is the answer the worker gets.",
+    "ask": "`ask`: it needs Marco's judgement; `note` says why. Choose this when in doubt.",
+}
+
+
+def question_prompt(st: dict, job_id: str, question: str, mj: dict, plan: Plan, report: str | None, allowed: list[str]) -> str:
+    return "\n\n".join([
+        "A worker in an Arkimedes run stopped with a question. Answer it only if the job below already settles it; "
+        "otherwise it goes to Marco. You have no tools; decide from what is below.",
+        f"Run: {st['repo']}/{st['slug']} · job `{job_id}` ({mj['pr_title']})",
+        "## The job",
+        *_job_block(mj, plan),
+        _untrusted("The worker's question", question),
+        _untrusted("Worker report (may be missing or from an earlier attempt)", (report or "")[-4000:] or "(none)"),
+        "Actions allowed now: " + ", ".join(allowed),
+        _bullets(QUESTION_ACTIONS[a] for a in QUESTION_ACTIONS if a in allowed),
+        "Answer with one line of JSON and nothing else:",
+        '{"action": "ask", "note": "<the answer for the worker, or why it needs Marco>"}',
+    ]) + "\n"
+
+
+def _answers(st: dict) -> str:
+    return "\n".join(f"- {a['id']}{' (' + a['job'] + ')' if a.get('job') else ''}: {a['question']} → {a['answer']}"
+                     for a in st.get("answers") or [])
+
+
 def decisions_prompt(st: dict, reports: dict[str, str]) -> str:
     jobs = []
     for jid, j in st["jobs"].items():
@@ -205,6 +233,7 @@ def decisions_prompt(st: dict, reports: dict[str, str]) -> str:
         DECISIONS_FORMAT,
         f"Plan: {st['plan']} · approved {st['approved_at'][:10]} · closed {date.today().isoformat()}",
         _untrusted("Run events", "\n".join(st["events"][-60:]) or "(none)"),
+        _untrusted("Marco's answers to the run's questions (each is a decision to record)", _answers(st) or "(none)"),
         "Jobs and their reports:",
         *jobs,
     ]) + "\n"
@@ -225,6 +254,8 @@ def fallback_decisions(st: dict, reports: dict[str, str]) -> str:
         found = _section(reports.get(jid, ""), "DECISIONS")
         if found:
             lines += [found, ""]
+    if st.get("answers"):
+        lines += ["## Answers from Marco", "", _answers(st), ""]
     return "\n".join(lines).rstrip() + "\n"
 
 

@@ -164,3 +164,10 @@ def test_bad_input_never_crashes_or_blocks(ark_home):
         r = subprocess.run(["python3", str(CODE / "hooks/desk-guard.py")], input=payload,
                            capture_output=True, text=True, env=env)
         assert r.returncode == 0 and r.stdout.strip() == "", payload
+
+
+def test_a_runner_process_cannot_write_the_inbox(ark_home):
+    target = str(ark_home / "inbox" / "r" / "s" / "1-answer.json")
+    assert guard(ark_home, "Write", {"file_path": target}, role="worker") == "deny"
+    assert guard(ark_home, "Write", {"file_path": target}) == "allow"
+    assert guard(ark_home, "Bash", {"command": f"echo x > {target}"}, role="worker") == "deny"
