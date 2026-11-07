@@ -302,3 +302,19 @@ def test_a_steer_after_the_worker_ended_says_so(feature, monkeypatch, tmp_path, 
     assert "steering" not in state()["jobs"]["shell"]
     drive(settled)
     assert state()["jobs"]["shell"]["status"] == "merged"   # its work counts all the same
+
+
+def test_a_tick_the_state_missed_is_adopted_never_started_twice(feature, monkeypatch, tmp_path):
+    go = holding(feature, monkeypatch, tmp_path)
+    d = paths.run_dir("demo", SLUG)
+    tick = proc.start(d, "shell.intervene", ["sleep", "30"], cwd=tmp_path, env=dict(os.environ), minutes=5, meta={"attempt": 1})
+    over_time()                                     # the state on disk knows nothing of the tick: a crash before the save
+    assert "intervening" not in state()["jobs"]["shell"]
+    started = []
+    monkeypatch.setattr(loop, "start_intervene", lambda *a: started.append(a))
+    loop.cycle()
+    assert not started and state()["jobs"]["shell"]["intervening"] is True
+    assert [i["pid"] for i in proc.job_processes(d, "shell") if i["name"] == "shell.intervene"] == [tick["pid"]]
+    proc.stop(d, "shell.intervene", "the test is over")
+    go.touch()
+    drive(settled)

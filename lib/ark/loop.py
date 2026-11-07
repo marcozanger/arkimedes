@@ -717,6 +717,12 @@ def _worktree_free(c: Ctx, job: str) -> bool:
     return False
 
 
+def _watch_from(j: dict, start: float) -> None:
+    """A new worker's limits, counted from when its process started."""
+    j.update(soft_deadline=start + claude.TIER_MINUTES[j["tier"]] * 60, watch_from=start, token_factor=1, waited=False,
+             anomaly=None)
+
+
 def start_worker(c: Ctx, job: str) -> bool:
     """Whether a worker was started: a job whose worktree is held stays where it is."""
     if not _worktree_free(c, job):
@@ -744,9 +750,8 @@ def start_worker(c: Ctx, job: str) -> bool:
     cmd = claude.agent_cmd("worker", claude.MODELS[j["tier"]], prompt, session=sid, resume=resume, usd=mj["budget"]["usd"])
     proc.start(c.dir, f"{job}.worker", cmd, cwd=wt, env=env, minutes=claude.TIER_MINUTES[j["tier"]] * claude.HARD_FACTOR, pre=pre,
                meta={"session": sid, "tier": j["tier"], "attempt": j["attempts"] + 1})
-    now = time.time()
-    j.update(status="working", attempts=j["attempts"] + 1, error=None, soft_deadline=now + claude.TIER_MINUTES[j["tier"]] * 60,
-             watch_from=now, token_factor=1, waited=False, anomaly=None)
+    j.update(status="working", attempts=j["attempts"] + 1, error=None)
+    _watch_from(j, time.time())
     run.event(c.st, f"{job}: worker {j['tier']} attempt {j['attempts']}{' (resumed)' if resume else ''}")
     return True
 
@@ -1141,8 +1146,11 @@ def reconcile(st: dict) -> None:
         run.event(st, "the decisions tick is gone without a result; starting it again")
     for job, j in st["jobs"].items():
         s = j["status"]
-        if j.get("intervening") and not (d / f"{job}.intervene.proc").exists():
-            j.pop("intervening")
+        if (d / f"{job}.intervene.proc").exists():
+            if not j.get("intervening"):
+                j["intervening"] = True
+                run.event(st, f"{job}: found its intervene tick running; the state had not recorded it")
+        elif j.pop("intervening", None):
             run.event(st, f"{job}: its intervene tick is gone without a result")
         if s in RUNNING:
             kind = RUNNING[s]
@@ -1161,6 +1169,8 @@ def reconcile(st: dict) -> None:
                 j["status"] = next(r for r, k in RUNNING.items() if k == kind)
                 if kind == "worker":
                     j["attempts"] += 1
+                    start = (proc._read(d / f"{job}.worker.proc") or {}).get("start")
+                    _watch_from(j, start if type(start) in (int, float) and math.isfinite(start) else time.time())
                 run.event(st, f"{job}: found its {kind} running; the state had not recorded it")
 
 
