@@ -86,7 +86,7 @@ def render(states: list[dict]) -> str:
             lines += [f"## {st['repo']}/{st['slug']} · {q['id']}{job}", "", f"Plan: {st['plan']}", "", q["text"], ""]
     if not found:
         lines.append("None open.")
-    return "\n".join(lines).rstrip() + "\n"
+    return clean("\n".join(lines)).rstrip() + "\n"  # the plan comes from the approval, not from a state _load checked
 
 
 def save_file(states: list[dict]) -> None:

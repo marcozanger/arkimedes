@@ -1239,7 +1239,7 @@ def _load(repo: str, slug: str) -> dict | None:
             or not isinstance(st.get("events"), list) or not isinstance(st.get("alerts"), list) or not _good_questions(st)
             or not all(isinstance(j, dict) and isinstance(j.get("status"), str) for j in jobs.values())):
         raise run.StateCorrupt(f"malformed run state {run.state_file(repo, slug)}")
-    return st
+    return {**_clean(st), "repo": repo, "slug": slug}  # a lone surrogate is valid JSON, and no file can hold it; these two name the folder
 
 
 def _once(key: tuple, text: str, alerts: list[str]) -> bool:
@@ -1369,6 +1369,7 @@ def cycle(forge=None) -> tuple[str, list[str], bool]:
         questions.save_file(list(states.values()))
     except OSError as e:
         _once(("questions_file",), f"cannot write questions.md: {e}", alerts)
+    alerts, critical = _clean(alerts), _clean(critical)  # an approval's names reach them unchecked; notify catches only OSError
     problem = notify.deliver(alerts, critical)  # never raises: it says what went wrong
     if problem:
         _once(("notify",), problem, alerts)

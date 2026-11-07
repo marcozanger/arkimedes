@@ -26,7 +26,7 @@ def post(repo: str, slug: str, kind: str, **data) -> Path:
     fd, tmp = tempfile.mkstemp(dir=d, prefix=".post.")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({**data, "kind": kind}, f, ensure_ascii=False)
+            json.dump({**data, "kind": kind}, f)  # escaped: a lone surrogate from argv cannot be written as UTF-8
         target = d / f"{time.time_ns()}-{kind}.json"
         os.replace(tmp, target)
         return target

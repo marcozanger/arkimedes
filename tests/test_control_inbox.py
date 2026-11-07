@@ -47,3 +47,8 @@ def test_a_new_item_changes_the_signature(ark_home):
 
 def test_the_inbox_is_not_tracked():
     assert "inbox/" in (CODE / ".gitignore").read_text().split()
+
+
+def test_a_lone_surrogate_can_be_posted(ark_home):
+    inbox.post("r", "s", "answer", id="q1", text="\udcff")
+    assert inbox.pending("r", "s")[0]["text"] == "\udcff"

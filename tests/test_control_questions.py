@@ -339,3 +339,46 @@ def test_a_run_with_malformed_questions_is_skipped_and_the_others_advance(featur
     assert any("other/" in a and "skipped until its state is repaired" in a for a in alerts)
     assert any(f"demo/{SLUG}: run done" in a for a in alerts)
     assert state("other")["questions"] == damage         # only Marco can say what it should have been
+
+
+SURROGATE = "bad \ud800 text"
+
+
+def test_questions_md_can_always_be_written(ark_home):
+    q = {**GOOD_QUESTION, "id": SURROGATE, "job": SURROGATE, "text": SURROGATE}
+    st = {"repo": SURROGATE, "slug": SURROGATE, "plan": SURROGATE, "questions": [q]}
+    questions.save_file([st])
+    assert "bad ? text" in (paths.ark_home() / "questions.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("damage", [
+    {"questions": [{**GOOD_QUESTION, "text": SURROGATE}]},
+    {"questions": [{**GOOD_QUESTION, "job": SURROGATE}]},
+    {"plan": SURROGATE, "questions": [GOOD_QUESTION]},
+    {"alerts": [SURROGATE]},
+    {"events": [SURROGATE]},
+    {"reason": SURROGATE},
+], ids=["text", "job", "plan", "alert", "event", "reason"])
+def test_a_lone_surrogate_in_a_state_stops_nothing(feature, damage):
+    feature(repo="other")
+    loop.cycle()
+    run.state_file("other", SLUG).write_text(json.dumps({**state("other"), **damage}), encoding="utf-8")
+    feature()
+    alerts = []
+    for _ in range(400):
+        alerts += loop.cycle()[1]
+        if state()["status"] == "done":
+            break
+        time.sleep(0.05)
+    assert state()["status"] == "done"
+    assert any(f"demo/{SLUG}: run done" in a for a in alerts)
+    assert not any("cannot be saved" in a for a in alerts)   # it would only reap from then on
+    "\n".join(alerts).encode("utf-8")
+    (paths.runs_dir() / "alerts.jsonl").read_text(encoding="utf-8")
+
+
+def test_an_alert_that_never_was_in_a_state_is_delivered_clean(feature, monkeypatch):
+    feature()
+    monkeypatch.setattr(loop, "_orphans", lambda approved, alerts: alerts.append(SURROGATE))
+    assert "bad ? text" in loop.cycle()[1]
+    assert "bad ? text" in (paths.runs_dir() / "alerts.jsonl").read_text(encoding="utf-8")
