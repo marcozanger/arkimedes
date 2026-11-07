@@ -35,6 +35,11 @@ def test_unknown_repo(make_feature):
     assert "repo" in checks(p)
 
 
+def test_repo_three_levels_under_a_root(make_feature):
+    p = make_feature(plan_text(repo="gl/proposals/v0"), repo="gl/proposals/v0")
+    assert validate(p) == []
+
+
 # spec
 
 def test_spec_must_be_approved(make_feature):
