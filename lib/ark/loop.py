@@ -18,7 +18,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from . import brief, claude, forge as forge_mod, gitops, integrate, merge, paths, proc, run
+from . import brief, caps, claude, forge as forge_mod, gitops, inbox, integrate, merge, notify, paths, proc, questions, run, usage
 from .globs import areas_overlap, match_any
 from .plan import load_plan, sha256_file
 from .validate import validate
@@ -39,6 +39,13 @@ WAITING = {"worker": "needs_worker", "gate": "needs_gate", "review": "needs_revi
            "integrate": "needs_integrate", "judge": "needs_judge"}
 CHECK_KINDS = ("gate", "review", "integrate")  # what a new approval makes a job earn again
 REWOUND = ("gating", "needs_pr", "needs_review", "reviewing", "needs_integrate", "integrating", "needs_merge")
+WAITS_FOR_MARCO = ("waiting_answer", "attached")  # statuses only Marco can move
+TICK_ANSWERS = 2  # questions per job a tick may answer before Marco answers them all
+STEERED = "steered"
+INTERVENED = "stopped by the intervene tick"
+ATTACHED = "handed to Marco"
+OURS = (STEERED, INTERVENED, ATTACHED)  # we stopped it, knowing which session it was
+MAX_STEERS = 2
 
 _said: set[tuple] = set()  # what was already alerted about a run with no state to remember it in
 
@@ -230,14 +237,14 @@ def fail(c: Ctx, job: str, why: str) -> None:
     run.event(c.st, f"{job} failed ({j['tier']}, attempt {j['tier_attempts']} at this tier): {why}")
 
 
-def _block(st: dict, job: str, why: str) -> None:
+def _block(st: dict, job: str, why: str, critical: bool = False) -> None:
     why = _clean(why)
     st["jobs"][job].update(status="blocked", reason=why)
-    run.alert(st, f"{job} blocked: {why}")
+    run.alert(st, f"{job} blocked: {why}", critical=critical)
 
 
-def block(c: Ctx, job: str, why: str) -> None:
-    _block(c.st, job, why)
+def block(c: Ctx, job: str, why: str, critical: bool = False) -> None:
+    _block(c.st, job, why, critical=critical)
 
 
 def allowed_actions(j: dict) -> list[str]:
@@ -281,10 +288,38 @@ def _printable(name: str) -> str:
     return name.encode("utf-8", "backslashreplace").decode("utf-8")
 
 
+def _after_stop(st: dict, job: str, then: dict) -> None:
+    """What the intervene tick decided, once its worker is gone."""
+    j = st["jobs"][job]
+    if then["action"] == "stop_escalate" and j["tier"] in claude.NEXT_TIER:
+        _escalate(j)
+        j.update(note=then["note"], status="needs_worker")
+    else:
+        _block(st, job, then["note"])
+
+
 def on_worker(c: Ctx, job: str, r: dict) -> None:
     j = c.st["jobs"][job]
+    steering, then = j.pop("steering", None), j.pop("stop_then", None)
     j.update(resume_msg=None, note=None)  # kept until now: a worker that never ran still needs them
-    j["session"] = r.get("session")  # only a process that says it had one can be resumed
+    # only a process that says it had one can be resumed, or one we stopped ourselves
+    j["session"] = r.get("session") or ((r.get("meta") or {}).get("session") if r["reason"] in OURS else None)
+    if j.pop("attaching", None):  # whatever the worker was doing, the job is Marco's now
+        j["status"] = "attached"
+        run.event(c.st, f"{job}: handed to Marco")
+        return
+    if then and r["reason"] == INTERVENED:
+        return _after_stop(c.st, job, then)
+    if steering and r["reason"] == STEERED:
+        if j["session"]:
+            j["resume_msg"] = brief.resume_message("steer", steering, c.st["slug"])
+        else:
+            j["note"] = steering
+        j["status"] = "needs_worker"
+        run.event(c.st, f"{job}: redirected: {steering[:300]}")
+        return
+    if steering:  # `ark steer` said it was noted, and its stop came after the worker's end
+        run.alert(c.st, f"the steer for {job} was not delivered: its worker had already ended")
     if not r["reason"]:  # any reason may mean setup never finished: it runs again
         j["setup_done"] = True
     if r["reason"]:
@@ -292,6 +327,10 @@ def on_worker(c: Ctx, job: str, r: dict) -> None:
     if not _clean_exit(r):
         return fail(c, job, f"the worker ended with an error (exit {r['exit']})")
     status, detail = brief.worker_status(r["result"])
+    if status == "BLOCKED":  # not a failure: no attempt is charged, and a tick looks at it before Marco does
+        j.update(status="needs_judge", question=_clean(detail)[:questions.MAX_TEXT] or "the worker ended BLOCKED without a question")
+        run.event(c.st, f"{job}: the worker asks: {j['question'][:300]}")
+        return
     if status != "DONE":
         return fail(c, job, f"the worker ended {status}: {detail}")
     wt = c.wt(job)
@@ -395,7 +434,7 @@ def on_integrate(c: Ctx, job: str, r: dict) -> None:
         return
     j["integrate_fails"] += 1
     if j["integrate_fails"] >= 2:
-        return block(c, job, f"integration gate failed twice: {reason}")
+        return block(c, job, f"integration gate failed twice: {reason}", critical=True)
     j["resume_msg"] = brief.resume_message("integrate", f"{reason}\n\n{out.get('tail', '')}", c.st["slug"])
     j["status"] = "needs_worker"
     run.event(c.st, f"{job}: integration gate red ({reason}); back to the worker")
@@ -409,8 +448,43 @@ def _judge_answer(r: dict) -> tuple[object, str]:
     return d["action"], d["note"].strip()[:1000]
 
 
+def _ask_marco(c: Ctx, job: str) -> None:
+    j = c.st["jobs"][job]
+    questions.ask(c.st, "worker", j["question"], job=job)
+    j["status"] = "waiting_answer"
+
+
+def _resume_with_answer(st: dict, job: str, answer: str) -> None:
+    j = st["jobs"][job]
+    text = f"Question: {j.pop('question', None)}\n\nAnswer: {answer}"
+    if j["session"]:
+        j["resume_msg"] = brief.resume_message("answer", text, st["slug"])
+    else:
+        j["note"] = text
+    j["status"] = "needs_worker"
+
+
+def on_question(c: Ctx, job: str, r: dict) -> None:
+    """Anything but a clean `answer` goes to Marco: a wrong answer from here would be taken for his."""
+    j = c.st["jobs"][job]
+    action, note = _judge_answer(r)
+    if action == "answer" and note and j.get("tick_answers", 0) < TICK_ANSWERS:
+        j["tick_answers"] = j.get("tick_answers", 0) + 1
+        run.event(c.st, f"{job}: its question was answered from the plan: {_clean(note)}")
+        return _resume_with_answer(c.st, job, note)
+    _ask_marco(c, job)
+
+
+def _escalate(j: dict) -> None:
+    j["tier"] = claude.NEXT_TIER[j["tier"]]
+    j["tier_path"].append(j["tier"])
+    j.update(tier_attempts=0, session=None, resume_msg=None, review_rounds=0)
+
+
 def on_judge(c: Ctx, job: str, r: dict) -> None:
     j = c.st["jobs"][job]
+    if j.get("question"):
+        return on_question(c, job, r)
     allowed = allowed_actions(j)  # from the job as it is now: an action outside the list never runs
     action, note = _judge_answer(r)
     if not isinstance(action, str) or action not in allowed:
@@ -420,9 +494,7 @@ def on_judge(c: Ctx, job: str, r: dict) -> None:
     if action == "block":
         return block(c, job, note or j["failure"])
     if action == "escalate":
-        j["tier"] = claude.NEXT_TIER[j["tier"]]
-        j["tier_path"].append(j["tier"])
-        j.update(tier_attempts=0, session=None, resume_msg=None, review_rounds=0)
+        _escalate(j)
     elif j["session"]:
         j["resume_msg"] = brief.resume_message("judge", f"{j['failure']}\n\nNote: {note}", c.st["slug"])
     j.update(note=note, status="needs_worker")
@@ -465,6 +537,9 @@ def _model_unreachable(c: Ctx, job: str, kind: str) -> None:
     j = c.st["jobs"][job]
     j["status"] = WAITING[kind]
     if kind == "worker":
+        j.pop("attaching", None)
+        j.pop("steering", None)
+        j.pop("stop_then", None)
         j["setup_done"] = True  # no reason on the receipt: setup got through
         j["attempts"] = max(0, j["attempts"] - 1)
         j["session"] = None  # the same death as a session that cannot be resumed: the next try starts fresh
@@ -473,7 +548,7 @@ def _model_unreachable(c: Ctx, job: str, kind: str) -> None:
         return block(c, job, f"the model stayed unreachable for {n} tries")
     if n == 2:  # the first may have been a lost session, which the fresh start above heals
         run.alert(c.st, f"{job}: the model is unreachable (offline or auth expired?): nothing is charged, "
-                        "it keeps retrying with a growing wait")
+                        "it keeps retrying with a growing wait", critical=True)
     run.event(c.st, f"{job}: its {kind} got no answer from the model; try {n}")
 
 
@@ -527,7 +602,64 @@ def _cannot_archive(c: Ctx, name: str, e: OSError) -> None:
                         "it was not signalled")
 
 
+def _charge(st: dict, name: str, r: dict) -> None:
+    """Spent and gone whether or not anything still waits for the answer. What belongs to no job is the run's."""
+    usd = _usd(r.get("usd"))
+    j = st["jobs"].get(name.rpartition(".")[0])
+    if j is not None:
+        j["usd"] = round(j["usd"] + usd, 4)
+    else:
+        st["other_usd"] = round(st.get("other_usd", 0) + usd, 4)
+    try:
+        caps.record(f"{st['repo']}/{st['slug']}", name, usd)
+    except OSError as e:
+        run.event(st, f"the spending ledger cannot be written: {e}")
+
+
+def _intervene_actions(j: dict) -> list[str]:
+    out = ["stop_block"]
+    if not j.get("waited"):
+        out.append("wait")
+    if j.get("steers", 0) < MAX_STEERS:
+        out.append("steer")
+    if j["tier"] in claude.NEXT_TIER:
+        out.append("stop_escalate")
+    return out
+
+
+def _steer(st: dict, job: str, text: str) -> None:
+    j = st["jobs"][job]
+    j["steering"] = _clean(text)[:4000]
+    proc.stop(paths.run_dir(st["repo"], st["slug"]), f"{job}.worker", STEERED)
+
+
+def on_intervene(c: Ctx, job: str, r: dict) -> None:
+    j = c.st["jobs"][job]
+    j.pop("intervening", None)
+    if (j["status"] != "working" or (r.get("meta") or {}).get("attempt") != j["attempts"]
+            or any(k in j for k in HANDLING)):
+        return run.event(c.st, f"{job}: ignored the intervene tick: the worker it looked at is gone or being handled")
+    allowed = _intervene_actions(j)
+    action, note = _judge_answer(r)
+    if not isinstance(action, str) or action not in allowed:
+        action = next(a for a in ("wait", "stop_escalate", "stop_block") if a in allowed)
+        note = f"the intervene tick gave no usable answer; the runner chose {action}: {j.get('anomaly')}"
+    note = _clean(str(note or j.get("anomaly") or action))
+    run.event(c.st, f"{job} intervene: {action} — {note}")
+    if action == "wait":
+        now = time.time()
+        j.update(waited=True, anomaly=None, watch_from=now, token_factor=j["token_factor"] * 1.5,
+                 soft_deadline=max(j["soft_deadline"], now) + claude.TIER_MINUTES[j["tier"]] * 30)
+    elif action == "steer":
+        j["steers"] = j.get("steers", 0) + 1
+        _steer(c.st, job, note)
+    else:
+        j["stop_then"] = {"action": action, "note": note}
+        proc.stop(c.dir, f"{job}.worker", INTERVENED)
+
+
 def _on_receipt(c: Ctx, name: str, r: dict) -> None:
+    _charge(c.st, name, r)
     if name == DECISIONS:
         if c.st["closing"] == "decisions":
             try:
@@ -540,19 +672,24 @@ def _on_receipt(c: Ctx, name: str, r: dict) -> None:
         return
     job, _, kind = name.rpartition(".")
     j = c.st["jobs"].get(job)
-    if j is not None:  # spent and alive whether or not anything still waits for the answer
-        j["usd"] = round(j["usd"] + _usd(r.get("usd")), 4)
     if r.get("survivors"):
         run.alert(c.st, f"{_clean(job)}: processes of its {_clean(kind)} outlived it ({r['reason'] or 'it ended'}): "
                         "look for leftovers before they touch its worktree")
     if j is not None and r["reason"] == proc.STOPPED_BY_MARCO and j["status"] not in run.TERMINAL:
         block(c, job, proc.STOPPED_BY_MARCO)  # before the check below: whatever the job waits for, it ends here
         return
+    if j is not None and kind == "intervene":  # never the job's main process: it does not move the job's status
+        try:
+            on_intervene(c, job, r)
+        except Exception as e:
+            j.pop("intervening", None)
+            run.event(c.st, f"{job}: the intervene tick's answer failed: {type(e).__name__}: {_clean(str(e))}")
+        return
     if j is None or kind not in HANDLERS or RUNNING.get(j["status"]) != kind:
         run.event(c.st, f"ignored the result of {_clean(name)}: nothing was waiting for it")
         return
     if kind in MODEL_KINDS:
-        if _learned_nothing(r):
+        if _learned_nothing(r) and not j.get("attaching"):
             _model_unreachable(c, job, kind)
             return
         j.pop("infra_tries", None)
@@ -585,6 +722,12 @@ def _worktree_free(c: Ctx, job: str) -> bool:
     return False
 
 
+def _watch_from(j: dict, start: float) -> None:
+    """A new worker's limits, counted from when its process started."""
+    j.update(soft_deadline=start + claude.TIER_MINUTES[j["tier"]] * 60, watch_from=start, token_factor=1, waited=False,
+             anomaly=None)
+
+
 def start_worker(c: Ctx, job: str) -> bool:
     """Whether a worker was started: a job whose worktree is held stays where it is."""
     if not _worktree_free(c, job):
@@ -608,10 +751,12 @@ def start_worker(c: Ctx, job: str) -> bool:
                                     note=j["note"] or j["resume_msg"], previous_report=c.read_report(job))
     env = claude.runner_env("worker", origin_url=gitops.origin_url(c.repo), worktree=wt, area=json.dumps(mj["area"]),
                             report=report, gate=mj["gate"], run_dir=c.dir, job=job)
-    cmd = claude.agent_cmd("worker", claude.MODELS[j["tier"]], prompt, session=j["session"] or str(uuid.uuid4()), resume=resume,
-                           usd=mj["budget"]["usd"])
-    proc.start(c.dir, f"{job}.worker", cmd, cwd=wt, env=env, minutes=claude.TIER_MINUTES[j["tier"]], pre=pre)
+    sid = j["session"] or str(uuid.uuid4())  # the worker's id before it says so: a kill may come first
+    cmd = claude.agent_cmd("worker", claude.MODELS[j["tier"]], prompt, session=sid, resume=resume, usd=mj["budget"]["usd"])
+    proc.start(c.dir, f"{job}.worker", cmd, cwd=wt, env=env, minutes=claude.TIER_MINUTES[j["tier"]] * claude.HARD_FACTOR, pre=pre,
+               meta={"session": sid, "tier": j["tier"], "attempt": j["attempts"] + 1})
     j.update(status="working", attempts=j["attempts"] + 1, error=None)
+    _watch_from(j, time.time())
     run.event(c.st, f"{job}: worker {j['tier']} attempt {j['attempts']}{' (resumed)' if resume else ''}")
     return True
 
@@ -696,12 +841,21 @@ def do_merge(c: Ctx, job: str) -> None:
     try:
         merge.merge(c.st, job, c.forge, c.repo)
     except merge.MergeRefused as e:
-        return block(c, job, f"ark-merge refused: {e}")
+        return block(c, job, f"ark-merge refused: {e}", critical=True)
     _merged(c, job)
 
 
 def start_judge(c: Ctx, job: str) -> None:
     j = c.st["jobs"][job]
+    if j.get("question"):
+        allowed = ["ask", "answer"] if j.get("tick_answers", 0) < TICK_ANSWERS else ["ask"]
+        if allowed == ["ask"]:  # nothing to decide: no tick is paid
+            return _ask_marco(c, job)
+        prompt = brief.question_prompt(c.st, job, j["question"], c.mjobs[job], c.plan, c.read_report(job), allowed)
+        cmd = claude.agent_cmd("tick", claude.TICK_MODEL["judge"], prompt, session=str(uuid.uuid4()), usd=1)
+        proc.start(c.dir, f"{job}.judge", cmd, cwd=ticks_dir(), env=claude.runner_env("tick"), minutes=15)
+        j["status"] = "judging"
+        return
     allowed = allowed_actions(j)
     if allowed == ["block"]:
         return block(c, job, f"{j['failure']} (no retry or escalation left)")
@@ -800,7 +954,8 @@ def _stop_closing(c: Ctx, why: str) -> None:
     st.update(status="blocked", closing="done")
     file = f"The decisions file is on ark/{st['slug']}" if st.get("decisions_sha") else \
         f"The decisions file was not committed; its text, if it could be written, is at {c.dir / 'decisions.md'}"
-    run.alert(st, f"run blocked: {why}. {file}, and no final PR was opened: the rest is by hand")
+    run.alert(st, f"run blocked: {why}. {file}, and no final PR was opened: the rest is by hand",
+              critical=True)
 
 
 def _closing_failed(c: Ctx, e: Exception) -> None:
@@ -841,7 +996,7 @@ def publish(c: Ctx) -> None:
     all_merged = all(j["status"] == "merged" for j in st["jobs"].values())
     st.update(status="done" if all_merged else "blocked", closing="done")
     pr = f"final PR {st['final_pr']['url']}" if st["final_pr"] else "no job merged, no final PR"
-    run.alert(st, f"run {st['status']}: {pr}")
+    run.alert(st, f"run {st['status']}: {pr}", critical=True)
 
 
 # ---- scheduling -------------------------------------------------------------------------------
@@ -851,6 +1006,7 @@ class Slots:
 
     def __init__(self, states, limits: dict):
         self.limits, self.writers, self.heavy = limits, {}, 0
+        self.capped = caps.day_capped(limits)
         for st in states:
             for j in st["jobs"].values():
                 if j["status"] == "working":
@@ -914,6 +1070,48 @@ def _next_step(c: Ctx, job: str, j: dict, slots: Slots):
     return None
 
 
+HANDLING = ("intervening", "stop_then", "steering", "attaching")  # a job with one of these is already being dealt with
+
+
+def _anomaly(j: dict, log: Path, now: float) -> str | None:
+    """What looks wrong with this worker, or None (spec §6)."""
+    if now > j["soft_deadline"]:
+        return f"over its time for tier {j['tier']}"
+    if now - max(_mtime(log) / 1e9, j["watch_from"]) > claude.STALL_MINUTES * 60:
+        return f"no output for over {claude.STALL_MINUTES} minutes"
+    tokens = usage.scan(log)["tokens"]
+    if tokens > claude.TIER_TOKENS[j["tier"]] * j["token_factor"]:
+        return f"{tokens} tokens, over the limit for tier {j['tier']}"
+    return None
+
+
+def start_intervene(c: Ctx, job: str, why: str) -> None:
+    j = c.st["jobs"][job]
+    log = c.dir / f"{job}.worker.log"
+    prompt = brief.intervene_prompt(c.st, job, c.mjobs[job]["pr_title"], why, usage.scan(log)["last"], log,
+                                    _intervene_actions(j))
+    cmd = claude.agent_cmd("tick", claude.TICK_MODEL["judge"], prompt, session=str(uuid.uuid4()), usd=1)
+    proc.start(c.dir, f"{job}.intervene", cmd, cwd=ticks_dir(), env=claude.runner_env("tick"), minutes=15,
+               meta={"attempt": j["attempts"]})
+    j.update(intervening=True, anomaly=why)
+    run.event(c.st, f"{job} looks wrong: {why}")
+
+
+def watch(c: Ctx) -> None:
+    now, ended = time.time(), proc.finished(c.dir)
+    for job, j in c.st["jobs"].items():
+        name = f"{job}.worker"
+        if (j["status"] != "working" or "soft_deadline" not in j or any(k in j for k in HANDLING)
+                or name in ended or proc.stop_requested(c.dir, name)):
+            continue
+        why = _anomaly(j, c.dir / f"{name}.log", now)
+        if why:
+            try:
+                start_intervene(c, job, why)
+            except Exception as e:  # the next cycle looks again
+                run.event(c.st, f"{job}: the intervene tick did not start: {type(e).__name__}: {_clean(str(e))}")
+
+
 def schedule(c: Ctx, slots: Slots) -> None:
     for job, j in c.st["jobs"].items():
         move = _next_step(c, job, j, slots)
@@ -928,6 +1126,21 @@ def schedule(c: Ctx, slots: Slots) -> None:
             j.pop("errors", None)
 
 
+def _gone_worker(st: dict, job: str, j: dict) -> bool:
+    """The worker was being stopped on purpose, and a crash lost its receipt: what was decided still happens."""
+    steering, then = j.pop("steering", None), j.pop("stop_then", None)
+    if then:
+        _after_stop(st, job, then)
+    elif steering:
+        j.update(note=steering, status="needs_worker")
+    elif j.pop("attaching", None):
+        j["status"] = "attached"
+    else:
+        return False
+    run.event(st, f"{job}: its worker is gone, as was decided")
+    return True
+
+
 def reconcile(st: dict) -> None:
     """The state is saved at the end of a cycle and processes start and end during it, so a crash can
     leave them apart. A process the state does not know about is adopted, never started twice; a status
@@ -940,11 +1153,19 @@ def reconcile(st: dict) -> None:
         run.event(st, "the decisions tick is gone without a result; starting it again")
     for job, j in st["jobs"].items():
         s = j["status"]
+        if (d / f"{job}.intervene.proc").exists():
+            if not j.get("intervening"):
+                j["intervening"] = True
+                run.event(st, f"{job}: found its intervene tick running; the state had not recorded it")
+        elif j.pop("intervening", None):
+            run.event(st, f"{job}: its intervene tick is gone without a result")
         if s in RUNNING:
             kind = RUNNING[s]
             if not (d / f"{job}.{kind}.proc").exists():
                 if proc.stop_requested(d, f"{job}.{kind}"):  # consumed, then a crash before the save
                     _block(st, job, proc.STOPPED_BY_MARCO)
+                    continue
+                if kind == "worker" and _gone_worker(st, job, j):
                     continue
                 j["status"] = WAITING[kind]
                 run.event(st, f"{job}: its {kind} is gone without a result; going back to {j['status']}")
@@ -955,32 +1176,230 @@ def reconcile(st: dict) -> None:
                 j["status"] = next(r for r, k in RUNNING.items() if k == kind)
                 if kind == "worker":
                     j["attempts"] += 1
+                    start = (proc._read(d / f"{job}.worker.proc") or {}).get("start")
+                    _watch_from(j, start if type(start) in (int, float) and math.isfinite(start) else time.time())
                 run.event(st, f"{job}: found its {kind} running; the state had not recorded it")
+
+
+def _apply_answer(st: dict, item: dict) -> None:
+    qid, text = item.get("id"), item.get("text")
+    q = questions.find(st, qid)
+    if q is None or not isinstance(text, str):
+        return run.event(st, f"an answer to {_clean(str(qid))} found no open question")
+    problem = questions.check_answer(q, text)
+    if problem:
+        return run.alert(st, f"the answer to {q['id']} was refused: {problem}")
+    answer = questions.resolve(st, q["id"], text)
+    run.event(st, f"{q['id']} answered: {_clean(answer['answer'])[:300]}")
+    ANSWERS[q["kind"]](st, q, answer["answer"])
+
+
+def _answered_worker(st: dict, q: dict, text: str) -> None:
+    job = q["job"]
+    j = st["jobs"].get(job)
+    if j is None or j["status"] != "waiting_answer":
+        return run.event(st, f"{q['id']} was answered, but {_clean(str(job))} no longer waits for it")
+    if text == questions.STOP_JOB:
+        return _block(st, job, f"stopped by Marco at question {q['id']}")
+    _resume_with_answer(st, job, text)
+
+
+def _apply_stop(st: dict, item: dict) -> None:
+    """`ark stop` of a job with no process when he typed it. One may have started since: it stops the usual way."""
+    job = item.get("job")
+    j = st["jobs"].get(job)
+    if j is None or j["status"] in run.TERMINAL:
+        return run.event(st, f"a stop for {_clean(str(job))} found nothing to stop")
+    d = paths.run_dir(st["repo"], st["slug"])
+    name = f"{job}.{RUNNING[j['status']]}" if j["status"] in RUNNING else None
+    if name and (d / f"{name}.proc").exists():
+        proc.stop(d, name, proc.STOPPED_BY_MARCO)
+        return
+    questions.drop_kind(st, "worker", job=job)
+    j.pop("question", None)
+    _block(st, job, proc.STOPPED_BY_MARCO)
+
+
+ENDED = "run ended by Marco"
+
+
+def _begin_end(st: dict, why: str) -> None:
+    st["ending"] = why
+    run.event(st, f"ending the run: {why}")
+
+
+def _finish_ending(st: dict) -> None:
+    """Stop what runs, keep what it cost, block what is open. What merged stays on ark/<slug>, and no final PR is
+    opened: that is a decision about half a plan, and it is his. If a process cannot be stopped yet, the next cycle
+    tries again, and until then the run takes no other step."""
+    d = paths.run_dir(st["repo"], st["slug"])
+    for name in proc.active(d):
+        if name not in proc.finished(d):
+            proc.stop(d, name, st["ending"])
+    for name in proc.finished(d):
+        try:
+            r = proc.consume(d, name)
+        except OSError:
+            proc.discard(d, name)
+            continue
+        if r:
+            _charge(st, name, r)
+    if proc.active(d):
+        return
+    why = st.pop("ending")
+    for job, j in st["jobs"].items():
+        if j["status"] not in run.TERMINAL:
+            j.pop("question", None)
+            _block(st, job, why)
+    st.update(status="blocked", closing="done", reason=why, questions=[])
+    run.alert(st, f"run blocked: {why}. No final PR was opened; what merged stays on ark/{st['slug']}, and the "
+                  "worktrees are still there", critical=True)
+
+
+def _answered_plan_changed(st: dict, q: dict, text: str) -> None:
+    _begin_end(st, ENDED)
+
+
+def _answered_cap_run(st: dict, q: dict, text: str) -> None:
+    words = text.split()
+    if words == ["stop"]:
+        return _begin_end(st, ENDED)
+    st["usd_raised"] = st.get("usd_raised", 0) + float(words[1])
+    st.pop("cap_hold", None)
+    run.event(st, f"budget raised by ${float(words[1]):.2f}")
+
+
+def _check_run_cap(c: Ctx) -> None:
+    """Over its budgets, a run holds: what runs finishes, nothing new starts, and Marco decides."""
+    st = c.st
+    spent = caps.run_spent(st)
+    budget = caps.run_budget(c.mjobs) + st.get("usd_raised", 0)
+    if spent <= budget or all(j["status"] in run.TERMINAL for j in st["jobs"].values()):
+        st.pop("cap_hold", None)
+        questions.drop_kind(st, "cap_run")
+    elif not st.get("cap_hold"):
+        st["cap_hold"] = True
+        questions.ask(st, "cap_run", f"This run spent ${spent:.2f}, over the ${budget:.2f} of its budgets. Running "
+                                     "workers finish; nothing new starts. Answer `raise <usd>` to add budget, or "
+                                     "`stop` to end the run.", critical=True)
+
+
+def _retry_stops(st: dict) -> None:
+    """A stop that could not finish in its cycle is asked again: the decision stands in the state."""
+    d = paths.run_dir(st["repo"], st["slug"])
+    for job, j in st["jobs"].items():
+        if j["status"] != "working":
+            continue
+        for key, reason in (("stop_then", INTERVENED), ("steering", STEERED), ("attaching", ATTACHED)):
+            if key in j and (d / f"{job}.worker.proc").exists() and not (d / f"{job}.worker.receipt.json").exists():
+                proc.stop(d, f"{job}.worker", reason)
+                break
+
+
+def _apply_steer(st: dict, item: dict) -> None:
+    job, text = item.get("job"), item.get("text")
+    j = st["jobs"].get(job)
+    if j is None or j["status"] != "working" or any(k in j for k in ("stop_then", "attaching")) or not isinstance(text, str):
+        return run.alert(st, f"the steer for {_clean(str(job))} was not delivered: its worker is not running")
+    _steer(st, job, text)
+
+
+def _apply_attach(st: dict, item: dict) -> None:
+    job = item.get("job")
+    j = st["jobs"].get(job)
+    if j is not None and j["status"] == "working":
+        j["attaching"] = True
+        proc.stop(paths.run_dir(st["repo"], st["slug"]), f"{job}.worker", ATTACHED)
+    elif j is not None and j["status"] == "waiting_answer":
+        questions.drop_kind(st, "worker", job=job)
+        j.pop("question", None)
+        j["status"] = "attached"
+        run.event(st, f"{job}: handed to Marco")
+    else:
+        run.event(st, f"an attach for {_clean(str(job))} found nothing to hand over")
+
+
+def _apply_attach_done(st: dict, item: dict) -> None:
+    j = st["jobs"].get(item.get("job"))
+    if j is not None and j["status"] == "attached":
+        j["attach_done"] = True
+
+
+def _finish_attach(c: Ctx) -> None:
+    """He left a clean worktree: what he did takes the same road as a worker that ended DONE."""
+    for job, j in c.st["jobs"].items():
+        if j["status"] == "attached" and j.pop("attach_done", None):
+            done = {"reason": "", "exit": 0, "result": "STATUS: DONE", "session": j["session"], "is_error": False, "meta": {}}
+            try:
+                on_worker(c, job, done)
+            except Exception as e:
+                fail(c, job, f"runner error after attach: {type(e).__name__}: {e}")
+
+
+ANSWERS = {"worker": _answered_worker, "plan_changed": _answered_plan_changed, "cap_run": _answered_cap_run}
+INBOX = {"answer": _apply_answer, "stop": _apply_stop, "steer": _apply_steer,
+         "attach": _apply_attach, "attach_done": _apply_attach_done}
+
+
+def apply_inbox(st: dict) -> None:
+    """Every item is safe to apply twice: if the save fails they stay, and the next cycle starts from the old state."""
+    items = inbox.pending(st["repo"], st["slug"])
+    if not items:
+        return
+    for item in items:
+        fn = INBOX.get(item["kind"])
+        try:
+            if fn is None:
+                run.event(st, f"ignored an inbox item of kind {_clean(item['kind'])}")
+            else:
+                fn(st, item)
+        except Exception as e:  # the item goes anyway: a broken one must not come back every cycle
+            run.event(st, f"inbox item {_clean(item['kind'])} failed: {type(e).__name__}: {_clean(str(e))}")
+    if _save_now(st):
+        for item in items:
+            inbox.done(item)
 
 
 def step(st: dict, states: list[dict], forge, slots: Slots) -> None:
     if st["status"] in ("done", "blocked"):
+        inbox.drop_all(st["repo"], st["slug"])  # nobody will read them
         return
     if st["status"] == "waiting":
+        if slots.capped:  # a run that has not started spends nothing by waiting
+            return
         if not try_start(st, states):
             return
         if not _save_now(st):  # the jobs exist now: a crash below finds its worker by them, not by chance
             return
     proc.reap(paths.run_dir(st["repo"], st["slug"]))  # first: nothing below can excuse a process from its deadline
+    apply_inbox(st)
+    _retry_stops(st)
+    if st.get("ending"):
+        return _finish_ending(st)
     if merge.plan_reason(st):  # the same question ark-merge asks: a run it would refuse takes no step
         if st["status"] != "held":
             st["status"] = "held"
             run.alert(st, "the plan changed after its approval: nothing new is dispatched. Running processes "
                           "finish; their results wait. Restore the approved text, or approve the new text: then "
                           "every job not merged passes its checks again.")
+        questions.ask(st, "plan_changed", "The plan changed after its approval, so this run is held. To go on, restore "
+                                          "the approved text or approve the new one. Answer `stop` to end the run.",
+                      quiet=True)  # the alert above says it; ask again finds the same one
         return
     if st["status"] == "held":
         st["status"] = "running"
         st.pop("reapprove_refused", None)
+        questions.drop_kind(st, "plan_changed")
         run.event(st, "the approved plan is back: running again")
     c = Ctx(st, forge)
+    _finish_attach(c)
     if consume_receipts(c):
-        schedule(c, slots)
+        _check_run_cap(c)
+        if slots.capped:  # closing pays for a tick too
+            return
+        if not st.get("cap_hold"):
+            schedule(c, slots)
+            watch(c)
         maybe_close(c)
 
 
@@ -1054,7 +1473,17 @@ def status_line(states: list[dict]) -> str:
         n, m = len(s["jobs"]), sum(j["status"] == "merged" for j in s["jobs"].values())
         parts.append(f"{s['repo']}/{s['slug']} {s['status']}" + (f" {m}/{n} merged" if n else ""))
     line = " · ".join(parts) or "idle"
-    return line + (f" · {finished} finished" if finished else "")
+    asked = sum(len(s.get("questions") or []) for s in live)
+    return line + (f" · {finished} finished" if finished else "") + (f" · ❓{asked}" if asked else "")
+
+
+def _good_questions(st: dict) -> bool:
+    """The cycle reads these outside any run's guard (questions.md, the status line): damage here would stop every run."""
+    if "questions" not in st:
+        return True
+    return isinstance(st["questions"], list) and all(
+        isinstance(q, dict) and all(isinstance(q.get(k), str) for k in ("id", "kind", "text"))
+        and "job" in q and (q["job"] is None or isinstance(q["job"], str)) for q in st["questions"])
 
 
 def _load(repo: str, slug: str) -> dict | None:
@@ -1064,17 +1493,20 @@ def _load(repo: str, slug: str) -> dict | None:
         return None
     jobs = st.get("jobs")
     if (merge.state_reason(st) or (st["repo"], st["slug"]) != (repo, slug) or not isinstance(st.get("status"), str)
-            or not isinstance(st.get("events"), list) or not isinstance(st.get("alerts"), list)
+            or not isinstance(st.get("events"), list) or not isinstance(st.get("alerts"), list) or not _good_questions(st)
             or not all(isinstance(j, dict) and isinstance(j.get("status"), str) for j in jobs.values())):
         raise run.StateCorrupt(f"malformed run state {run.state_file(repo, slug)}")
-    return st
+    return {**_clean(st), "repo": repo, "slug": slug}  # a lone surrogate is valid JSON, and no file can hold it; these two name the folder
 
 
-def _once(key: tuple, text: str, alerts: list[str]) -> None:
+def _once(key: tuple, text: str, alerts: list[str]) -> bool:
+    """Whether this is the first time."""
     key = (str(paths.ark_home()), *key)
-    if key not in _said:
-        _said.add(key)
-        alerts.append(text)
+    if key in _said:
+        return False
+    _said.add(key)
+    alerts.append(text)
+    return True
 
 
 def _guarded(st: dict, key: str, fn) -> None:
@@ -1114,10 +1546,40 @@ def _orphans(known, alerts: list[str]) -> None:
                                               f"{type(e).__name__}: {e}", alerts)
 
 
+def _nothing_to_advance(states: list[dict], capped: bool = False) -> bool:
+    """Called after every run took its step: there are live runs, no process alive anywhere, and each run is
+    held or waits for Marco. A pending job beside a waiting one only waits for it: this pass started all it could."""
+    live = [st for st in states if st["status"] not in ("done", "blocked", "waiting")]
+    if not live or any(proc.active(paths.run_dir(st["repo"], st["slug"])) for st in live):
+        return False
+    if capped:
+        return True
+    for st in live:
+        if st["status"] == "held" or st.get("cap_hold"):
+            continue
+        statuses = [j["status"] for j in st["jobs"].values() if j["status"] not in run.TERMINAL]
+        if not any(s in WAITS_FOR_MARCO for s in statuses):
+            return False
+        if any(s not in WAITS_FOR_MARCO and s != "pending" for s in statuses):
+            return False
+    return True
+
+
+def _flag_stuck(states: list[dict], capped: bool, alerts: list[str], critical: list[str]) -> None:
+    key = ("stuck",)
+    if not _nothing_to_advance(states, capped):
+        _said.discard((str(paths.ark_home()), *key))
+        return
+    text = "nothing left to advance: every live run waits for you. See `ark ps` and `ark answer`."
+    if _once(key, text, alerts):
+        critical.append(text)
+
+
 def cycle(forge=None) -> tuple[str, list[str], bool]:
     """One pass. Returns (status line, alerts to show, whether any run state changed)."""
     forge = forge or forge_mod.get()
     limits = paths.load_workspace()["limits"]  # first: if it raises, no alert was consumed and lost
+    caps.day_limit(limits)  # a bad limit raises here too: before any alert is consumed
     states, before, alerts, approved = {}, {}, [], {}
     for a in approvals():
         key = (a["repo"], a["slug"])
@@ -1145,9 +1607,14 @@ def cycle(forge=None) -> tuple[str, list[str], bool]:
             _guarded(st, "error", lambda d=paths.run_dir(*key): proc.reap(d))
         else:
             _guarded(st, "error", lambda st=st: step(st, list(states.values()), forge, slots))
-    changed = False
+    changed, critical = False, []
+    if slots.capped:
+        text = f"daily spending cap reached (${caps.spent_today():.2f}): nothing new starts until tomorrow, or until limits.usd_per_day is raised"
+        if _once(("day_cap", caps.today()), text, alerts):
+            critical.append(text)
     for key, st in states.items():
         alerts += st["alerts"]
+        critical += st.pop("critical", [])
         st["alerts"] = []
         dirty = json.dumps(st, sort_keys=True) != before[key]
         changed = changed or dirty
@@ -1156,8 +1623,18 @@ def cycle(forge=None) -> tuple[str, list[str], bool]:
                 run.save(st)
                 _said.discard((home, "unsaved", *key))
             except Exception as e:  # until a save works this run only reaps; then reconcile() catches up
-                _once(("unsaved", *key), f"{key[0]}/{key[1]}: the run state cannot be saved: "
-                                         f"{type(e).__name__}: {e}", alerts)
+                text = f"{key[0]}/{key[1]}: the run state cannot be saved: {type(e).__name__}: {e}"
+                if _once(("unsaved", *key), text, alerts):
+                    critical.append(text)
+    _flag_stuck(list(states.values()), slots.capped, alerts, critical)
+    try:
+        questions.save_file(list(states.values()))
+    except OSError as e:
+        _once(("questions_file",), f"cannot write questions.md: {e}", alerts)
+    alerts, critical = _clean(alerts), _clean(critical)  # an approval's names reach them unchecked; notify catches only OSError
+    problem = notify.deliver(alerts, critical)  # never raises: it says what went wrong
+    if problem:
+        _once(("notify",), problem, alerts)
     return status_line(list(states.values())), alerts, changed
 
 
@@ -1181,6 +1658,8 @@ def signature() -> str:
         h.update(f"{p}:{_mtime(p)}\n".encode("utf-8", "replace"))
     for f in sorted(paths.runs_dir().glob("**/*.receipt.json")):
         h.update(f"{f}\n".encode())
+    for f in sorted((paths.ark_home() / "inbox").glob("**/*.json")):
+        h.update(f"{f}\n".encode("utf-8", "replace"))
     for d in sorted({f.parent for f in paths.runs_dir().glob("**/*.proc")}):
         for n in proc.overdue(d):
             h.update(f"{d}/{n}:overdue\n".encode())
@@ -1201,6 +1680,8 @@ def _retry_due() -> bool:
             st = _load(a["repo"], a["slug"])
         except Exception:  # the cycle says so, once
             continue
+        if st and st.get("ending"):
+            return True
         if not st or st["status"] != "running":
             continue
         if st.get("closing_errors") and st.get("closing_wait", 0) <= now:
@@ -1208,6 +1689,9 @@ def _retry_due() -> bool:
         for j in st["jobs"].values():
             if j["status"] in run.TERMINAL:
                 continue
+            if (j["status"] == "working" and not st.get("cap_hold") and 0 < j.get("soft_deadline", 0) <= now
+                    and not any(k in j for k in HANDLING)):
+                return True
             if j.get("errors"):  # a running job has them only while its result cannot be archived
                 return True
             if j["status"] not in RUNNING and ("holders_since" in j or 0 < j.get("not_before", 0) <= now):

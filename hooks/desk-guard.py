@@ -3,7 +3,7 @@
 
 - approvals/ is written only by `ark approve` (a Python process, not a tool call): every tool
   write there is denied, in every session.
-- desk/ is read-only for runner processes (ARK_ROLE set by ark-loop / ark-dispatch).
+- desk/ and inbox/ are read-only for runner processes (ARK_ROLE set by ark-loop / ark-dispatch).
 - Approving must go through exactly `ark approve <repo>/<slug>` (or `<path>/bin/ark approve ...`),
   the forms that have an ask permission rule. Any other way of invoking approve is denied, and a
   runner process may not approve at all.
@@ -72,7 +72,9 @@ def main() -> None:
     protected = [("approvals", True,
                   "Only `ark approve <repo>/<slug>` writes approvals/, and Marco confirms it."),
                  ("desk", runner,
-                  "Runner processes (ARK_ROLE) never write desk/: plans belong to Marco's planning sessions.")]
+                  "Runner processes (ARK_ROLE) never write desk/: plans belong to Marco's planning sessions."),
+                 ("inbox", runner,
+                  "Runner processes (ARK_ROLE) never write inbox/: an item there speaks for Marco.")]
     if tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
         f = ti.get("file_path") or ti.get("notebook_path") or ""
         if not f or not isinstance(f, str):

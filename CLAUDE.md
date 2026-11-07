@@ -67,3 +67,6 @@ A small change can skip steps 1–4 with `spec: none` in the plan's frontmatter.
 | `ark plans` | every plan with its approval (`ok`, `stale`, `-`) and run state |
 | `ark validate <repo>/<slug>` | the plan contract; `--approved` also checks the approval |
 | `ark approve <repo>/<slug>` | validate, show the PR table, close the plan, write the approval — Marco confirms |
+
+Over running plans, also without a model: `ark ps`, `ark logs`, `ark stop`, `ark steer`, `ark attach`, `ark answer`.
+See `docs/runner-control.md`.

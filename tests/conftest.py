@@ -26,7 +26,7 @@ import subprocess
 
 import pytest
 
-from helpers import plan_text
+from helpers import approve, plan_text
 
 
 def git(*args, cwd):
@@ -132,3 +132,14 @@ def pytest_sessionfinish(session, exitstatus):
         print(f"\nreal program called during the suite:\n{_TRIPWIRE.read_text()}")
         session.exitstatus = 1
     shutil.rmtree(_SANDBOX, ignore_errors=True)
+
+
+@pytest.fixture
+def feature(runner, make_feature):
+    """A seeded repo and an approved plan. test_loop.py overrides this with its own copy."""
+    def make(m=None, repo="demo", slug="notes-edit", tasks=("T1", "T2", "T3")):
+        r = runner(repo)
+        p = make_feature(plan_text(m, tasks=tasks, repo=repo, slug=slug), repo=repo, slug=slug, create_repo=False)
+        approve(p, repo, slug)
+        return r, p
+    return make

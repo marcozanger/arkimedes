@@ -67,9 +67,12 @@ def event(st: dict, text: str) -> None:
     del st["events"][:-MAX_EVENTS]
 
 
-def alert(st: dict, text: str) -> None:
-    """Something Marco must see: ark-loop prints it once (phone notifications are P3)."""
-    st["alerts"].append(f"{st['repo']}/{st['slug']}: {text}")
+def alert(st: dict, text: str, critical: bool = False) -> None:
+    """Something Marco must hear. A critical one also reaches the notifier (spec §8), as alerts do the terminal."""
+    line = f"{st['repo']}/{st['slug']}: {text}"
+    st["alerts"].append(line)
+    if critical:
+        st.setdefault("critical", []).append(line)
     event(st, "ALERT " + text)
 
 

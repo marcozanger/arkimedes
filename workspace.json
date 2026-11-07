@@ -1,7 +1,8 @@
 {
   "roots": ["~/Documents/workspace", "~/.claude"],
   "exclude": [],
-  "limits": { "writers_per_repo": 3, "writers_total": 6, "heavy_gates": 1 },
+  "limits": { "writers_per_repo": 3, "writers_total": 6, "heavy_gates": 1, "usd_per_day": 40 },
   "tick_minutes": 15,
-  "poll_seconds": 15
+  "poll_seconds": 15,
+  "notify": ["osascript", "-e", "on run argv\ndisplay notification (item 1 of argv) with title \"Arkimedes\"\nend run"]
 }

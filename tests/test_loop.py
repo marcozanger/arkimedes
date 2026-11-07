@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 from helpers import approve, job, manifest, plan_text
 
-from ark import forge, gitops, integrate, loop, merge, paths, proc, run
+from ark import claude, forge, gitops, integrate, loop, merge, paths, proc, run
 from ark.plan import sha256_file
 
 SLUG = "notes-edit"
@@ -586,6 +586,34 @@ def test_a_process_the_state_missed_is_adopted_never_started_twice(ark_home, sta
     (d / f"shell.{kind}.proc").write_text("{}")
     loop.reconcile(st)
     assert st["jobs"]["shell"]["status"] == after and st["jobs"]["shell"]["attempts"] == attempts
+
+
+@pytest.mark.parametrize("stale", [{}, {"soft_deadline": 1, "watch_from": 1, "token_factor": 1.5, "waited": True,
+                                       "anomaly": "over its time for tier T1"}])
+def test_an_adopted_worker_is_watched_from_when_it_started(ark_home, stale, tmp_path):
+    st = bare(tmp_path, status="needs_worker").st
+    j = st["jobs"]["shell"]
+    j.update(stale)
+    d = paths.run_dir("demo", SLUG)
+    d.mkdir(parents=True)
+    start = time.time() - 300
+    (d / "shell.worker.proc").write_text(json.dumps({"name": "shell.worker", "pid": 2, "leader_cmd": "x", "deadline": start + 7200,
+                                                   "leader_start": start, "start": start}))
+    loop.reconcile(st)
+    assert j["status"] == "working"
+    assert j["soft_deadline"] == start + claude.TIER_MINUTES[j["tier"]] * 60
+    assert j["watch_from"] == start
+    assert (j["token_factor"], j["waited"], j["anomaly"]) == (1, False, None)
+
+
+def test_an_adopted_worker_with_an_unreadable_record_is_watched_from_now(ark_home, tmp_path):
+    st = bare(tmp_path, status="needs_worker").st
+    d = paths.run_dir("demo", SLUG)
+    d.mkdir(parents=True)
+    (d / "shell.worker.proc").write_text("not json")
+    before = time.time()
+    loop.reconcile(st)
+    assert st["jobs"]["shell"]["status"] == "working" and st["jobs"]["shell"]["watch_from"] >= before
 
 
 @pytest.mark.parametrize("status", ["merged", "blocked", "needs_push", "needs_pr", "needs_merge"])

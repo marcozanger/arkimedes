@@ -13,6 +13,14 @@ FAKE_DIRTY=job:n leaves attempt n's file uncommitted; FAKE_EMPTY=job:n changes n
 
 FAKE_DOWN=1 makes every role end at once with exit 1 and no result line, as an unreachable model
 does; FAKE_STATE/down.count counts those.
+
+FAKE_USAGE=<n> makes a worker print an assistant line with n output tokens before it holds. Each worker attempt
+leaves <job>.worker.<n>.argv and .prompt in FAKE_STATE.
+
+FAKE_USD=<n> is what every process says it cost.
+FAKE_BLOCKED=job:n,... makes attempt n end BLOCKED with the question "which store?". FAKE_QUESTION is the raw answer of a
+tick asked a worker's question; the default answer is not valid there, so the question reaches Marco.
+FAKE_INTERVENE is the raw answer of an intervene tick.
 """
 import fcntl
 import json
@@ -62,7 +70,7 @@ def emit(result, stream=True):
     if stream:
         print(json.dumps({"type": "system", "subtype": "init", "session_id": SESSION}))
     print(json.dumps({"type": "result", "result": result, "session_id": SESSION,
-                      "total_cost_usd": 0.01, "is_error": False}))
+                      "total_cost_usd": float(os.environ.get("FAKE_USD", "0.01")), "is_error": False}))
 
 
 if os.environ.get("FAKE_DOWN"):
@@ -75,11 +83,21 @@ if ROLE == "worker":
     track(1)
     try:
         n = bump(f"{job}.worker")
+        (STATE / f"{job}.worker.{n}.argv").write_text(json.dumps(args))
+        (STATE / f"{job}.worker.{n}.prompt").write_text(PROMPT)
+        if os.environ.get("FAKE_USAGE"):
+            print(json.dumps({"type": "system", "subtype": "init", "session_id": SESSION}))
+            print(json.dumps({"type": "assistant", "message": {
+                "id": f"msg-{n}", "content": [{"type": "text", "text": "working on it"}],
+                "usage": {"input_tokens": 0, "output_tokens": int(os.environ["FAKE_USAGE"])}}}), flush=True)
         time.sleep(float(os.environ.get("FAKE_SLEEP", "0")))
         hold = os.environ.get("FAKE_HOLD")  # stays alive until this file exists (or a generous timeout)
         deadline = time.time() + 60
         while hold and not Path(hold).exists() and time.time() < deadline:
             time.sleep(0.05)
+        if f"{job}:{n}" in os.environ.get("FAKE_BLOCKED", "").split(","):
+            emit("I need a decision\nSTATUS: BLOCKED — which store?")
+            sys.exit(0)
         if f"{job}:{n}" in os.environ.get("FAKE_FAIL", "").split(","):
             emit("tests are red\nSTATUS: FAILED — tests are red")
             sys.exit(0)
@@ -121,6 +139,10 @@ elif ROLE == "tick":
         emit(json.loads(os.environ["FAKE_DECISIONS"]), stream=False)  # raw JSON: it can hold any escape
     elif "Write the decisions file" in PROMPT:
         emit("# Decisions — fake\n\n## shell — merged\n\n- **D1** · a fake decision · _arkimedes_\n", stream=False)
+    elif "stopped with a question" in PROMPT and os.environ.get("FAKE_QUESTION"):
+        emit(os.environ["FAKE_QUESTION"], stream=False)
+    elif "A running worker looks wrong" in PROMPT and os.environ.get("FAKE_INTERVENE"):
+        emit(os.environ["FAKE_INTERVENE"], stream=False)
     else:
         emit('{"action": "retry", "note": "try again"}', stream=False)
 else:
