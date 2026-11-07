@@ -71,7 +71,8 @@ def check_answer(q: dict, text: str) -> str | None:
 def resolve(st: dict, qid: str, text: str) -> dict:
     q = find(st, qid)
     st["questions"].remove(q)
-    answer = {"id": q["id"], "kind": q["kind"], "job": q["job"], "question": q["text"], "answer": text.strip(), "at": run.now()}
+    answer = {"id": q["id"], "kind": q["kind"], "job": q["job"], "question": q["text"], "answer": text.strip(),
+              "asked": q.get("asked"), "at": run.now()}
     st.setdefault("answers", []).append(answer)
     return answer
 
