@@ -1,4 +1,4 @@
-"""`ark` subcommands that need no model: status, plans, validate, approve.
+"""`ark` subcommands that need no model: status, plans, validate, approve, report, stats, and the run control ones.
 
 `ark` with no arguments is handled by bin/ark (it starts Claude); planning sessions use bin/planner.
 """
@@ -11,7 +11,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import ctl, desk, paths, validate
+from . import ctl, desk, paths, reporting, validate
 from .plan import load_plan, set_status, sha256_file
 
 
@@ -134,6 +134,7 @@ def main(argv=None) -> int:
     s.add_argument("target", help="<repo>/<slug>")
     s.set_defaults(fn=cmd_approve)
     ctl.register(sub)
+    reporting.register(sub)
     args = ap.parse_args(argv)
     return args.fn(args)
 
