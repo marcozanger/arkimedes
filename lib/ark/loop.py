@@ -562,7 +562,15 @@ def _cannot_archive(c: Ctx, name: str, e: OSError) -> None:
                         "it was not signalled")
 
 
+def _charge(st: dict, name: str, r: dict) -> None:
+    """Spent and gone whether or not anything still waits for the answer."""
+    j = st["jobs"].get(name.rpartition(".")[0])
+    if j is not None:
+        j["usd"] = round(j["usd"] + _usd(r.get("usd")), 4)
+
+
 def _on_receipt(c: Ctx, name: str, r: dict) -> None:
+    _charge(c.st, name, r)
     if name == DECISIONS:
         if c.st["closing"] == "decisions":
             try:
@@ -575,8 +583,6 @@ def _on_receipt(c: Ctx, name: str, r: dict) -> None:
         return
     job, _, kind = name.rpartition(".")
     j = c.st["jobs"].get(job)
-    if j is not None:  # spent and alive whether or not anything still waits for the answer
-        j["usd"] = round(j["usd"] + _usd(r.get("usd")), 4)
     if r.get("survivors"):
         run.alert(c.st, f"{_clean(job)}: processes of its {_clean(kind)} outlived it ({r['reason'] or 'it ended'}): "
                         "look for leftovers before they touch its worktree")
@@ -1043,7 +1049,47 @@ def _apply_stop(st: dict, item: dict) -> None:
     _block(st, job, proc.STOPPED_BY_MARCO)
 
 
-ANSWERS = {"worker": _answered_worker}
+ENDED = "run ended by Marco"
+
+
+def _begin_end(st: dict, why: str) -> None:
+    st["ending"] = why
+    run.event(st, f"ending the run: {why}")
+
+
+def _finish_ending(st: dict) -> None:
+    """Stop what runs, keep what it cost, block what is open. What merged stays on ark/<slug>, and no final PR is
+    opened: that is a decision about half a plan, and it is his. If a process cannot be stopped yet, the next cycle
+    tries again, and until then the run takes no other step."""
+    d = paths.run_dir(st["repo"], st["slug"])
+    for name in proc.active(d):
+        if name not in proc.finished(d):
+            proc.stop(d, name, st["ending"])
+    for name in proc.finished(d):
+        try:
+            r = proc.consume(d, name)
+        except OSError:
+            proc.discard(d, name)
+            continue
+        if r:
+            _charge(st, name, r)
+    if proc.active(d):
+        return
+    why = st.pop("ending")
+    for job, j in st["jobs"].items():
+        if j["status"] not in run.TERMINAL:
+            j.pop("question", None)
+            _block(st, job, why)
+    st.update(status="blocked", closing="done", reason=why, questions=[])
+    run.alert(st, f"run blocked: {why}. No final PR was opened; what merged stays on ark/{st['slug']}, and the "
+                  "worktrees are still there", critical=True)
+
+
+def _answered_plan_changed(st: dict, q: dict, text: str) -> None:
+    _begin_end(st, ENDED)
+
+
+ANSWERS = {"worker": _answered_worker, "plan_changed": _answered_plan_changed}
 INBOX = {"answer": _apply_answer, "stop": _apply_stop}
 
 
@@ -1077,16 +1123,22 @@ def step(st: dict, states: list[dict], forge, slots: Slots) -> None:
             return
     proc.reap(paths.run_dir(st["repo"], st["slug"]))  # first: nothing below can excuse a process from its deadline
     apply_inbox(st)
+    if st.get("ending"):
+        return _finish_ending(st)
     if merge.plan_reason(st):  # the same question ark-merge asks: a run it would refuse takes no step
         if st["status"] != "held":
             st["status"] = "held"
             run.alert(st, "the plan changed after its approval: nothing new is dispatched. Running processes "
                           "finish; their results wait. Restore the approved text, or approve the new text: then "
                           "every job not merged passes its checks again.")
+        questions.ask(st, "plan_changed", "The plan changed after its approval, so this run is held. To go on, restore "
+                                          "the approved text or approve the new one. Answer `stop` to end the run.",
+                      quiet=True)  # the alert above says it; ask again finds the same one
         return
     if st["status"] == "held":
         st["status"] = "running"
         st.pop("reapprove_refused", None)
+        questions.drop_kind(st, "plan_changed")
         run.event(st, "the approved plan is back: running again")
     c = Ctx(st, forge)
     if consume_receipts(c):
@@ -1356,6 +1408,8 @@ def _retry_due() -> bool:
             st = _load(a["repo"], a["slug"])
         except Exception:  # the cycle says so, once
             continue
+        if st and st.get("ending"):
+            return True
         if not st or st["status"] != "running":
             continue
         if st.get("closing_errors") and st.get("closing_wait", 0) <= now:
