@@ -1222,6 +1222,8 @@ def signature() -> str:
         h.update(f"{p}:{_mtime(p)}\n".encode("utf-8", "replace"))
     for f in sorted(paths.runs_dir().glob("**/*.receipt.json")):
         h.update(f"{f}\n".encode())
+    for f in sorted((paths.ark_home() / "inbox").glob("**/*.json")):
+        h.update(f"{f}\n".encode("utf-8", "replace"))
     for d in sorted({f.parent for f in paths.runs_dir().glob("**/*.proc")}):
         for n in proc.overdue(d):
             h.update(f"{d}/{n}:overdue\n".encode())
