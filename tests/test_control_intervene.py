@@ -285,3 +285,20 @@ def test_a_steer_that_arrives_too_late_says_so(feature, capsys):
     _, alerts, _ = loop.cycle()
     assert any("not delivered" in a for a in alerts)
     drive(settled)
+
+
+def test_a_steer_after_the_worker_ended_says_so(feature, monkeypatch, tmp_path, capsys):
+    go = holding(feature, monkeypatch, tmp_path)
+    go.touch()
+    receipt = paths.run_dir("demo", SLUG) / "shell.worker.receipt.json"
+    limit = time.time() + 30
+    while not receipt.exists() and time.time() < limit:     # no cycle here: the receipt stays unconsumed
+        time.sleep(0.05)
+    assert receipt.exists() and job_status("shell") == "working"
+    capsys.readouterr()
+    assert ark_cmd(capsys, "steer", "shell", "too late")[0] == 0
+    _, alerts, _ = loop.cycle()
+    assert any("not delivered" in a and "already ended" in a for a in alerts)
+    assert "steering" not in state()["jobs"]["shell"]
+    drive(settled)
+    assert state()["jobs"]["shell"]["status"] == "merged"   # its work counts all the same

@@ -314,6 +314,8 @@ def on_worker(c: Ctx, job: str, r: dict) -> None:
         j["status"] = "needs_worker"
         run.event(c.st, f"{job}: redirected: {steering[:300]}")
         return
+    if steering:  # `ark steer` said it was noted, and its stop came after the worker's end
+        run.alert(c.st, f"the steer for {job} was not delivered: its worker had already ended")
     if not r["reason"]:  # any reason may mean setup never finished: it runs again
         j["setup_done"] = True
     if r["reason"]:
