@@ -1220,6 +1220,15 @@ def status_line(states: list[dict]) -> str:
     return line + (f" · {finished} finished" if finished else "") + (f" · ❓{asked}" if asked else "")
 
 
+def _good_questions(st: dict) -> bool:
+    """The cycle reads these outside any run's guard (questions.md, the status line): damage here would stop every run."""
+    if "questions" not in st:
+        return True
+    return isinstance(st["questions"], list) and all(
+        isinstance(q, dict) and all(isinstance(q.get(k), str) for k in ("id", "kind", "text"))
+        and (q.get("job") is None or isinstance(q["job"], str)) for q in st["questions"])
+
+
 def _load(repo: str, slug: str) -> dict | None:
     """run.load, plus the shape the loop relies on: valid JSON of the wrong shape is damage too."""
     st = run.load(repo, slug)
@@ -1227,7 +1236,7 @@ def _load(repo: str, slug: str) -> dict | None:
         return None
     jobs = st.get("jobs")
     if (merge.state_reason(st) or (st["repo"], st["slug"]) != (repo, slug) or not isinstance(st.get("status"), str)
-            or not isinstance(st.get("events"), list) or not isinstance(st.get("alerts"), list)
+            or not isinstance(st.get("events"), list) or not isinstance(st.get("alerts"), list) or not _good_questions(st)
             or not all(isinstance(j, dict) and isinstance(j.get("status"), str) for j in jobs.values())):
         raise run.StateCorrupt(f"malformed run state {run.state_file(repo, slug)}")
     return st

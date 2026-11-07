@@ -1,4 +1,8 @@
-from ark import paths, questions
+import time
+
+import pytest
+
+from ark import paths, questions, run
 
 
 def blank():
@@ -299,3 +303,38 @@ def test_the_status_line_counts_open_questions():
     b = {"repo": "r", "slug": "b", "status": "running", "jobs": {}}
     assert loop.status_line([a, b]).endswith("· ❓2")
     assert "❓" not in loop.status_line([b])
+
+
+GOOD_QUESTION = {"id": "q1", "kind": "worker", "job": "shell", "text": "which?", "asked": ""}
+
+
+def test_load_takes_only_questions_of_the_right_shape(feature):
+    feature()
+    loop.cycle()
+    st = state()
+    for good in ([], [GOOD_QUESTION], [{**GOOD_QUESTION, "job": None}]):
+        run.save({**st, "questions": good})
+        assert loop._load("demo", SLUG)["questions"] == good
+    for bad in (None, 5, "q1", {}, [5], [{"id": "q1"}], [{**GOOD_QUESTION, "id": 1}], [{**GOOD_QUESTION, "kind": None}],
+                [{**GOOD_QUESTION, "text": 5}], [{**GOOD_QUESTION, "job": 5}], [GOOD_QUESTION, []]):
+        run.save({**st, "questions": bad})
+        with pytest.raises(run.StateCorrupt):
+            loop._load("demo", SLUG)
+
+
+@pytest.mark.parametrize("damage", [5, [{"id": "q1"}]])
+def test_a_run_with_malformed_questions_is_skipped_and_the_others_advance(feature, damage):
+    feature(repo="other")
+    loop.cycle()
+    run.save({**state("other"), "questions": damage})
+    feature()
+    alerts = []
+    for _ in range(400):  # not drive(): each alert comes once, and drive's own cycles would drop it
+        alerts += loop.cycle()[1]
+        if state()["status"] == "done":
+            break
+        time.sleep(0.05)
+    assert state()["status"] == "done"
+    assert any("other/" in a and "skipped until its state is repaired" in a for a in alerts)
+    assert any(f"demo/{SLUG}: run done" in a for a in alerts)
+    assert state("other")["questions"] == damage         # only Marco can say what it should have been
