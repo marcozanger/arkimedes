@@ -17,6 +17,7 @@ does; FAKE_STATE/down.count counts those.
 FAKE_USAGE=<n> makes a worker print an assistant line with n output tokens before it holds. Each worker attempt
 leaves <job>.worker.<n>.argv and .prompt in FAKE_STATE.
 
+FAKE_USD=<n> is what every process says it cost.
 FAKE_BLOCKED=job:n,... makes attempt n end BLOCKED with the question "which store?". FAKE_QUESTION is the raw answer of a
 tick asked a worker's question; the default answer is not valid there, so the question reaches Marco.
 """
@@ -68,7 +69,7 @@ def emit(result, stream=True):
     if stream:
         print(json.dumps({"type": "system", "subtype": "init", "session_id": SESSION}))
     print(json.dumps({"type": "result", "result": result, "session_id": SESSION,
-                      "total_cost_usd": 0.01, "is_error": False}))
+                      "total_cost_usd": float(os.environ.get("FAKE_USD", "0.01")), "is_error": False}))
 
 
 if os.environ.get("FAKE_DOWN"):

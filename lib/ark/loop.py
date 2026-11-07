@@ -18,7 +18,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from . import brief, claude, forge as forge_mod, gitops, inbox, integrate, merge, notify, paths, proc, questions, run
+from . import brief, caps, claude, forge as forge_mod, gitops, inbox, integrate, merge, notify, paths, proc, questions, run
 from .globs import areas_overlap, match_any
 from .plan import load_plan, sha256_file
 from .validate import validate
@@ -563,10 +563,17 @@ def _cannot_archive(c: Ctx, name: str, e: OSError) -> None:
 
 
 def _charge(st: dict, name: str, r: dict) -> None:
-    """Spent and gone whether or not anything still waits for the answer."""
+    """Spent and gone whether or not anything still waits for the answer. What belongs to no job is the run's."""
+    usd = _usd(r.get("usd"))
     j = st["jobs"].get(name.rpartition(".")[0])
     if j is not None:
-        j["usd"] = round(j["usd"] + _usd(r.get("usd")), 4)
+        j["usd"] = round(j["usd"] + usd, 4)
+    else:
+        st["other_usd"] = round(st.get("other_usd", 0) + usd, 4)
+    try:
+        caps.record(f"{st['repo']}/{st['slug']}", name, usd)
+    except OSError as e:
+        run.event(st, f"the spending ledger cannot be written: {e}")
 
 
 def _on_receipt(c: Ctx, name: str, r: dict) -> None:
@@ -903,6 +910,7 @@ class Slots:
 
     def __init__(self, states, limits: dict):
         self.limits, self.writers, self.heavy = limits, {}, 0
+        self.capped = caps.day_capped(limits)
         for st in states:
             for j in st["jobs"].values():
                 if j["status"] == "working":
@@ -1089,7 +1097,31 @@ def _answered_plan_changed(st: dict, q: dict, text: str) -> None:
     _begin_end(st, ENDED)
 
 
-ANSWERS = {"worker": _answered_worker, "plan_changed": _answered_plan_changed}
+def _answered_cap_run(st: dict, q: dict, text: str) -> None:
+    words = text.split()
+    if words == ["stop"]:
+        return _begin_end(st, ENDED)
+    st["usd_raised"] = st.get("usd_raised", 0) + float(words[1])
+    st.pop("cap_hold", None)
+    run.event(st, f"budget raised by ${float(words[1]):.2f}")
+
+
+def _check_run_cap(c: Ctx) -> None:
+    """Over its budgets, a run holds: what runs finishes, nothing new starts, and Marco decides."""
+    st = c.st
+    spent = caps.run_spent(st)
+    budget = caps.run_budget(c.mjobs) + st.get("usd_raised", 0)
+    if spent <= budget or all(j["status"] in run.TERMINAL for j in st["jobs"].values()):
+        st.pop("cap_hold", None)
+        questions.drop_kind(st, "cap_run")
+    elif not st.get("cap_hold"):
+        st["cap_hold"] = True
+        questions.ask(st, "cap_run", f"This run spent ${spent:.2f}, over the ${budget:.2f} of its budgets. Running "
+                                     "workers finish; nothing new starts. Answer `raise <usd>` to add budget, or "
+                                     "`stop` to end the run.", critical=True)
+
+
+ANSWERS = {"worker": _answered_worker, "plan_changed": _answered_plan_changed, "cap_run": _answered_cap_run}
 INBOX = {"answer": _apply_answer, "stop": _apply_stop}
 
 
@@ -1117,6 +1149,8 @@ def step(st: dict, states: list[dict], forge, slots: Slots) -> None:
         inbox.drop_all(st["repo"], st["slug"])  # nobody will read them
         return
     if st["status"] == "waiting":
+        if slots.capped:  # a run that has not started spends nothing by waiting
+            return
         if not try_start(st, states):
             return
         if not _save_now(st):  # the jobs exist now: a crash below finds its worker by them, not by chance
@@ -1142,7 +1176,11 @@ def step(st: dict, states: list[dict], forge, slots: Slots) -> None:
         run.event(st, "the approved plan is back: running again")
     c = Ctx(st, forge)
     if consume_receipts(c):
-        schedule(c, slots)
+        _check_run_cap(c)
+        if slots.capped:  # closing pays for a tick too
+            return
+        if not st.get("cap_hold"):
+            schedule(c, slots)
         maybe_close(c)
 
 
@@ -1322,6 +1360,7 @@ def cycle(forge=None) -> tuple[str, list[str], bool]:
     """One pass. Returns (status line, alerts to show, whether any run state changed)."""
     forge = forge or forge_mod.get()
     limits = paths.load_workspace()["limits"]  # first: if it raises, no alert was consumed and lost
+    caps.day_limit(limits)  # a bad limit raises here too: before any alert is consumed
     states, before, alerts, approved = {}, {}, [], {}
     for a in approvals():
         key = (a["repo"], a["slug"])
@@ -1350,6 +1389,10 @@ def cycle(forge=None) -> tuple[str, list[str], bool]:
         else:
             _guarded(st, "error", lambda st=st: step(st, list(states.values()), forge, slots))
     changed, critical = False, []
+    if slots.capped:
+        text = f"daily spending cap reached (${caps.spent_today():.2f}): nothing new starts until tomorrow, or until limits.usd_per_day is raised"
+        if _once(("day_cap", caps.today()), text, alerts):
+            critical.append(text)
     for key, st in states.items():
         alerts += st["alerts"]
         critical += st.pop("critical", [])
@@ -1364,7 +1407,7 @@ def cycle(forge=None) -> tuple[str, list[str], bool]:
                 text = f"{key[0]}/{key[1]}: the run state cannot be saved: {type(e).__name__}: {e}"
                 if _once(("unsaved", *key), text, alerts):
                     critical.append(text)
-    _flag_stuck(list(states.values()), False, alerts, critical)
+    _flag_stuck(list(states.values()), slots.capped, alerts, critical)
     try:
         questions.save_file(list(states.values()))
     except OSError as e:
