@@ -19,11 +19,14 @@ def test_find_repo_needs_origin(make_repo):
     assert paths.find_repo("missing") is None
 
 
-def test_find_repo_one_level_deeper(make_repo):
+def test_find_repo_up_to_three_levels(make_repo):
     nested = make_repo("muscleapp/mobile")
+    deep = make_repo("globallogic/proposals/v0")
     assert paths.find_repo("muscleapp/mobile") == nested
+    assert paths.find_repo("globallogic/proposals/v0") == deep
+    assert paths.find_repo("globallogic/proposals") is None   # a folder above a repo is not one
     assert paths.find_repo("../demo") is None
-    assert paths.find_repo("a/b/c") is None
+    assert paths.find_repo("a/b/c/d") is None
 
 
 def test_excluded_repo_is_not_found(make_repo, ark_home):
