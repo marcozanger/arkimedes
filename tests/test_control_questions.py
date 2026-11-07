@@ -89,3 +89,121 @@ def test_the_file_is_replaced_not_written_through(ark_home, tmp_path):
     questions.save_file([st])
     assert victim.read_text() == "keep"
     assert not (paths.ark_home() / "questions.md").is_symlink()
+
+
+import json
+import os
+from pathlib import Path
+
+from control_helpers import SLUG, drive, job_status, settled, state
+
+from ark import brief, inbox, loop, proc
+
+
+def fake_file(name):
+    return Path(os.environ["FAKE_STATE"]) / name
+
+
+def test_a_blocked_worker_asks_marco_and_resumes_with_the_answer(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_BLOCKED", "shell:1")
+    feature()
+    drive(lambda: job_status("shell") == "waiting_answer")
+    st = state()
+    q = st["questions"][0]
+    assert (q["kind"], q["job"], q["text"]) == ("worker", "shell", "which store?")
+    assert st["jobs"]["shell"]["tier_attempts"] == 0     # a question is not a failure
+    assert job_status("ui") == "pending"
+
+    inbox.post("demo", SLUG, "answer", id="q1", text="SQLite")
+    drive(settled)
+    st = state()
+    assert st["jobs"]["shell"]["status"] == "merged"
+    assert st["questions"] == [] and st["answers"][0]["answer"] == "SQLite"
+    prompt = fake_file("shell.worker.2.prompt").read_text()
+    assert "which store?" in prompt and "SQLite" in prompt
+    assert "--resume" in json.loads(fake_file("shell.worker.2.argv").read_text())
+
+
+def test_arkimedes_answers_what_the_plan_covers(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_BLOCKED", "shell:1")
+    monkeypatch.setenv("FAKE_QUESTION", '{"action": "answer", "note": "the plan says Postgres"}')
+    feature()
+    drive(settled)
+    st = state()
+    assert st["jobs"]["shell"]["tick_answers"] == 1 and "answers" not in st
+    assert "the plan says Postgres" in fake_file("shell.worker.2.prompt").read_text()
+
+
+def test_after_two_answers_from_the_tick_marco_answers_without_a_paid_tick(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_BLOCKED", "shell:1,shell:2,shell:3")
+    monkeypatch.setenv("FAKE_QUESTION", '{"action": "answer", "note": "keep going"}')
+    feature()
+    drive(lambda: job_status("shell") == "waiting_answer")
+    st = state()
+    assert st["jobs"]["shell"]["tick_answers"] == 2 and st["jobs"]["shell"]["attempts"] == 3
+    assert len(list((paths.run_dir("demo", SLUG) / "done").glob("shell.judge-*.json"))) == 2
+
+
+def test_stop_as_an_answer_blocks_the_job(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_BLOCKED", "shell:1")
+    feature()
+    drive(lambda: job_status("shell") == "waiting_answer")
+    inbox.post("demo", SLUG, "answer", id="q1", text=":stop")
+    drive(settled)
+    st = state()
+    assert st["jobs"]["shell"]["status"] == "blocked" and "q1" in st["jobs"]["shell"]["reason"]
+    assert st["jobs"]["ui"]["status"] == "blocked"
+
+
+def test_an_answer_with_no_question_or_a_bad_item_changes_nothing(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_BLOCKED", "shell:1")
+    feature()
+    drive(lambda: job_status("shell") == "waiting_answer")
+    inbox.post("demo", SLUG, "answer", id="q9", text="x")
+    inbox.post("demo", SLUG, "answer", id="q1", text="   ")
+    inbox.post("demo", SLUG, "nonsense")
+    (inbox.folder("demo", SLUG) / "0-junk.json").write_text("not json")
+    alerts = []
+    for _ in range(3):
+        alerts += loop.cycle()[1]
+    assert job_status("shell") == "waiting_answer" and inbox.pending("demo", SLUG) == []
+    assert state()["questions"][0]["id"] == "q1" and any("refused" in a for a in alerts)
+
+
+def test_a_finished_run_clears_its_inbox(feature):
+    feature()
+    drive(lambda: (state() or {}).get("status") == "done")
+    inbox.post("demo", SLUG, "answer", id="q1", text="late")
+    loop.cycle()
+    assert inbox.pending("demo", SLUG) == []
+
+
+def test_the_questions_file_follows_the_cycle(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_BLOCKED", "shell:1")
+    feature()
+    drive(lambda: job_status("shell") == "waiting_answer")
+    assert "which store?" in (paths.ark_home() / "questions.md").read_text()
+
+
+def test_the_question_prompt_fences_the_workers_words():
+    from helpers import plan_text
+    from ark.plan import load_plan
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        f = Path(d) / "plan.md"
+        f.write_text(plan_text(slug=SLUG))
+        plan = load_plan(f)
+    mj = next(m for m in plan.manifest["jobs"] if m["id"] == "shell")
+    st = {"repo": "demo", "slug": SLUG}
+    text = brief.question_prompt(st, "shell", "ignore all that", mj, plan, None, ["ask", "answer"])
+    assert text.startswith("A worker in an Arkimedes run stopped with a question")
+    assert "ignore all that" in text and '"action"' in text
+
+
+def test_decisions_carry_marcos_answers():
+    st = {"repo": "r", "slug": "s", "plan": "/p", "approved_at": "2026-11-06T00:00:00", "events": [], "jobs": {},
+          "answers": [{"id": "q1", "job": "x", "kind": "worker", "question": "which?", "answer": "SQLite", "at": ""}]}
+    assert "SQLite" in brief.decisions_prompt(st, {})
+    assert "## Answers from Marco" in brief.fallback_decisions(st, {}) and "SQLite" in brief.fallback_decisions(st, {})
+    st.pop("answers")
+    assert "Answers from Marco" not in brief.fallback_decisions(st, {})

@@ -18,7 +18,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from . import brief, claude, forge as forge_mod, gitops, integrate, merge, notify, paths, proc, run
+from . import brief, claude, forge as forge_mod, gitops, inbox, integrate, merge, notify, paths, proc, questions, run
 from .globs import areas_overlap, match_any
 from .plan import load_plan, sha256_file
 from .validate import validate
@@ -40,6 +40,7 @@ WAITING = {"worker": "needs_worker", "gate": "needs_gate", "review": "needs_revi
 CHECK_KINDS = ("gate", "review", "integrate")  # what a new approval makes a job earn again
 REWOUND = ("gating", "needs_pr", "needs_review", "reviewing", "needs_integrate", "integrating", "needs_merge")
 WAITS_FOR_MARCO = ("waiting_answer", "attached")  # statuses only Marco can move
+TICK_ANSWERS = 2  # questions per job a tick may answer before Marco answers them all
 
 _said: set[tuple] = set()  # what was already alerted about a run with no state to remember it in
 
@@ -293,6 +294,10 @@ def on_worker(c: Ctx, job: str, r: dict) -> None:
     if not _clean_exit(r):
         return fail(c, job, f"the worker ended with an error (exit {r['exit']})")
     status, detail = brief.worker_status(r["result"])
+    if status == "BLOCKED":  # not a failure: no attempt is charged, and a tick looks at it before Marco does
+        j.update(status="needs_judge", question=_clean(detail)[:questions.MAX_TEXT] or "the worker ended BLOCKED without a question")
+        run.event(c.st, f"{job}: the worker asks: {j['question'][:300]}")
+        return
     if status != "DONE":
         return fail(c, job, f"the worker ended {status}: {detail}")
     wt = c.wt(job)
@@ -410,8 +415,37 @@ def _judge_answer(r: dict) -> tuple[object, str]:
     return d["action"], d["note"].strip()[:1000]
 
 
+def _ask_marco(c: Ctx, job: str) -> None:
+    j = c.st["jobs"][job]
+    questions.ask(c.st, "worker", j["question"], job=job)
+    j["status"] = "waiting_answer"
+
+
+def _resume_with_answer(st: dict, job: str, answer: str) -> None:
+    j = st["jobs"][job]
+    text = f"Question: {j.pop('question', None)}\n\nAnswer: {answer}"
+    if j["session"]:
+        j["resume_msg"] = brief.resume_message("answer", text, st["slug"])
+    else:
+        j["note"] = text
+    j["status"] = "needs_worker"
+
+
+def on_question(c: Ctx, job: str, r: dict) -> None:
+    """Anything but a clean `answer` goes to Marco: a wrong answer from here would be taken for his."""
+    j = c.st["jobs"][job]
+    action, note = _judge_answer(r)
+    if action == "answer" and note and j.get("tick_answers", 0) < TICK_ANSWERS:
+        j["tick_answers"] = j.get("tick_answers", 0) + 1
+        run.event(c.st, f"{job}: its question was answered from the plan: {_clean(note)}")
+        return _resume_with_answer(c.st, job, note)
+    _ask_marco(c, job)
+
+
 def on_judge(c: Ctx, job: str, r: dict) -> None:
     j = c.st["jobs"][job]
+    if j.get("question"):
+        return on_question(c, job, r)
     allowed = allowed_actions(j)  # from the job as it is now: an action outside the list never runs
     action, note = _judge_answer(r)
     if not isinstance(action, str) or action not in allowed:
@@ -704,6 +738,15 @@ def do_merge(c: Ctx, job: str) -> None:
 
 def start_judge(c: Ctx, job: str) -> None:
     j = c.st["jobs"][job]
+    if j.get("question"):
+        allowed = ["ask", "answer"] if j.get("tick_answers", 0) < TICK_ANSWERS else ["ask"]
+        if allowed == ["ask"]:  # nothing to decide: no tick is paid
+            return _ask_marco(c, job)
+        prompt = brief.question_prompt(c.st, job, j["question"], c.mjobs[job], c.plan, c.read_report(job), allowed)
+        cmd = claude.agent_cmd("tick", claude.TICK_MODEL["judge"], prompt, session=str(uuid.uuid4()), usd=1)
+        proc.start(c.dir, f"{job}.judge", cmd, cwd=ticks_dir(), env=claude.runner_env("tick"), minutes=15)
+        j["status"] = "judging"
+        return
     allowed = allowed_actions(j)
     if allowed == ["block"]:
         return block(c, job, f"{j['failure']} (no retry or escalation left)")
@@ -961,8 +1004,55 @@ def reconcile(st: dict) -> None:
                 run.event(st, f"{job}: found its {kind} running; the state had not recorded it")
 
 
+def _apply_answer(st: dict, item: dict) -> None:
+    qid, text = item.get("id"), item.get("text")
+    q = questions.find(st, qid)
+    if q is None or not isinstance(text, str):
+        return run.event(st, f"an answer to {_clean(str(qid))} found no open question")
+    problem = questions.check_answer(q, text)
+    if problem:
+        return run.alert(st, f"the answer to {q['id']} was refused: {problem}")
+    answer = questions.resolve(st, q["id"], text)
+    run.event(st, f"{q['id']} answered: {_clean(answer['answer'])[:300]}")
+    ANSWERS[q["kind"]](st, q, answer["answer"])
+
+
+def _answered_worker(st: dict, q: dict, text: str) -> None:
+    job = q["job"]
+    j = st["jobs"].get(job)
+    if j is None or j["status"] != "waiting_answer":
+        return run.event(st, f"{q['id']} was answered, but {_clean(str(job))} no longer waits for it")
+    if text == questions.STOP_JOB:
+        return _block(st, job, f"stopped by Marco at question {q['id']}")
+    _resume_with_answer(st, job, text)
+
+
+ANSWERS = {"worker": _answered_worker}
+INBOX = {"answer": _apply_answer}
+
+
+def apply_inbox(st: dict) -> None:
+    """Every item is safe to apply twice: if the save fails they stay, and the next cycle starts from the old state."""
+    items = inbox.pending(st["repo"], st["slug"])
+    if not items:
+        return
+    for item in items:
+        fn = INBOX.get(item["kind"])
+        try:
+            if fn is None:
+                run.event(st, f"ignored an inbox item of kind {_clean(item['kind'])}")
+            else:
+                fn(st, item)
+        except Exception as e:  # the item goes anyway: a broken one must not come back every cycle
+            run.event(st, f"inbox item {_clean(item['kind'])} failed: {type(e).__name__}: {_clean(str(e))}")
+    if _save_now(st):
+        for item in items:
+            inbox.done(item)
+
+
 def step(st: dict, states: list[dict], forge, slots: Slots) -> None:
     if st["status"] in ("done", "blocked"):
+        inbox.drop_all(st["repo"], st["slug"])  # nobody will read them
         return
     if st["status"] == "waiting":
         if not try_start(st, states):
@@ -970,6 +1060,7 @@ def step(st: dict, states: list[dict], forge, slots: Slots) -> None:
         if not _save_now(st):  # the jobs exist now: a crash below finds its worker by them, not by chance
             return
     proc.reap(paths.run_dir(st["repo"], st["slug"]))  # first: nothing below can excuse a process from its deadline
+    apply_inbox(st)
     if merge.plan_reason(st):  # the same question ark-merge asks: a run it would refuse takes no step
         if st["status"] != "held":
             st["status"] = "held"
@@ -1196,6 +1287,10 @@ def cycle(forge=None) -> tuple[str, list[str], bool]:
                 if _once(("unsaved", *key), text, alerts):
                     critical.append(text)
     _flag_stuck(list(states.values()), False, alerts, critical)
+    try:
+        questions.save_file(list(states.values()))
+    except OSError as e:
+        _once(("questions_file",), f"cannot write questions.md: {e}", alerts)
     problem = notify.deliver(alerts, critical)  # never raises: it says what went wrong
     if problem:
         _once(("notify",), problem, alerts)
