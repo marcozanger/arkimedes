@@ -1027,8 +1027,24 @@ def _answered_worker(st: dict, q: dict, text: str) -> None:
     _resume_with_answer(st, job, text)
 
 
+def _apply_stop(st: dict, item: dict) -> None:
+    """`ark stop` of a job with no process when he typed it. One may have started since: it stops the usual way."""
+    job = item.get("job")
+    j = st["jobs"].get(job)
+    if j is None or j["status"] in run.TERMINAL:
+        return run.event(st, f"a stop for {_clean(str(job))} found nothing to stop")
+    d = paths.run_dir(st["repo"], st["slug"])
+    name = f"{job}.{RUNNING[j['status']]}" if j["status"] in RUNNING else None
+    if name and (d / f"{name}.proc").exists():
+        proc.stop(d, name, proc.STOPPED_BY_MARCO)
+        return
+    questions.drop_kind(st, "worker", job=job)
+    j.pop("question", None)
+    _block(st, job, proc.STOPPED_BY_MARCO)
+
+
 ANSWERS = {"worker": _answered_worker}
-INBOX = {"answer": _apply_answer}
+INBOX = {"answer": _apply_answer, "stop": _apply_stop}
 
 
 def apply_inbox(st: dict) -> None:
@@ -1148,7 +1164,8 @@ def status_line(states: list[dict]) -> str:
         n, m = len(s["jobs"]), sum(j["status"] == "merged" for j in s["jobs"].values())
         parts.append(f"{s['repo']}/{s['slug']} {s['status']}" + (f" {m}/{n} merged" if n else ""))
     line = " · ".join(parts) or "idle"
-    return line + (f" · {finished} finished" if finished else "")
+    asked = sum(len(s.get("questions") or []) for s in live)
+    return line + (f" · {finished} finished" if finished else "") + (f" · ❓{asked}" if asked else "")
 
 
 def _load(repo: str, slug: str) -> dict | None:

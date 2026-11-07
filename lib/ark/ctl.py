@@ -6,7 +6,7 @@ import os
 import sys
 import time
 
-from . import paths, proc, run, usage
+from . import inbox, paths, proc, questions, run, usage
 
 FOLLOW_POLL = 1.0   # seconds between looks at a log being followed
 _sleep = time.sleep  # a test replaces this to run the loop while a command waits for it
@@ -148,7 +148,82 @@ def cmd_logs(args) -> int:
 def cmd_stop(args) -> int:
     _writer()
     repo, slug, job = _resolve(args.job)
-    return proc._stop_cli(paths.run_dir(repo, slug), job)
+    d = paths.run_dir(repo, slug)
+    if any(n.startswith(job + ".") for n in proc.active(d)):
+        return proc._stop_cli(d, job)
+    status = run.load(repo, slug)["jobs"][job]["status"]
+    if status in run.TERMINAL:
+        raise CtlError(f"{job} ya terminó: {status}")
+    inbox.post(repo, slug, "stop", job=job)  # between processes: in a backoff, or waiting for Marco
+    print(f"{job} no tiene ningún proceso: queda bloqueado en el próximo ciclo")
+    return 0
+
+
+def _posted_answers(st: dict) -> set:
+    return {i.get("id") for i in inbox.pending(st["repo"], st["slug"]) if i["kind"] == "answer"}
+
+
+def _open_questions() -> list[tuple[dict, dict]]:
+    out = []
+    for st in _states():
+        if _live(st):
+            posted = _posted_answers(st)
+            out += [(st, q) for q in st.get("questions") or [] if q["id"] not in posted]
+    return out
+
+
+def _show(st: dict, q: dict) -> None:
+    job = f" · job {q['job']}" if q["job"] else ""
+    print(f"{st['repo']}/{st['slug']} · {q['id']}{job}\nplan: {st['plan']}\n\n{q['text']}\n")
+
+
+def _post_answer(st: dict, q: dict, text: str) -> None:
+    problem = questions.check_answer(q, text)
+    if problem:
+        raise CtlError(f"respuesta rechazada: {problem}")
+    inbox.post(st["repo"], st["slug"], "answer", id=q["id"], text=text)
+    print(f"{q['id']} anotada: ark-loop la aplica en el próximo ciclo")
+
+
+def _answer_by_id(key: str, qid: str, text: str) -> int:
+    st = next((s for s in _states() if f"{s['repo']}/{s['slug']}" == key and _live(s)), None)
+    if st is None:
+        raise CtlError(f"no hay un run vivo {key}")
+    q = questions.find(st, qid)
+    if q is None:
+        raise CtlError(f"{key} no tiene la pregunta abierta {qid}")
+    _post_answer(st, q, text)
+    return 0
+
+
+@_cmd
+def cmd_answer(args) -> int:
+    if args.list:
+        found = _open_questions()
+        for st, q in found:
+            _show(st, q)
+        if not found:
+            print("no hay preguntas abiertas")
+        return 0
+    _writer()
+    if args.run:
+        return _answer_by_id(*args.run)
+    found = _open_questions()
+    if not found:
+        print("no hay preguntas abiertas")
+    for st, q in found:
+        _show(st, q)
+        try:
+            text = input("> ").strip()
+        except EOFError:
+            break
+        if not text:  # skipped: it stays open
+            continue
+        try:
+            _post_answer(st, q, text)
+        except CtlError as e:
+            print(e)
+    return 0
 
 
 def register(sub) -> None:
@@ -162,3 +237,7 @@ def register(sub) -> None:
     s = sub.add_parser("stop", help="detener un job: queda bloqueado")
     s.add_argument("job", help="<job> o <repo>/<slug>:<job>")
     s.set_defaults(fn=cmd_stop)
+    s = sub.add_parser("answer", help="responder las preguntas abiertas, una por una")
+    s.add_argument("--list", action="store_true", help="mostrarlas sin responder")
+    s.add_argument("--run", nargs=3, metavar=("REPO/SLUG", "ID", "TEXTO"), help="responder una sola")
+    s.set_defaults(fn=cmd_answer)

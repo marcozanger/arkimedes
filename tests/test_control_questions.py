@@ -207,3 +207,95 @@ def test_decisions_carry_marcos_answers():
     assert "## Answers from Marco" in brief.fallback_decisions(st, {}) and "SQLite" in brief.fallback_decisions(st, {})
     st.pop("answers")
     assert "Answers from Marco" not in brief.fallback_decisions(st, {})
+
+
+from control_helpers import ark
+
+
+def waiting(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_BLOCKED", "shell:1")
+    feature()
+    drive(lambda: job_status("shell") == "waiting_answer")
+
+
+def test_answer_list_shows_repo_plan_job_and_question(feature, monkeypatch, capsys):
+    waiting(feature, monkeypatch)
+    capsys.readouterr()
+    code, out = ark(capsys, "answer", "--list")
+    assert code == 0
+    for piece in (f"demo/{SLUG}", "q1", "shell", "which store?", "plan.md"):
+        assert piece in out
+
+
+def test_answer_with_nothing_open(ark_home, capsys):
+    assert ark(capsys, "answer") == (0, "no hay preguntas abiertas\n")
+
+
+def test_answer_one_by_one(feature, monkeypatch, capsys):
+    waiting(feature, monkeypatch)
+    capsys.readouterr()
+    monkeypatch.setattr("builtins.input", lambda prompt="": "SQLite")
+    code, _ = ark(capsys, "answer")
+    assert code == 0
+    assert [i["text"] for i in inbox.pending("demo", SLUG)] == ["SQLite"]
+    code, out = ark(capsys, "answer")   # posted and not applied yet: it is not asked twice
+    assert (code, out) == (0, "no hay preguntas abiertas\n")
+    drive(settled)
+    assert state()["answers"][0]["answer"] == "SQLite"
+
+
+def test_an_empty_line_skips_and_end_of_input_stops(feature, monkeypatch, capsys):
+    waiting(feature, monkeypatch)
+    capsys.readouterr()
+    monkeypatch.setattr("builtins.input", lambda prompt="": "  ")
+    assert ark(capsys, "answer")[0] == 0
+    assert inbox.pending("demo", SLUG) == []
+
+    def eof(prompt=""):
+        raise EOFError
+    monkeypatch.setattr("builtins.input", eof)
+    assert ark(capsys, "answer")[0] == 0
+    assert inbox.pending("demo", SLUG) == []
+
+
+def test_answer_by_id_checks_the_answer(feature, monkeypatch, capsys):
+    waiting(feature, monkeypatch)
+    capsys.readouterr()
+    assert ark(capsys, "answer", "--run", f"demo/{SLUG}", "q9", "x")[0] == 1
+    assert ark(capsys, "answer", "--run", "demo/nope", "q1", "x")[0] == 1
+    assert ark(capsys, "answer", "--run", f"demo/{SLUG}", "q1", "  ")[0] == 1
+    assert ark(capsys, "answer", "--run", f"demo/{SLUG}", "q1", "SQLite")[0] == 0
+    assert len(inbox.pending("demo", SLUG)) == 1
+
+
+def test_answer_refuses_a_runner_process(feature, monkeypatch, capsys):
+    waiting(feature, monkeypatch)
+    capsys.readouterr()
+    monkeypatch.setenv("ARK_ROLE", "worker")
+    assert ark(capsys, "answer", "--run", f"demo/{SLUG}", "q1", "x")[0] == 1
+    assert inbox.pending("demo", SLUG) == []
+
+
+def test_stop_of_a_job_waiting_for_an_answer(feature, monkeypatch, capsys):
+    waiting(feature, monkeypatch)
+    capsys.readouterr()
+    code, out = ark(capsys, "stop", "shell")
+    assert code == 0 and "próximo ciclo" in out
+    drive(settled)
+    st = state()
+    assert st["jobs"]["shell"]["reason"] == proc.STOPPED_BY_MARCO and st["questions"] == []
+
+
+def test_stop_of_a_finished_job(feature, capsys):
+    feature()
+    drive(settled)
+    capsys.readouterr()
+    code, out = ark(capsys, "stop", f"demo/{SLUG}:shell")
+    assert code == 1 and "merged" in out
+
+
+def test_the_status_line_counts_open_questions():
+    a = {"repo": "r", "slug": "a", "status": "running", "jobs": {}, "questions": [{}, {}]}
+    b = {"repo": "r", "slug": "b", "status": "running", "jobs": {}}
+    assert loop.status_line([a, b]).endswith("· ❓2")
+    assert "❓" not in loop.status_line([b])
