@@ -36,7 +36,7 @@ def cmd_status(args) -> int:
         if f.repo != repo:
             repo = f.repo
             print(repo)
-        print(f"  {f.slug:<28} spec {f.spec:<9} plan {f.plan:<7} run {f.run}")
+        print(f"  {f.slug:<28} spec {f.spec:<9} plan {f.plan:<7} status {f.run:<8} elapsed {f.elapsed:<6} eta {f.eta}")
     return 0
 
 
