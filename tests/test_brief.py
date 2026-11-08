@@ -72,7 +72,7 @@ def test_decisions_prompt_and_fallback(tmp_path):
     st["jobs"]["ui"].update(status="blocked", reason="integration gate failed twice")
     reports = {"shell": "## DECISIONS\n\n- Kept notes in one file. Why: simpler.\n\n## Open issues\n\nnone"}
     p = brief.decisions_prompt(st, reports)
-    assert "Kept notes in one file" in p and "<details><summary>más</summary>" in p and "```" not in p
+    assert "Kept notes in one file" in p and "<details><summary>more</summary>" in p and "más" not in p and "```" not in p
     f = brief.fallback_decisions(st, reports)
     assert f.startswith("# Decisions — notes-edit")
     assert "Kept notes in one file" in f and "integration gate failed twice" in f and "Open issues" not in f

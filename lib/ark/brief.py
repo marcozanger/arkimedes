@@ -41,7 +41,7 @@ Jobs: <n> merged, <n> blocked · Decisions: <n> worker, <n> reviewer, <n> arkime
 ## <job id> — <merged | blocked>
 
 - **D1** · <the decision in 1-2 sentences> · _<author: worker (<model>) | reviewer | arkimedes>_
-  <details><summary>más</summary>
+  <details><summary>more</summary>
 
   Why: <the reason>
   Rejected: <the alternatives>
