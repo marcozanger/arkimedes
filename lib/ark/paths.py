@@ -52,6 +52,7 @@ DEFAULTS = {
     "tick_minutes": 15,
     "poll_seconds": 15,
     "notify": [],
+    "accounts": [],
 }
 
 
@@ -100,4 +101,19 @@ def find_repo(name: str) -> Path | None:
         cand = Path(root).expanduser() / name
         if (cand / ".git").is_dir() and _has_origin(cand):
             return cand
+    return None
+
+
+def repo_name(path) -> str | None:
+    """The inverse of find_repo: the name of the repo whose main checkout is `path`, or None."""
+    p = Path(path).expanduser().resolve()
+    for root in load_workspace().get("roots", []):
+        try:
+            rel = p.relative_to(Path(root).expanduser().resolve())
+        except ValueError:
+            continue
+        name = "/".join(rel.parts)
+        found = find_repo(name) if name else None
+        if found is not None and found.resolve() == p:
+            return name
     return None

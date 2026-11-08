@@ -11,6 +11,18 @@ def test_paths_follow_ark_home(ark_home):
     assert paths.run_file("demo", "x") == ark_home / "runs/demo/x.md"
 
 
+def test_repo_name_is_the_inverse_of_find_repo(make_repo, tmp_path):
+    deep = make_repo("gl/proposals/v0")
+    assert paths.repo_name(deep) == "gl/proposals/v0"
+    assert paths.repo_name(make_repo("demo")) == "demo"
+    assert paths.repo_name(tmp_path) is None                      # not under a root
+    assert paths.repo_name(tmp_path / "ws" / "gl") is None        # under a root, not a repo
+
+
+def test_workspace_accounts_default_to_none(ark_home):
+    assert paths.load_workspace()["accounts"] == []
+
+
 def test_find_repo_needs_origin(make_repo):
     with_origin = make_repo("demo")
     make_repo("local-only", origin=False)
