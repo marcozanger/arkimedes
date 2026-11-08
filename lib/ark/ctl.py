@@ -7,7 +7,7 @@ import subprocess
 import sys
 import time
 
-from . import claude, gitops, inbox, paths, proc, questions, run, usage
+from . import accounts, claude, gitops, inbox, paths, proc, questions, run, usage
 
 FOLLOW_POLL = 1.0   # seconds between looks at a log being followed
 ATTACH_WAIT = 60  # seconds for ark-loop to hand a job over
@@ -266,11 +266,15 @@ def cmd_attach(args) -> int:
     status = st["jobs"][job]["status"]
     if status not in ("working", "waiting_answer", "attached"):
         raise CtlError(f"{job} no se puede tomar: {status}")
+    try:
+        env = claude.with_account(dict(os.environ), repo)
+    except accounts.AccountError as e:
+        raise CtlError(f"no puedo abrir la sesión de {args.job} con su cuenta: {e}") from None
     if status != "attached":
         inbox.post(repo, slug, "attach", job=job)
     j = _wait_attached(repo, slug, job)
     wt = paths.worktrees_dir() / repo / slug / job
-    subprocess.run([claude.claude_bin()] + (["--resume", j["session"]] if j["session"] else []), cwd=wt)
+    subprocess.run([claude.claude_bin()] + (["--resume", j["session"]] if j["session"] else []), cwd=wt, env=env)
     if not gitops.is_clean(wt):
         raise CtlError(f"quedaron cambios sin commitear en {wt}. Commiteá y corré `ark attach {args.job}` otra vez; "
                        "el job sigue en tus manos.")

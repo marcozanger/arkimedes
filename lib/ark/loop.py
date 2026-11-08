@@ -749,7 +749,7 @@ def start_worker(c: Ctx, job: str) -> bool:
         j["session"] = None  # known again only when this process says what it had: one may never start
         prompt = brief.worker_brief(c.st, job, mj, c.plan, worktree=wt, report=report,
                                     note=j["note"] or j["resume_msg"], previous_report=c.read_report(job))
-    env = claude.runner_env("worker", origin_url=gitops.origin_url(c.repo), worktree=wt, area=json.dumps(mj["area"]),
+    env = claude.runner_env("worker", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo), worktree=wt, area=json.dumps(mj["area"]),
                             report=report, gate=mj["gate"], run_dir=c.dir, job=job)
     sid = j["session"] or str(uuid.uuid4())  # the worker's id before it says so: a kill may come first
     cmd = claude.agent_cmd("worker", claude.MODELS[j["tier"]], prompt, session=sid, resume=resume, usd=mj["budget"]["usd"])
@@ -780,7 +780,7 @@ def push_job(c: Ctx, job: str) -> None:
 
 def start_gate(c: Ctx, job: str) -> None:
     j, mj = c.st["jobs"][job], c.mjobs[job]
-    env = claude.runner_env("gate", origin_url=gitops.origin_url(c.repo))  # it runs tests a worker wrote
+    env = claude.runner_env("gate", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo))  # it runs tests a worker wrote
     proc.start(c.dir, f"{job}.gate", ["sh", "-c", mj["gate"]], cwd=c.wt(job), env=env,
                minutes=mj["budget"]["minutes"], meta={"head": j["head"]})
     j["status"] = "gating"
@@ -801,7 +801,7 @@ def start_review(c: Ctx, job: str) -> None:
     prompt = brief.reviewer_brief(c.st, job, mj, c.plan, base=f"origin/{c.base}", head=j["head"])
     cmd = claude.agent_cmd("reviewer", claude.MODELS[tier], prompt, session=str(uuid.uuid4()),
                            usd=max(1, mj["budget"]["usd"] / 2))
-    env = claude.runner_env("reviewer", origin_url=gitops.origin_url(c.repo), worktree=c.wt(job),
+    env = claude.runner_env("reviewer", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo), worktree=c.wt(job),
                             area=json.dumps(mj["area"]), job=job, run_dir=c.dir)
     proc.start(c.dir, f"{job}.review", cmd, cwd=c.wt(job), env=env, minutes=30, meta={"head": j["head"]})
     j["status"] = "reviewing"
@@ -812,7 +812,7 @@ def start_integrate(c: Ctx, job: str) -> None:
     if j["pr"] and merge.confirmed(c.st, job, c.forge, c.repo):  # a crash lost it: a red check now would pay a worker
         return _merged(c, job)
     cmd = [str(paths.code_dir() / "bin" / "ark-integrate"), f"{c.st['repo']}/{c.st['slug']}", job, j["head"]]
-    env = claude.runner_env("integrate", origin_url=gitops.origin_url(c.repo))  # it runs tests a worker wrote
+    env = claude.runner_env("integrate", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo))  # it runs tests a worker wrote
     # Above the check's own timeout, or a slow gate dies here with no result instead of red with its reason.
     proc.start(c.dir, f"{job}.integrate", cmd, cwd=paths.code_dir(), env=env,
                minutes=integrate.GATE_TIMEOUT / 60 + 30, meta={"head": j["head"]})
@@ -853,7 +853,7 @@ def start_judge(c: Ctx, job: str) -> None:
             return _ask_marco(c, job)
         prompt = brief.question_prompt(c.st, job, j["question"], c.mjobs[job], c.plan, c.read_report(job), allowed)
         cmd = claude.agent_cmd("tick", claude.TICK_MODEL["judge"], prompt, session=str(uuid.uuid4()), usd=1)
-        proc.start(c.dir, f"{job}.judge", cmd, cwd=ticks_dir(), env=claude.runner_env("tick"), minutes=15)
+        proc.start(c.dir, f"{job}.judge", cmd, cwd=ticks_dir(), env=claude.runner_env("tick", repo_name=c.st["repo"]), minutes=15)
         j["status"] = "judging"
         return
     allowed = allowed_actions(j)
@@ -861,7 +861,7 @@ def start_judge(c: Ctx, job: str) -> None:
         return block(c, job, f"{j['failure']} (no retry or escalation left)")
     prompt = brief.judge_prompt(c.st, job, j, c.mjobs[job], allowed, c.read_report(job))
     cmd = claude.agent_cmd("tick", claude.TICK_MODEL["judge"], prompt, session=str(uuid.uuid4()), usd=1)
-    proc.start(c.dir, f"{job}.judge", cmd, cwd=ticks_dir(), env=claude.runner_env("tick"), minutes=15)
+    proc.start(c.dir, f"{job}.judge", cmd, cwd=ticks_dir(), env=claude.runner_env("tick", repo_name=c.st["repo"]), minutes=15)
     j["status"] = "judging"
 
 
@@ -900,7 +900,7 @@ def start_decisions(c: Ctx) -> None:
     try:
         cmd = claude.agent_cmd("tick", claude.TICK_MODEL["decisions"], brief.decisions_prompt(st, _reports(c)),
                                session=str(uuid.uuid4()), usd=1)
-        proc.start(c.dir, DECISIONS, cmd, cwd=ticks_dir(), env=claude.runner_env("tick"), minutes=15)
+        proc.start(c.dir, DECISIONS, cmd, cwd=ticks_dir(), env=claude.runner_env("tick", repo_name=c.st["repo"]), minutes=15)
     except Exception as e:
         st["closing"] = "publish"
         run.event(st, f"the decisions tick could not start: {type(e).__name__}: {_clean(str(e))}")
@@ -1110,7 +1110,7 @@ def start_intervene(c: Ctx, job: str, why: str) -> None:
     prompt = brief.intervene_prompt(c.st, job, c.mjobs[job]["pr_title"], why, usage.scan(log)["last"], log,
                                     _intervene_actions(j))
     cmd = claude.agent_cmd("tick", claude.TICK_MODEL["judge"], prompt, session=str(uuid.uuid4()), usd=1)
-    proc.start(c.dir, f"{job}.intervene", cmd, cwd=ticks_dir(), env=claude.runner_env("tick"), minutes=15,
+    proc.start(c.dir, f"{job}.intervene", cmd, cwd=ticks_dir(), env=claude.runner_env("tick", repo_name=c.st["repo"]), minutes=15,
                meta={"attempt": j["attempts"]})
     j.update(intervening=True, anomaly=why)
     run.event(c.st, f"{job} looks wrong: {why}")

@@ -454,7 +454,7 @@ def test_push_layer_stops_the_jobs_origin_and_nothing_else(tmp_path):
     git("remote", "add", "same", url, cwd=clone)
     head = lambda: git("rev-parse", "main", cwd=tmp_path / "r.git").stdout
     before = head()
-    worker = {**env, **claude.runner_env("worker", origin_url=gitops.origin_url(clone))}
+    worker = {**env, **claude.runner_env("worker", repo_name=None, origin_url=gitops.origin_url(clone))}
     for args in (["push", "origin", "HEAD:main"], ["-c", "alias.x=push", "x", "origin", "HEAD:main"],
                  ["push", url, "HEAD:main"], ["push", "same", "HEAD:main"]):
         assert git(*args, cwd=clone, e=worker).returncode != 0, args
@@ -475,7 +475,7 @@ def test_push_layer_matches_how_origin_is_spelled(url, tmp_path):
     push_url = lambda e: subprocess.run(["git", "-C", str(tmp_path), "remote", "get-url", "--push", "origin"], env=e,
                                         capture_output=True, text=True).stdout.strip()
     assert push_url(os.environ) == url
-    worker = claude.runner_env("worker", origin_url=gitops.origin_url(tmp_path))
+    worker = claude.runner_env("worker", repo_name=None, origin_url=gitops.origin_url(tmp_path))
     assert push_url(worker) == "/dev/null/no-push-from-workers"
 
 
@@ -486,7 +486,7 @@ def test_origin_url_is_the_spelling_the_layer_needs(tmp_path):
     subprocess.run(["git", "-C", str(tmp_path), "config", "url.git@github.com:.insteadOf", "https://github.com/"],
                    check=True)
     assert gitops.origin_url(tmp_path) == "https://github.com/o/r.git"
-    worker = claude.runner_env("worker", origin_url=gitops.origin_url(tmp_path))
+    worker = claude.runner_env("worker", repo_name=None, origin_url=gitops.origin_url(tmp_path))
     r = subprocess.run(["git", "-C", str(tmp_path), "remote", "get-url", "--push", "origin"], env=worker,
                        capture_output=True, text=True)
     assert r.stdout.strip() == "/dev/null/no-push-from-workers"
