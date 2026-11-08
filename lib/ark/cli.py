@@ -1,6 +1,6 @@
-"""`ark` subcommands that need no model: status, plans, validate, approve, report, stats, and the run control ones.
+"""`ark` subcommands that need no model: status, plans, validate, estimate, approve, report, stats, and the run control ones.
 
-`ark` with no arguments is handled by bin/ark (it starts Claude); planning sessions use bin/planner.
+`ark` with no arguments is handled by bin/ark (it starts Claude); planning is the /ark-plan skill.
 """
 from __future__ import annotations
 
@@ -11,8 +11,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import ctl, desk, paths, reporting, validate
+from . import ctl, desk, estimate, paths, reporting, validate
 from .plan import load_plan, set_status, sha256_file
+from .report import minutes, usd
 
 
 def _resolve(target: str) -> Path:
@@ -118,6 +119,32 @@ def cmd_approve(args) -> int:
     return 0
 
 
+def cmd_estimate(args) -> int:
+    path = _resolve(args.target)
+    problems = validate.validate(path)
+    if problems:
+        for p in problems:
+            print(p)
+        return 1
+    plan = load_plan(path)
+    writers = int(paths.load_workspace()["limits"]["writers_per_repo"])
+    e = estimate.estimate(plan.manifest, writers)
+    e["sha256"] = sha256_file(path)
+    if args.json:
+        print(json.dumps(e, indent=2))
+        return 0
+    print("| job | tier | después de | minutos | USD |")
+    print("|---|---|---|---|---|")
+    for j in e["jobs"]:
+        print(f"| {j['id']} | {j['tier']} | {', '.join(j['after']) or '–'} | {minutes(j['minutes'])} | {usd(j['usd'])} |")
+    print(f"| **total** | | | {minutes(e['total_minutes'])} | {usd(e['total_usd'])} |")
+    print()
+    print(f"Punta a punta: {minutes(e['end_to_end_minutes'])} "
+          f"(hasta {writers} jobs a la vez, cada uno con sus minutos de presupuesto).")
+    print(f"sha256 del plan: {e['sha256']}")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="ark", description="Arkimedes desk y control de runs (sin modelo).")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -133,6 +160,10 @@ def main(argv=None) -> int:
     s = sub.add_parser("approve", help="cerrar un plan (Marco confirma)")
     s.add_argument("target", help="<repo>/<slug>")
     s.set_defaults(fn=cmd_approve)
+    s = sub.add_parser("estimate", help="presupuesto y tiempo de punta a punta de un plan")
+    s.add_argument("target", help="<repo>/<slug> o ruta a plan.md")
+    s.add_argument("--json", action="store_true", help="los mismos datos en JSON")
+    s.set_defaults(fn=cmd_estimate)
     ctl.register(sub)
     reporting.register(sub)
     args = ap.parse_args(argv)

@@ -48,3 +48,15 @@ def test_a_plan_without_budgets_is_fine(ark_home):
     st = run_state()
     s = summary.summarize(st, steps.build(st), {})
     assert s["budget_usd"] is None and s["jobs"]["shell"]["budget_usd"] is None
+
+
+def test_the_summary_has_the_plans_end_to_end_estimate(ark_home):
+    s = summarize(run_state())
+    # mjobs(): shell 30 min and ui 20 min, no after, 3 writers by default → they run side by side
+    assert s["estimated_minutes"] == 30 and s["wall_minutes"] == 60.0
+
+
+def test_no_budgets_no_estimate(ark_home):
+    from ark import steps, summary
+    st = run_state()
+    assert summary.summarize(st, steps.build(st), {})["estimated_minutes"] is None

@@ -29,6 +29,11 @@ runs get them too.
   assistant lines. A merge whose event fell out of the 200 kept has no time.
 - USD is the API-equivalent cost the CLI reports. On a subscription it is an estimate.
 
+## Summary fields
+
+- `estimated_minutes`: the plan's end-to-end estimate from `lib/ark/estimate.py` (same number `ark estimate`
+  shows); the report puts it next to the total time.
+
 ## Commands
 
 | Command | What |
