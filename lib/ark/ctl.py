@@ -6,8 +6,9 @@ import os
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 
-from . import accounts, claude, gitops, inbox, paths, proc, questions, run, usage
+from . import accounts, claude, desk, gitops, inbox, paths, proc, questions, run, usage
 
 FOLLOW_POLL = 1.0   # seconds between looks at a log being followed
 ATTACH_WAIT = 60  # seconds for ark-loop to hand a job over
@@ -89,17 +90,27 @@ def _ps_row(st: dict, job: str, j: dict) -> list[str]:
     return [f"{st['repo']}/{st['slug']}", job, j["status"], j.get("tier", "?"), elapsed, tokens, f"${j.get('usd', 0):.2f}", last]
 
 
+def _ps_header(st, now) -> str:
+    elapsed, eta = desk._times(st["repo"], st["slug"], now)
+    return f"{st['repo']}/{st['slug']} · {st['status']} · elapsed {elapsed} · eta {eta}"
+
+
 @_cmd
 def cmd_ps(args) -> int:
     states = [st for st in _states() if _live(st)]
-    rows = [_ps_row(st, job, j) for st in states for job, j in st["jobs"].items() if j["status"] not in run.TERMINAL]
-    if not rows:
+    runs = [(st, [_ps_row(st, job, j) for job, j in st["jobs"].items() if j["status"] not in run.TERMINAL])
+            for st in states]
+    runs = [(st, rows) for st, rows in runs if rows]
+    if not runs:
         print("nada corriendo")
         return 0
     head = ["RUN", "JOB", "ESTADO", "TIER", "TIEMPO", "TOKENS", "USD", "ÚLTIMO MENSAJE"]
-    widths = [max(len(r[i]) for r in [head, *rows]) for i in range(len(head) - 1)]
-    for r in [head, *rows]:
-        print("  ".join(c.ljust(w) for c, w in zip(r, widths)) + "  " + r[-1])
+    widths = [max(len(r[i]) for r in [head, *(r for _, rows in runs for r in rows)]) for i in range(len(head) - 1)]
+    now = datetime.now(timezone.utc)
+    for st, rows in runs:
+        print(_ps_header(st, now))
+        for r in [head, *rows]:
+            print("  ".join(c.ljust(w) for c, w in zip(r, widths)) + "  " + r[-1])
     waiting = sum(len(st.get("questions") or []) for st in states)
     if waiting:
         print(f"❓ {waiting}: ark answer")
