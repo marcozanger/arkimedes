@@ -1,8 +1,8 @@
-"""runs/<repo>/<slug>/report.html: the run for Marco, in Spanish (spec §9a). A script, no model.
+"""runs/<repo>/<slug>/report.html: the run for Marco, in English (spec §9a). A script, no model.
 
 Everything in it comes from the run folder, where workers can write: every value is escaped. The decisions file
 is the only markdown rendered, and only headings, bullets, **bold**, https links and the exact
-`<details><summary>más</summary>` … `</details>` pair the format asks for."""
+`<details><summary>more</summary>` … `</details>` pair the format asks for (the legacy `más` marker is read too)."""
 from __future__ import annotations
 
 import re
@@ -10,15 +10,13 @@ from html import escape
 
 from . import paths, run
 
-DETAILS_OPEN = escape("<details><summary>más</summary>")
+DETAILS_OPEN = {escape(f"<details><summary>{w}</summary>") for w in ("more", "más")}    # "más": legacy files
 DETAILS_CLOSE = escape("</details>")
 BOLD = re.compile(r"\*\*(.+?)\*\*")
 LINK = re.compile(r"https://[^\s<>&\"']+")
-KIND_ES = {"worker": "worker", "review": "revisión", "gate": "gate", "integrate": "integración",
-           "judge": "juez", "intervene": "intervención", "decisions": "decisiones", "merge": "merge",
-           "wait-marco": "espera a Marco"}
-STATUS_ES = {"merged": "mergeado", "blocked": "bloqueado", "done": "terminado", "running": "corriendo",
-             "held": "en pausa", "waiting": "esperando"}
+KIND_LABELS = {"worker": "worker", "review": "review", "gate": "gate", "integrate": "integration",
+               "judge": "judge", "intervene": "intervention", "decisions": "decisions", "merge": "merge",
+               "wait-marco": "waiting for Marco"}
 
 CSS = """
 :root { --bg:#fbfaf7; --fg:#1d1d1b; --muted:#6b6a65; --line:#e3e1da; --card:#ffffff; --ok:#1f7a4d; --bad:#b3261e; --est:#8a6d00; }
@@ -61,12 +59,12 @@ def _e(v) -> str:
 
 
 def _est(flag) -> str:
-    return ' <span class="est">estimado</span>' if flag else ""
+    return ' <span class="est">estimated</span>' if flag else ""
 
 
 def _status(s) -> str:
     cls = "ok" if s in ("merged", "done") else "bad" if s == "blocked" else "muted"
-    return f'<span class="{cls}">{_e(STATUS_ES.get(s, s))}</span>'
+    return f'<span class="{cls}">{_e(s)}</span>'
 
 
 def _table(head: list[str], rows: list[list[str]], wrap: int | None = None) -> str:
@@ -84,7 +82,7 @@ def _inline(line: str) -> str:
 
 def decisions_html(text: str | None) -> str:
     if not text:
-        return '<p class="muted">Sin archivo de decisiones.</p>'
+        return '<p class="muted">No decisions file.</p>'
     out, depth, para = [], 0, []
 
     def flush():
@@ -94,9 +92,9 @@ def decisions_html(text: str | None) -> str:
 
     for raw in text.splitlines():
         line = escape(raw.strip())
-        if line == DETAILS_OPEN:
+        if line in DETAILS_OPEN:
             flush()
-            out.append("<details><summary>más</summary>")
+            out.append("<details><summary>more</summary>")
             depth += 1
         elif line == DETAILS_CLOSE:
             flush()
@@ -122,14 +120,14 @@ def decisions_html(text: str | None) -> str:
 
 def _summary(s: dict) -> str:
     est = _est(s["estimated"])
-    tiles = [("Tiempo total", minutes(s["wall_minutes"])),
-             ("Estimado (punta a punta)", minutes(s.get("estimated_minutes"))), ("Trabajando", minutes(s["working_minutes"])),
-             ("Esperando a Marco", minutes(s["waiting_minutes"])), ("Tokens", tokens(s["tokens"]) + est),
-             ("USD equivalente API", usd(s["usd"]) + est), ("Presupuesto", usd(s["budget_usd"])),
-             ("PRs mergeados", str(s["merged"])), ("PRs bloqueados", str(s["blocked"])),
-             ("Fallas de integración", str(s["integrate_fails"]))]
-    final = f'<p>PR final: <a href="{_e(s["final_pr"])}">{_e(s["final_pr"])}</a></p>' if s["final_pr"] else \
-        '<p class="muted">Sin PR final.</p>'
+    tiles = [("Total time", minutes(s["wall_minutes"])),
+             ("Estimated (end to end)", minutes(s.get("estimated_minutes"))), ("Working", minutes(s["working_minutes"])),
+             ("Waiting for Marco", minutes(s["waiting_minutes"])), ("Tokens", tokens(s["tokens"]) + est),
+             ("API-equivalent USD", usd(s["usd"]) + est), ("Budget", usd(s["budget_usd"])),
+             ("PRs merged", str(s["merged"])), ("PRs blocked", str(s["blocked"])),
+             ("Integration failures", str(s["integrate_fails"]))]
+    final = f'<p>Final PR: <a href="{_e(s["final_pr"])}">{_e(s["final_pr"])}</a></p>' if s["final_pr"] else \
+        '<p class="muted">No final PR.</p>'
     return ('<div class="tiles">' + "".join(f'<div class="tile"><span class="muted">{k}</span><b>{v}</b></div>'
                                             for k, v in tiles) + "</div>" + final)
 
@@ -142,8 +140,8 @@ def _per_pr(s: dict) -> str:
                      str(j["steers"]), str(j["reviews"]), str(j["gate_fails"]), str(j["integrate_fails"]),
                      f'{minutes(j["minutes"])} / {minutes(j["budget_minutes"])}', tokens(j["tokens"]),
                      f'{usd(j["usd"])} / {usd(j["budget_usd"])}{_est(j["estimated"])}', pr, _e(j["reason"] or "")])
-    return _table(["job", "estado", "tiers", "intentos", "redirecciones", "revisiones", "gates rojos",
-                   "integración roja", "minutos / presupuesto", "tokens", "USD / presupuesto", "PR", "motivo"],
+    return _table(["job", "status", "tiers", "attempts", "steers", "reviews", "failed gates",
+                   "failed integrations", "minutes / budget", "tokens", "USD / budget", "PR", "reason"],
                   rows, wrap=12)
 
 
@@ -151,33 +149,33 @@ def _timeline(rows: list[dict]) -> str:
     out = []
     for r in rows:
         when = (r["start"] or r["end"] or "")[11:16] or "–"
-        out.append([str(r["step"]), _e(when), _e(KIND_ES.get(r["kind"], r["kind"])), _e(r["job"] or "–"),
+        out.append([str(r["step"]), _e(when), _e(KIND_LABELS.get(r["kind"], r["kind"])), _e(r["job"] or "–"),
                     _e(r["attempt"] or "–"), _e(r["model"] or "–"), minutes(r["minutes"]),
                     tokens(r["tokens_total"]), usd(r["usd"]) + _est(r["estimated"]), _e(r["outcome"]),
                     _e(r["reason"] or "")])
-    return _table(["#", "hora (UTC)", "paso", "job", "intento", "modelo", "duración", "tokens", "USD",
-                   "resultado", "motivo"], out, wrap=10)
+    return _table(["#", "time (UTC)", "step", "job", "attempt", "model", "duration", "tokens", "USD",
+                   "outcome", "reason"], out, wrap=10)
 
 
 def _agents(groups: dict, label: str, names: dict | None = None) -> str:
     rows = [[_e((names or {}).get(k, k)), str(g["n"]), minutes(g["minutes"]), tokens(g["tokens"]), usd(g["usd"])]
             for k, g in sorted(groups.items(), key=lambda kv: -kv[1]["usd"])]
-    return _table([label, "pasos", "tiempo", "tokens", "USD"], rows)
+    return _table([label, "steps", "time", "tokens", "USD"], rows)
 
 
 def render_html(s: dict, rows: list[dict], decisions: str | None) -> str:
-    title = f"Reporte · {s['repo']}/{s['slug']}"
-    head = (f"<h1>{_e(title)}</h1><p class=muted>{_status(s['status'])} · desde {_e(s['started'])} "
-            f"hasta {_e(s['ended'])} · los USD son el equivalente API que informa el CLI</p>")
+    title = f"Report · {s['repo']}/{s['slug']}"
+    head = (f"<h1>{_e(title)}</h1><p class=muted>{_status(s['status'])} · from {_e(s['started'])} "
+            f"to {_e(s['ended'])} · USD is the API equivalent the CLI reports</p>")
     body = "".join([
         head,
-        "<h2>Resumen</h2>", _summary(s),
-        "<h2>Decisiones</h2>", decisions_html(decisions),
-        "<h2>Por PR</h2>", _per_pr(s),
-        "<h2>Línea de tiempo</h2>", _timeline(rows),
-        "<h2>Agentes</h2>", "<h3>Por rol</h3>", _agents(s["by_kind"], "rol", KIND_ES),
-        "<h3>Por modelo</h3>", _agents(s["by_model"], "modelo")])
-    return (f'<!doctype html>\n<html lang="es"><head><meta charset="utf-8">'
+        "<h2>Summary</h2>", _summary(s),
+        "<h2>Decisions</h2>", decisions_html(decisions),
+        "<h2>By PR</h2>", _per_pr(s),
+        "<h2>Timeline</h2>", _timeline(rows),
+        "<h2>Agents</h2>", "<h3>By role</h3>", _agents(s["by_kind"], "role", KIND_LABELS),
+        "<h3>By model</h3>", _agents(s["by_model"], "model")])
+    return (f'<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width, initial-scale=1">'
             f"<title>{_e(title)}</title><style>{CSS}</style></head><body><main>{body}</main></body></html>\n")
 
