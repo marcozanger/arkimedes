@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import paths
+from . import accounts, paths
 from .globs import areas_overlap
 from .plan import PlanError, load_plan, sha256_file, split_frontmatter
 
@@ -97,6 +97,11 @@ def _check_frontmatter(path, fm, add):
     repo_path = paths.find_repo(str(fm["repo"]))
     if repo_path is None:
         add("repo", f"{fm['repo']!r} is not a git repo with an origin under the workspace roots")
+    else:
+        try:
+            accounts.check(str(fm["repo"]))
+        except accounts.AccountError as e:
+            add("account", str(e))
     return repo_path
 
 

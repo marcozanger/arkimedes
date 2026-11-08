@@ -11,6 +11,18 @@ def test_paths_follow_ark_home(ark_home):
     assert paths.run_file("demo", "x") == ark_home / "runs/demo/x.md"
 
 
+def test_repo_name_is_the_inverse_of_find_repo(make_repo, tmp_path):
+    deep = make_repo("gl/proposals/v0")
+    assert paths.repo_name(deep) == "gl/proposals/v0"
+    assert paths.repo_name(make_repo("demo")) == "demo"
+    assert paths.repo_name(tmp_path) is None                      # not under a root
+    assert paths.repo_name(tmp_path / "ws" / "gl") is None        # under a root, not a repo
+
+
+def test_workspace_accounts_default_to_none(ark_home):
+    assert paths.load_workspace()["accounts"] == []
+
+
 def test_find_repo_needs_origin(make_repo):
     with_origin = make_repo("demo")
     make_repo("local-only", origin=False)
@@ -19,11 +31,14 @@ def test_find_repo_needs_origin(make_repo):
     assert paths.find_repo("missing") is None
 
 
-def test_find_repo_one_level_deeper(make_repo):
+def test_find_repo_up_to_three_levels(make_repo):
     nested = make_repo("muscleapp/mobile")
+    deep = make_repo("globallogic/proposals/v0")
     assert paths.find_repo("muscleapp/mobile") == nested
+    assert paths.find_repo("globallogic/proposals/v0") == deep
+    assert paths.find_repo("globallogic/proposals") is None   # a folder above a repo is not one
     assert paths.find_repo("../demo") is None
-    assert paths.find_repo("a/b/c") is None
+    assert paths.find_repo("a/b/c/d") is None
 
 
 def test_excluded_repo_is_not_found(make_repo, ark_home):

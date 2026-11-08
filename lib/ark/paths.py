@@ -52,6 +52,7 @@ DEFAULTS = {
     "tick_minutes": 15,
     "poll_seconds": 15,
     "notify": [],
+    "accounts": [],
 }
 
 
@@ -84,13 +85,14 @@ def _has_origin(path: Path) -> bool:
 
 
 def find_repo(name: str) -> Path | None:
-    """`name` is the repo's path under a workspace root: "humanharness" or "muscleapp/mobile".
+    """`name` is the repo's path under a workspace root: "humanharness", "muscleapp/mobile" or
+    "globallogic/proposals/v0".
 
     It must be a main checkout (`.git` is a folder, so linked worktrees never match) with an
-    origin, at most one level deeper than the root, and not excluded.
+    origin, at most two levels deeper than the root, and not excluded.
     """
     parts = Path(name).parts
-    if not parts or len(parts) > 2 or ".." in parts or Path(name).is_absolute():
+    if not parts or len(parts) > 3 or ".." in parts or Path(name).is_absolute():
         return None
     ws = load_workspace()
     if name in ws.get("exclude", []):
@@ -99,4 +101,19 @@ def find_repo(name: str) -> Path | None:
         cand = Path(root).expanduser() / name
         if (cand / ".git").is_dir() and _has_origin(cand):
             return cand
+    return None
+
+
+def repo_name(path) -> str | None:
+    """The inverse of find_repo: the name of the repo whose main checkout is `path`, or None."""
+    p = Path(path).expanduser().resolve()
+    for root in load_workspace().get("roots", []):
+        try:
+            rel = p.relative_to(Path(root).expanduser().resolve())
+        except ValueError:
+            continue
+        name = "/".join(rel.parts)
+        found = find_repo(name) if name else None
+        if found is not None and found.resolve() == p:
+            return name
     return None

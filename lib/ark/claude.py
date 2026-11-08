@@ -7,7 +7,7 @@ from __future__ import annotations
 import os
 import shutil
 
-from . import paths
+from . import accounts, paths
 
 MODELS = {"T0": "haiku", "T1": "sonnet", "T2": "opus"}
 TIER_MINUTES = {"T0": 20, "T1": 60, "T2": 120}
@@ -40,9 +40,20 @@ def agent_cmd(role: str, model: str, prompt: str, *, session: str, resume: bool 
     return cmd
 
 
-def runner_env(role: str, *, origin_url: str | None = None, **extra: str) -> dict:
+def with_account(env: dict, repo_name: str | None) -> dict:
+    """`env` with the Claude account of `repo_name`: its rule's CLAUDE_CONFIG_DIR, or none at all, never one
+    inherited from whoever started the loop. Raises accounts.AccountError for a rule that cannot be used."""
+    env = {k: v for k, v in env.items() if k != "CLAUDE_CONFIG_DIR"}
+    if repo_name:
+        env.update(accounts.claude_env(repo_name))
+    return env
+
+
+def runner_env(role: str, *, repo_name: str | None, origin_url: str | None = None, **extra: str) -> dict:
     """The environment of a runner process: never the API key (it would bill per token), never
     the parent's Claude Code session markers; ARK_ROLE switches the guards on.
+    `repo_name` picks the Claude account (accounts.claude_env); None, or a repo with no rule, runs on
+    the personal one.
 
     A role with Bash also gets the push layer: for every git under it, a push to `origin_url`
     (from gitops.origin_url) goes to a dead path. It is scoped to the URL, not to the remote's
@@ -50,7 +61,8 @@ def runner_env(role: str, *, origin_url: str | None = None, **extra: str) -> dic
     never runs under this environment."""
     if role in ROLE_FILES and not origin_url:
         raise ValueError(f"runner_env: role {role} needs origin_url for the push layer")
-    env = {k: v for k, v in os.environ.items() if k not in ("ANTHROPIC_API_KEY", "CLAUDECODE")}
+    env = with_account({k: v for k, v in os.environ.items() if k not in ("ANTHROPIC_API_KEY", "CLAUDECODE")},
+                       repo_name)
     env["ARK_ROLE"] = role
     env["ARKIMEDES"] = "1"
     env["ARK_HOME"] = str(paths.ark_home())

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from control_helpers import SLUG, ark, drive, job_status, settled, state
+from helpers import set_accounts
 
 from ark import ctl, inbox, loop
 
@@ -19,6 +20,7 @@ def terminal(feature, git_identity, monkeypatch, tmp_path):
     stub.write_text(f"""#!/bin/sh
 if [ -n "$ARK_ROLE" ]; then exec "{fake}" "$@"; fi
 printf '%s\\n' "$@" > "{seen}"
+printf '%s' "$CLAUDE_CONFIG_DIR" > "{seen}.config"
 mkdir -p src/shell
 echo attached > src/shell/attached.txt
 if [ -n "$ATTACH_DIRTY" ]; then exit 0; fi
@@ -125,3 +127,19 @@ def test_stop_ends_an_attached_job(feature, terminal, monkeypatch, capsys):
     assert ark(capsys, "stop", "shell")[0] == 0
     drive(settled)
     assert job_status("shell") == "blocked"
+
+
+def test_attach_opens_the_session_in_the_repo_account(feature, terminal, monkeypatch, tmp_path, capsys, ark_home):
+    work = tmp_path / "claude-work"
+    work.mkdir()
+    set_accounts(ark_home, [{"match": "demo", "claude_config_dir": str(work)}])
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/elsewhere")   # inherited: must not win
+    monkeypatch.setenv("FAKE_HOLD", str(tmp_path / "never"))
+    feature()
+    drive(lambda: job_status("shell") == "working" and worker_attempts("shell") == 1)
+    capsys.readouterr()
+    code, out = ark(capsys, "attach", "shell")
+    assert code == 0, out
+    assert Path(f"{terminal}.config").read_text() == str(work)
+    monkeypatch.setenv("FAKE_HOLD", "")
+    drive(lambda: job_status("shell") == "merged")

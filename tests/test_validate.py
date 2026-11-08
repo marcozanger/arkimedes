@@ -1,5 +1,5 @@
 from ark.validate import validate
-from helpers import job, manifest, plan_text
+from helpers import job, manifest, plan_text, set_accounts
 
 
 def checks(path, **kw):
@@ -33,6 +33,24 @@ def test_repo_without_origin(make_feature, make_repo):
 def test_unknown_repo(make_feature):
     p = make_feature(plan_text(repo="nope"), repo="nope", create_repo=False)
     assert "repo" in checks(p)
+
+
+def test_account_that_cannot_be_used(make_feature, ark_home, tmp_path):
+    set_accounts(ark_home, [{"match": "demo", "claude_config_dir": str(tmp_path / "nope")}])
+    p = make_feature()
+    assert checks(p) == ["account"]
+    assert "does not exist" in messages(p)
+
+
+def test_account_that_works_is_fine(make_feature, ark_home, tmp_path):
+    (tmp_path / "cw").mkdir()
+    set_accounts(ark_home, [{"match": "demo", "claude_config_dir": str(tmp_path / "cw")}])
+    assert validate(make_feature()) == []
+
+
+def test_repo_three_levels_under_a_root(make_feature):
+    p = make_feature(plan_text(repo="gl/proposals/v0"), repo="gl/proposals/v0")
+    assert validate(p) == []
 
 
 # spec

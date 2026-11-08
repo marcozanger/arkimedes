@@ -56,3 +56,12 @@ def approve(path, repo="demo", slug="notes-edit", at="2026-11-05T10:00:00+00:00"
     f.write_text(json.dumps({"repo": repo, "slug": slug, "plan": str(Path(path).resolve()),
                              "sha256": sha256_file(path), "approved_at": at}))
     return f
+
+
+def set_accounts(ark_home, rules):
+    """Put `accounts` rules into the test workspace.json the ark_home fixture wrote."""
+    import json
+    f = ark_home / "workspace.json"
+    ws = json.loads(f.read_text())
+    ws["accounts"] = rules
+    f.write_text(json.dumps(ws))
