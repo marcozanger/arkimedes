@@ -1751,7 +1751,7 @@ def _polling(once: bool) -> int:
         except Exception as e:  # a bad edit of workspace.json, a passing failure: the runner stays up
             text = f"{type(e).__name__}: {e}"
             if text != last_error:
-                print(f"⚠ el ciclo falló, reintentando en cada poll: {text}", flush=True)
+                print(f"⚠ the cycle failed, retrying on every poll: {text}", flush=True)
             last_error, last_sig = text, None
             if once:
                 return 1
@@ -1766,18 +1766,18 @@ def main(argv=None) -> int:
     signal.signal(signal.SIGINT, signal.default_int_handler)
     argv = sys.argv[1:] if argv is None else argv
     if set(argv) - {"--once"}:  # a typo must not start something that spends money
-        print("uso: ark-loop [--once]", file=sys.stderr)
+        print("usage: ark-loop [--once]", file=sys.stderr)
         return 2
     if os.environ.get("ANTHROPIC_API_KEY"):
-        print("ark-loop no corre con ANTHROPIC_API_KEY: los workers facturarían por token en vez de usar "
-              "tu suscripción. Hacé `unset ANTHROPIC_API_KEY` y volvé a correrlo.", file=sys.stderr)
+        print("ark-loop does not run with ANTHROPIC_API_KEY: the workers would bill per token instead of using "
+              "your subscription. Run `unset ANTHROPIC_API_KEY` and start it again.", file=sys.stderr)
         return 2
     if os.environ.get("ARK_ROLE"):
-        print("ark-loop no corre dentro de un proceso del runner.", file=sys.stderr)
+        print("ark-loop does not run inside a runner process.", file=sys.stderr)
         return 2
     for name, where in (("ARK_HOME", paths.ark_home()), ("ARK_WORKTREES", paths.worktrees_dir())):
         if not where.is_absolute():  # the wrapper changed directory: it would land inside the code
-            print(f"ark-loop necesita una ruta absoluta en {name}, no {where}.", file=sys.stderr)
+            print(f"ark-loop needs an absolute path in {name}, not {where}.", file=sys.stderr)
             return 2
     sys.stdout.reconfigure(errors="backslashreplace")  # an alert the terminal cannot show must not raise
     paths.runs_dir().mkdir(parents=True, exist_ok=True)
@@ -1785,13 +1785,13 @@ def main(argv=None) -> int:
     try:  # never through a link, never truncated; the kernel releases it on any death
         lock = os.open(lock_file, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
     except OSError as e:
-        print(f"ark-loop no puede abrir su lock {lock_file}: {e}", file=sys.stderr)
+        print(f"ark-loop cannot open its lock {lock_file}: {e}", file=sys.stderr)
         return 1
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         os.close(lock)
-        print("ark-loop ya está corriendo.", file=sys.stderr)
+        print("ark-loop is already running.", file=sys.stderr)
         return 1
     try:
         return _polling("--once" in argv)

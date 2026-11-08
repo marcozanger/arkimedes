@@ -232,7 +232,7 @@ def test_answer_list_shows_repo_plan_job_and_question(feature, monkeypatch, caps
 
 
 def test_answer_with_nothing_open(ark_home, capsys):
-    assert ark(capsys, "answer") == (0, "no hay preguntas abiertas\n")
+    assert ark(capsys, "answer") == (0, "no open questions\n")
 
 
 def test_answer_one_by_one(feature, monkeypatch, capsys):
@@ -243,7 +243,7 @@ def test_answer_one_by_one(feature, monkeypatch, capsys):
     assert code == 0
     assert [i["text"] for i in inbox.pending("demo", SLUG)] == ["SQLite"]
     code, out = ark(capsys, "answer")   # posted and not applied yet: it is not asked twice
-    assert (code, out) == (0, "no hay preguntas abiertas\n")
+    assert (code, out) == (0, "no open questions\n")
     drive(settled)
     assert state()["answers"][0]["answer"] == "SQLite"
 
@@ -284,7 +284,7 @@ def test_stop_of_a_job_waiting_for_an_answer(feature, monkeypatch, capsys):
     waiting(feature, monkeypatch)
     capsys.readouterr()
     code, out = ark(capsys, "stop", "shell")
-    assert code == 0 and "próximo ciclo" in out
+    assert code == 0 and "next cycle" in out
     drive(settled)
     st = state()
     assert st["jobs"]["shell"]["reason"] == proc.STOPPED_BY_MARCO and st["questions"] == []

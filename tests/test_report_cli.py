@@ -25,13 +25,13 @@ def test_a_run_still_going_gets_a_report_but_no_history(ark_home, capsys):
     from ark import history
     save(run_state(status="running", closing=None))
     code, out = ark(capsys, "report", "demo/notes-edit")
-    assert code == 0 and "sin historial" in out
+    assert code == 0 and "no history" in out
     assert not (history.history_dir() / "jobs.jsonl").exists()
 
 
 def test_no_run_is_an_error(ark_home, capsys):
     code, out = ark(capsys, "report", "demo/nothing")
-    assert code == 1 and "no hay corrida" in out
+    assert code == 1 and "no run for" in out
 
 
 def test_a_runner_process_cannot_write_history(ark_home, capsys, monkeypatch):
