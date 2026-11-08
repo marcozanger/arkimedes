@@ -10,7 +10,7 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from . import gitops, paths
+from . import accounts, gitops, paths
 
 
 class ForgeError(Exception):
@@ -66,9 +66,16 @@ def _check_mergeable(v: dict, head_sha) -> None:
 class GhForge:
     def _gh(self, repo, *args, input: str | None = None) -> str:
         """gh with stdin closed (or the body from a file), no prompts and a timeout; the process
-        group is killed on timeout. Any failure to run it is a ForgeError."""
-        env = {**os.environ, "GH_PROMPT_DISABLED": "1", "GH_NO_UPDATE_NOTIFIER": "1"}
+        group is killed on timeout. It runs as the repo's gh_user when an accounts rule names one.
+        Any failure to run it is a ForgeError."""
         what = " ".join(args[:3])
+        env = {**os.environ, "GH_PROMPT_DISABLED": "1", "GH_NO_UPDATE_NOTIFIER": "1"}
+        name = paths.repo_name(repo)
+        if name:
+            try:
+                env.update(accounts.gh_env(name))
+            except accounts.AccountError as e:
+                raise ForgeError(f"gh {what}: {e}") from None
         try:
             with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err, \
                     tempfile.TemporaryFile() as stdin:

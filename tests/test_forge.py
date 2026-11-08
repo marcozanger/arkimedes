@@ -4,6 +4,8 @@ import time
 
 import pytest
 
+from helpers import set_accounts
+
 from ark import forge, gitops
 
 
@@ -46,6 +48,7 @@ def test_local_create_view_merge(runner, tmp_path):
 FAKE_GH = """#!/bin/sh
 echo "$@" >> "$FAKE_DIR/argv"
 echo "GH_PROMPT_DISABLED=$GH_PROMPT_DISABLED" >> "$FAKE_DIR/env"
+echo "GH_TOKEN=$GH_TOKEN" >> "$FAKE_DIR/env"
 [ "$1 $2" = "pr create" ] && cat > "$FAKE_DIR/stdin" || cat > /dev/null
 [ "$1 $2" = "pr create" ] && cp "$FAKE_DIR"/on_create/* "$FAKE_DIR/" 2>/dev/null
 mode=$(cat "$FAKE_DIR/mode_$1_$2" 2>/dev/null || echo ok)
@@ -170,6 +173,31 @@ def test_gh_create_rejects_wrong_pr(gh, tmp_path):
 
 def gh_create(tmp_path):
     return forge.GhForge().create(tmp_path, base="ark/x", head="ark/x-j", title="t", body="b")
+
+
+def test_gh_runs_as_the_repo_gh_user(gh, make_repo, ark_home):
+    repo = make_repo("gl/v0")
+    set_accounts(ark_home, [{"match": "gl/", "gh_user": "work"}])
+    (gh.dir / "out_auth_token").write_text("tok-work\n")
+    assert forge.GhForge().create(repo, base="ark/x", head="ark/x-j", title="t", body="b") == PR7
+    assert gh.argv()[0] == "auth token --user work"
+    tokens = [l for l in (gh.dir / "env").read_text().splitlines() if l.startswith("GH_TOKEN=")]
+    pr_calls = [a for a in gh.argv() if a.startswith("pr ")]
+    assert tokens.count("GH_TOKEN=tok-work") == len(pr_calls) >= 2   # list, then create
+
+
+def test_gh_without_the_user_token_stops_before_any_pr_call(gh, make_repo, ark_home):
+    repo = make_repo("gl/v0")
+    set_accounts(ark_home, [{"match": "gl/", "gh_user": "work"}])
+    (gh.dir / "mode_auth_token").write_text("fail")
+    with pytest.raises(forge.ForgeError, match="work"):
+        forge.GhForge().create(repo, base="ark/x", head="ark/x-j", title="t", body="b")
+    assert gh.calls("list") == [] and gh.calls("create") == []
+
+
+def test_gh_outside_any_rule_asks_for_no_token(gh, tmp_path):
+    gh_create(tmp_path)
+    assert not [a for a in gh.argv() if a.startswith("auth")]
 
 
 def test_gh_create_returns_the_open_pr_a_crash_left_behind(gh, tmp_path):
