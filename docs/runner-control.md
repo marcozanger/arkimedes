@@ -8,7 +8,7 @@ them.
 
 | Command | What |
 |---|---|
-| `ark ps` | every open job: status, tier, time, tokens, cost, last message; and the open questions |
+| `ark ps` | per live run a header line (status, elapsed, eta, as in `ark status`), then its open jobs: status, tier, time, tokens, cost, last message; and the open questions |
 | `ark logs <job> [-f] [--kind worker]` | a process's log, readable; the archived one after it ends |
 | `ark stop <job>` | stops its processes, and the job ends blocked; with no process, it blocks on the next cycle |
 | `ark steer <job> "<instruction>"` | stops the worker and resumes its session with the instruction |

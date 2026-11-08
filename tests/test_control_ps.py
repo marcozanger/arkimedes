@@ -26,7 +26,7 @@ def test_job_processes_does_not_match_a_longer_job_name(tmp_path):
 import pytest
 from control_helpers import ark
 
-from ark import ctl, run, usage
+from ark import ctl, desk, run, usage
 
 
 def hold(feature, monkeypatch, tmp_path, **env):
@@ -51,6 +51,25 @@ def test_ps_shows_job_status_tokens_and_last_message(feature, monkeypatch, tmp_p
     assert not any(" ui " in f" {x} " and "working" in x for x in out.splitlines())
     go.touch()
     drive(settled)
+
+
+def test_ps_prints_a_header_line_per_live_run(feature, monkeypatch, tmp_path, capsys):
+    go = hold(feature, monkeypatch, tmp_path)
+    capsys.readouterr()
+    code, out = ark(capsys, "ps")
+    lines = out.splitlines()
+    i = next(n for n, x in enumerate(lines) if x.startswith(f"demo/{SLUG} · running · elapsed "))
+    assert " · eta " in lines[i]
+    assert i < next(n for n, x in enumerate(lines) if x.startswith("RUN"))
+    assert i < next(n for n, x in enumerate(lines) if " shell " in f" {x} ")
+    go.touch()
+    drive(settled)
+
+
+def test_ps_header_uses_desk_times(monkeypatch):
+    monkeypatch.setattr(desk, "_times", lambda repo, slug, now: ("1h12m", "~40m"))
+    st = {"repo": "demo", "slug": "x", "status": "running"}
+    assert ctl._ps_header(st, None) == "demo/x · running · elapsed 1h12m · eta ~40m"
 
 
 def test_ps_with_nothing_running(ark_home, capsys):
