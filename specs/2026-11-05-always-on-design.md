@@ -482,7 +482,7 @@ mistakes, not a model actively working around them; enough for this use.
 
   ```md
   - **D7** · Note order lives in the manifest, not a separate file. · _worker (sonnet)_
-    <details><summary>más</summary>
+    <details><summary>more</summary>
 
     Why: the plan left it open; the manifest is already written atomically.
     Rejected: notes-order.json (one more write to keep in sync).
@@ -517,7 +517,7 @@ CLI reports; the report labels it so.
 `runs/<repo>/<slug>/report.html` from the run file, `steps.jsonl` and the decisions file:
 - Summary: wall time, working time, time waiting for Marco, total tokens and USD,
   PRs merged / blocked, integration failures, estimate vs actual.
-- Decisions: the decisions file, one line each with "más".
+- Decisions: the decisions file, one line each with "more".
 - Per PR: tier path, attempts, steers, review rounds, gate failures, minutes, tokens, USD.
 - Timeline: every step in order with its duration and outcome.
 - Agents: tokens, USD and time by role (tick, worker, reviewer) and by model.
