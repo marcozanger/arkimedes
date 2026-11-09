@@ -131,6 +131,7 @@ RESUME = {
                  "the current origin/ark/{slug}. Run `git fetch origin` and `git merge origin/ark/{slug}`, "
                  "fix the failure and commit. The failure:",
     "judge": "Your previous attempt did not finish. What went wrong, and the judge's note:",
+    "euklides": "Your previous attempt did not finish. What went wrong, and how to go on:",
     "answer": "The question you stopped on has an answer. Go on with the job:",
     "steer": "You were stopped to redirect the work. Follow this instruction and go on with the job:",
 }
@@ -182,6 +183,46 @@ def judge_prompt(st: dict, job_id: str, j: dict, mj: dict, allowed: list[str], r
         "Answer with one line of JSON and nothing else:",
         '{"action": "' + allowed[0] + '", "note": "<one or two sentences for the next attempt, or the question '
         'for Marco>"}',
+    ]) + "\n"
+
+
+EUKLIDES_ACTIONS = {
+    "retry": "`retry`: same tier, same session; `note` is what the next attempt must do differently.",
+    "escalate": "`escalate`: a fresh worker one tier up; `note` is what it should know.",
+    "answer": "`answer`: `note` is the answer the worker gets; `undo` says how far a wrong answer reaches.",
+    "unblock": "`unblock`: the job runs again from where it was blocked; `note` is what it must do differently.",
+    "ask": "`ask`: Marco decides; `note` is the question, `proposal` what you would do.",
+}
+TRIGGER_TEXT = {
+    "failure": "A job attempt failed.",
+    "question": "The worker stopped with a question.",
+    "blocked": "The job was blocked, for a reason a new attempt may fix.",
+}
+
+
+def euklides_prompt(st: dict, job_id: str, j: dict, mj: dict, plan: Plan, *, trigger: str, situation: str,
+                    allowed: list[str], report: str | None, dependents: list[str], worktree, log,
+                    lessons: str) -> str:
+    return "\n\n".join([
+        f"{TRIGGER_TEXT[trigger]} Decide how the job goes on. Read the worktree and the log if it helps.",
+        f"Trigger: {trigger}",
+        f"Run: {st['repo']}/{st['slug']} · job `{job_id}` ({mj['pr_title']})",
+        f"Tier now: {j['tier']} · tiers so far: {' → '.join(j['tier_path'])} · attempts: {j['attempts']}",
+        f"Spent: ${j['usd']:g} of ${mj['budget']['usd']:g}",
+        "Jobs that build on this one: " + (", ".join(dependents) or "none"),
+        f"Worktree (read-only for you): {worktree}",
+        f"Worker log: {log}",
+        "## The job",
+        *_job_block(mj, plan),
+        _untrusted("The situation", situation or "(none)"),
+        _untrusted("Worker report (may be missing or from an earlier attempt)", (report or "")[-4000:] or "(none)"),
+        "## Lessons from Marco's reviews",
+        "Lessons: " + (("\n" + lessons) if lessons else "(none yet)"),
+        "## Decide",
+        "Actions open now: " + ", ".join(allowed),
+        _bullets(EUKLIDES_ACTIONS[a] for a in allowed),
+        "End with one line of JSON and nothing after it:",
+        '{"action": "' + allowed[0] + '", "note": "...", "undo": "job", "why": "...", "proposal": null}',
     ]) + "\n"
 
 

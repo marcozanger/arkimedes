@@ -118,3 +118,23 @@ def test_every_runner_env_call_names_the_repo():
              for m in re.finditer(r"runner_env\((?:[^()]|\([^()]*\))*\)", f.read_text())]
     assert len(calls) >= 9   # the definition and the eight calls in loop.py
     assert [c for c in calls if "repo_name" not in c[1]] == []
+
+
+def test_euklides_command_is_read_only_and_has_its_role_file(monkeypatch):
+    monkeypatch.setenv("ARK_CLAUDE", "/x/claude")
+    e = claude.agent_cmd("euklides", claude.EUKLIDES_MODEL, "decide", session="u4", usd=claude.EUKLIDES_USD)
+    assert e[e.index("--model") + 1] == "opus" and e[e.index("--max-budget-usd") + 1] == "3"
+    assert e[e.index("--output-format") + 1] == "json" and "--verbose" not in e
+    assert e[e.index("--allowedTools") + 1] == "Read,Grep,Glob"
+    denied = e[e.index("--disallowedTools") + 1].split(",")
+    for tool in ("Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch", "WebSearch", "Task", "Agent"):
+        assert tool in denied
+    assert e[e.index("--append-system-prompt-file") + 1] == str(CODE / "agents/euklides.md")
+    assert (CODE / "agents/euklides.md").is_file()
+    assert claude.EUKLIDES_MINUTES == 20 and claude.TICK_MODEL["intervene"] == "opus"
+    assert claude.TICK_MODEL["distill"] == "sonnet"
+
+
+def test_euklides_env_needs_no_push_layer():
+    env = claude.runner_env("euklides", repo_name=None)  # no origin_url: euklides is not in ROLE_FILES
+    assert env["ARK_ROLE"] == "euklides"

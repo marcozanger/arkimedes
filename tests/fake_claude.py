@@ -21,6 +21,8 @@ FAKE_USD=<n> is what every process says it cost.
 FAKE_BLOCKED=job:n,... makes attempt n end BLOCKED with the question "which store?". FAKE_QUESTION is the raw answer of a
 tick asked a worker's question; the default answer is not valid there, so the question reaches Marco.
 FAKE_INTERVENE is the raw answer of an intervene tick.
+euklides  FAKE_EUKLIDES is its raw answer; by default retry for a failure and ask (proposal ":stop")
+          otherwise. Each call leaves euklides.<n>.prompt and .cwd in FAKE_STATE.
 """
 import fcntl
 import json
@@ -145,5 +147,15 @@ elif ROLE == "tick":
         emit(os.environ["FAKE_INTERVENE"], stream=False)
     else:
         emit('{"action": "retry", "note": "try again"}', stream=False)
+elif ROLE == "euklides":
+    n = bump("euklides")
+    (STATE / f"euklides.{n}.prompt").write_text(PROMPT)
+    (STATE / f"euklides.{n}.cwd").write_text(os.getcwd())
+    if os.environ.get("FAKE_EUKLIDES"):
+        emit(os.environ["FAKE_EUKLIDES"], stream=False)  # raw JSON: it can hold any escape
+    elif "Trigger: failure" in PROMPT and "`retry`" in PROMPT:
+        emit('{"action": "retry", "note": "try again"}', stream=False)
+    else:
+        emit('{"action": "ask", "note": "needs Marco", "proposal": ":stop"}', stream=False)
 else:
     sys.exit(f"fake claude: unknown ARK_ROLE {ROLE!r}")
