@@ -11,7 +11,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import ctl, desk, estimate, paths, reporting, validate
+from . import ctl, desk, estimate, paths, reporting, review, validate
 from .plan import load_plan, set_status, sha256_file
 from .report import minutes, usd
 
@@ -166,6 +166,7 @@ def main(argv=None) -> int:
     s.set_defaults(fn=cmd_estimate)
     ctl.register(sub)
     reporting.register(sub)
+    review.register(sub)
     args = ap.parse_args(argv)
     return args.fn(args)
 
