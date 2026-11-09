@@ -20,7 +20,7 @@ def test_the_table_shows_jobs_totals_end_to_end_and_sha(make_feature, capsys):
     assert "| shell | T1 | – | 30 min | $2.00 |" in out
     assert "| ui | T1 | shell | 30 min | $2.00 |" in out
     assert "| **total** | | | 1 h 00 min | $4.00 |" in out
-    assert "Punta a punta: 1 h 00 min" in out
+    assert "End to end: 1 h 00 min" in out
     assert sha256_file(p) in out
 
 

@@ -68,7 +68,7 @@ def test_ark_loop_runs_once_at_a_time(ark_home):
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         r = subprocess.run([str(CODE / "bin/ark-loop"), "--once"], capture_output=True, text=True,
                            env=env_for(ark_home))
-    assert r.returncode == 1 and "ya está corriendo" in r.stderr
+    assert r.returncode == 1 and "is already running" in r.stderr
 
 
 def test_ark_dispatch_only_stops(ark_home):
@@ -77,7 +77,7 @@ def test_ark_dispatch_only_stops(ark_home):
     assert r.returncode == 2 and "uso" in r.stderr
     r = subprocess.run([str(CODE / "bin/ark-dispatch"), "stop", "demo/x", "shell"], capture_output=True,
                        text=True, env=env_for(ark_home))
-    assert r.returncode == 1 and "nada corriendo" in r.stdout
+    assert r.returncode == 1 and "nothing running" in r.stdout
 
 
 # ---- the suite's guard, for programs that see none of its patches ----------------------------------
@@ -199,7 +199,7 @@ def test_the_loop_wakes_on_an_approval_and_ctrl_c_ends_it(runner, make_feature, 
         wait_for(lambda: "idle" in out.read_text(), err.read_text)
         second = subprocess.run([str(CODE / "bin/ark-loop"), "--once"], capture_output=True, text=True,
                                 env=env_for(ark_home))
-        assert second.returncode == 1 and "ya está corriendo" in second.stderr
+        assert second.returncode == 1 and "is already running" in second.stderr
         approve(p)                                                              # the tick is an hour away
 
         def over():
@@ -272,7 +272,7 @@ def test_a_worker_outlives_the_loop_without_its_lock_and_ark_dispatch_stops_it(r
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         r = subprocess.run([str(CODE / "bin/ark-dispatch"), "stop", f"demo/{SLUG}", "shell"], capture_output=True,
                            text=True, env=env)
-        assert r.returncode == 0 and "detenido" in r.stdout, r.stdout + r.stderr
+        assert r.returncode == 0 and "stopped" in r.stdout, r.stdout + r.stderr
         assert is_gone(info["pid"])
         r = subprocess.run([str(CODE / "bin/ark-loop"), "--once"], capture_output=True, text=True, env=env)
         assert r.returncode == 0, r.stderr
@@ -297,7 +297,7 @@ def test_ark_loop_refuses_to_run_inside_a_runner_process(ark_home):
 def test_ark_loop_does_not_start_on_an_argument_it_does_not_know(ark_home, arg):
     r = subprocess.run([str(CODE / "bin/ark-loop"), arg], capture_output=True, text=True, env=env_for(ark_home),
                        timeout=30)
-    assert r.returncode == 2 and "uso" in r.stderr
+    assert r.returncode == 2 and "usage" in r.stderr
     assert not (ark_home / "runs").exists()
 
 

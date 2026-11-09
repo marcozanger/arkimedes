@@ -8,7 +8,7 @@ CODE="$(cd "$(dirname "$(realpath "$0")")/.." && pwd)"
 ARK_HOME="${ARK_HOME:-$HOME/.claude/arkimedes}"
 case "${1:-}" in
   ""|-*) exec claude --agent arkimedes --settings "$CODE/settings.json" "$@" ;;
-  plan)  echo "ark plan ya no existe: usá /ark-plan en cualquier sesión de Claude." >&2; exit 2 ;;
+  plan)  echo "ark plan no longer exists: use /ark-plan in any Claude session." >&2; exit 2 ;;
 esac
 export PYTHONPATH="$CODE/lib${PYTHONPATH:+:$PYTHONPATH}"
 exec "$CODE/.venv/bin/python" -m ark.cli "$@"
