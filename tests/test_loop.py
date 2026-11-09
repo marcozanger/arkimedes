@@ -3132,3 +3132,65 @@ def test_a_planted_name_of_no_job_goes_at_once(feature):
     (d / "evil.worker.proc").mkdir()
     drive(lambda: state()["status"] in ("done", "blocked"))
     assert state()["status"] == "done" and not os.path.lexists(d / "evil.worker.proc")
+
+
+# -- Euklides: what goes to it
+
+def test_a_failure_goes_to_euklides(tmp_path):
+    c = bare(tmp_path)
+    loop.fail(c, "shell", "tests are red")
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "needs_euklides" and j["failure"] == "tests are red"
+    assert j["euklides"] == {"trigger": "failure", "situation": "tests are red", "kind": None}
+
+
+def test_a_blocked_worker_question_goes_to_euklides(tmp_path, monkeypatch):
+    c = bare(tmp_path)
+    monkeypatch.setattr(loop, "_clean_exit", lambda r: True)
+    loop.on_worker(c, "shell", receipt("need it\nSTATUS: BLOCKED — which store?"))
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "needs_euklides" and j["euklides"]["trigger"] == "question"
+    assert j["euklides"]["situation"] == j["question"] == "which store?"
+
+
+def test_a_reviewer_without_verdict_twice_goes_to_euklides(tmp_path):
+    c = bare(tmp_path, status="reviewing", review_errors=1)
+    loop.on_review(c, "shell", receipt("no idea"))
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "needs_euklides" and j["euklides"]["trigger"] == "blocked"
+    assert j["euklides"]["kind"] == "review" and "no verdict twice" in j["euklides"]["situation"]
+
+
+def test_blocks_euklides_never_sees_stay_blocks(tmp_path):
+    c = bare(tmp_path, status="integrating", integrate_lost=1)
+    loop.on_integrate(c, "shell", receipt(reason="timeout"))
+    assert c.st["jobs"]["shell"]["status"] == "blocked"
+
+
+def test_start_euklides_runs_read_only_in_the_worktree(tmp_path, monkeypatch):
+    c = bare(tmp_path, status="needs_euklides", euklides={"trigger": "failure", "situation": "red", "kind": None})
+    (tmp_path / "shell").mkdir()
+    c.plan = SimpleNamespace(manifest={"jobs": [c.mjobs["shell"], job("ui", ["T2"], ["src/ui/**"], after=["shell"])]},
+                             sections={"Goal": "g"})
+    c.read_report = lambda j: "report"
+    started = {}
+    monkeypatch.setattr(proc, "start", lambda d, name, cmd, **kw: started.update(name=name, cmd=cmd, **kw))
+    monkeypatch.setattr(loop.brief, "task_texts", lambda plan: {}, raising=False)
+    loop.start_euklides(c, "shell")
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "euklides" and j["euklides"]["allowed"] == ["retry", "escalate", "ask"]
+    assert started["name"] == "shell.euklides" and started["cwd"] == tmp_path / "shell"
+    assert started["minutes"] == claude.EUKLIDES_MINUTES and started["env"]["ARK_ROLE"] == "euklides"
+    assert started["cmd"][started["cmd"].index("--allowedTools") + 1] == "Read,Grep,Glob"
+    assert "Jobs that build on this one: ui" in started["cmd"][started["cmd"].index("-p") + 1]
+
+
+def test_start_euklides_without_a_worktree_runs_in_the_ticks_folder(tmp_path, monkeypatch):
+    c = bare(tmp_path, status="needs_euklides", euklides={"trigger": "question", "situation": "q", "kind": None})
+    c.plan = SimpleNamespace(manifest={"jobs": [c.mjobs["shell"]]}, sections={"Goal": "g"})
+    c.read_report = lambda j: None
+    started = {}
+    monkeypatch.setattr(proc, "start", lambda d, name, cmd, **kw: started.update(**kw))
+    monkeypatch.setattr(loop.brief, "task_texts", lambda plan: {}, raising=False)
+    loop.start_euklides(c, "shell")
+    assert started["cwd"] == loop.ticks_dir()

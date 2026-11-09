@@ -18,7 +18,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from . import brief, caps, claude, forge as forge_mod, gitops, inbox, integrate, merge, notify, paths, proc, questions, reporting, run, usage
+from . import brief, caps, claude, euklides, forge as forge_mod, gitops, inbox, integrate, merge, notify, paths, proc, questions, reporting, run, usage
 from .globs import areas_overlap, match_any
 from .plan import load_plan, sha256_file
 from .validate import validate
@@ -252,8 +252,9 @@ def try_start(st: dict, others: list[dict], forge) -> bool:
 
 def fail(c: Ctx, job: str, why: str) -> None:
     j, why = c.st["jobs"][job], _clean(why)
-    j.update(status="needs_judge", failure=why, tier_attempts=j["tier_attempts"] + 1)
+    j.update(failure=why, tier_attempts=j["tier_attempts"] + 1)
     run.event(c.st, f"{job} failed ({j['tier']}, attempt {j['tier_attempts']} at this tier): {why}")
+    to_euklides(c, job, "failure", why)
 
 
 def _block(st: dict, job: str, why: str, critical: bool = False) -> None:
@@ -264,6 +265,13 @@ def _block(st: dict, job: str, why: str, critical: bool = False) -> None:
 
 def block(c: Ctx, job: str, why: str, critical: bool = False) -> None:
     _block(c.st, job, why, critical=critical)
+
+
+def to_euklides(c: Ctx, job: str, trigger: str, situation: str, kind: str | None = None) -> None:
+    """Euklides decides how the job goes on. `kind` names a block a new attempt may fix:
+    area, review or integrate (what `unblock` has to reset)."""
+    c.st["jobs"][job].update(status="needs_euklides", euklides={
+        "trigger": trigger, "situation": _clean(situation)[:questions.MAX_TEXT], "kind": kind})
 
 
 def allowed_actions(j: dict) -> list[str]:
@@ -346,10 +354,10 @@ def on_worker(c: Ctx, job: str, r: dict) -> None:
     if not _clean_exit(r):
         return fail(c, job, f"the worker ended with an error (exit {r['exit']})")
     status, detail = brief.worker_status(r["result"])
-    if status == "BLOCKED":  # not a failure: no attempt is charged, and a tick looks at it before Marco does
-        j.update(status="needs_judge", question=_clean(detail)[:questions.MAX_TEXT] or "the worker ended BLOCKED without a question")
+    if status == "BLOCKED":  # not a failure: no attempt is charged, and Euklides looks at it before Marco does
+        j["question"] = _clean(detail)[:questions.MAX_TEXT] or "the worker ended BLOCKED without a question"
         run.event(c.st, f"{job}: the worker asks: {j['question'][:300]}")
-        return
+        return to_euklides(c, job, "question", j["question"])
     if status != "DONE":
         return fail(c, job, f"the worker ended {status}: {detail}")
     wt = c.wt(job)
@@ -360,7 +368,7 @@ def on_worker(c: Ctx, job: str, r: dict) -> None:
         return fail(c, job, "the worker ended DONE without any change")
     outside = [_printable(f) for f in files if not match_any(f, c.mjobs[job]["area"])]
     if outside:
-        return block(c, job, "changed files outside its area: " + ", ".join(outside[:5]))
+        return to_euklides(c, job, "blocked", "changed files outside its area: " + ", ".join(outside[:5]), "area")
     j.update(status="needs_push", head=gitops.rev(wt, "HEAD"))
     run.event(c.st, f"{job}: worker done, head {j['head'][:8]}")
 
@@ -395,7 +403,7 @@ def on_review(c: Ctx, job: str, r: dict) -> None:
     if answer is None:
         j["review_errors"] += 1
         if j["review_errors"] >= 2:
-            return block(c, job, "the reviewer gave no verdict twice")
+            return to_euklides(c, job, "blocked", "the reviewer gave no verdict twice", "review")
         j["status"] = "needs_review"
         run.event(c.st, f"{job}: the reviewer gave no verdict; reviewing again")
         return
@@ -453,7 +461,8 @@ def on_integrate(c: Ctx, job: str, r: dict) -> None:
         return
     j["integrate_fails"] += 1
     if j["integrate_fails"] >= 2:
-        return block(c, job, f"integration gate failed twice: {reason}", critical=True)
+        return to_euklides(c, job, "blocked", f"integration gate failed twice: {reason}\n\n"
+                           f"{str(out.get('tail', ''))[-1500:]}", "integrate")
     j["resume_msg"] = brief.resume_message("integrate", f"{reason}\n\n{out.get('tail', '')}", c.st["slug"])
     j["status"] = "needs_worker"
     run.event(c.st, f"{job}: integration gate red ({reason}); back to the worker")
@@ -869,6 +878,24 @@ def do_merge(c: Ctx, job: str) -> None:
     _merged(c, job)
 
 
+def _dependents(c: Ctx, job: str) -> list[str]:
+    return [m["id"] for m in c.plan.manifest["jobs"] if job in (m.get("after") or [])]
+
+
+def start_euklides(c: Ctx, job: str) -> None:
+    j = c.st["jobs"][job]
+    e, mj = j["euklides"], c.mjobs[job]
+    e["allowed"] = euklides.allowed(e["trigger"], j, mj["budget"]["usd"])  # fixed now: the answer is checked against it
+    wt = c.wt(job)
+    prompt = brief.euklides_prompt(c.st, job, j, mj, c.plan, trigger=e["trigger"], situation=e["situation"],
+                                   allowed=e["allowed"], report=c.read_report(job), dependents=_dependents(c, job),
+                                   worktree=wt, log=c.dir / f"{job}.worker.log", lessons=euklides.lessons())
+    cmd = claude.agent_cmd("euklides", claude.EUKLIDES_MODEL, prompt, session=str(uuid.uuid4()), usd=claude.EUKLIDES_USD)
+    proc.start(c.dir, f"{job}.euklides", cmd, cwd=wt if wt.is_dir() else ticks_dir(),
+               env=claude.runner_env("euklides", repo_name=c.st["repo"]), minutes=claude.EUKLIDES_MINUTES)
+    j["status"] = "euklides"
+
+
 def start_judge(c: Ctx, job: str) -> None:
     j = c.st["jobs"][job]
     if j.get("question"):
@@ -1107,7 +1134,7 @@ def _next_step(c: Ctx, job: str, j: dict, slots: Slots):
             return lambda: start_integrate(c, job)
     else:
         step_ = {"needs_push": push_job, "needs_pr": ensure_pr, "needs_review": start_review, "needs_merge": do_merge,
-                 "needs_judge": start_judge}.get(s)
+                 "needs_judge": start_judge, "needs_euklides": start_euklides}.get(s)
         if step_:
             return lambda: step_(c, job)
     return None
