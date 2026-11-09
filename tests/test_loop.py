@@ -119,6 +119,24 @@ def test_existing_integration_branch_keeps_the_run_waiting(feature):
     assert not proc.active(paths.run_dir("demo", SLUG))
 
 
+def test_a_state_saved_while_judging_is_loaded_as_a_euklides_step(feature):
+    feature()
+    loop.cycle()
+    st = state()
+    st["jobs"]["shell"].update(status="needs_judge", failure="tests are red")
+    st["jobs"]["ui"].update(status="judging", question="which store?")
+    run.save(st)
+    got = loop._load("demo", SLUG)["jobs"]
+    assert got["shell"]["status"] == "needs_euklides"
+    assert got["shell"]["euklides"] == {"trigger": "failure", "situation": "tests are red", "kind": None}
+    assert got["ui"]["status"] == "needs_euklides" and got["ui"]["euklides"]["trigger"] == "question"
+
+
+def test_euklides_is_a_model_step():
+    assert loop.RUNNING["euklides"] == "euklides" and loop.WAITING["euklides"] == "needs_euklides"
+    assert "euklides" in loop.MODEL_KINDS and loop.HANDLERS["euklides"] is loop.on_euklides
+
+
 # ---- beyond the plan's list: each of these is a way an unattended loop could go wrong ------------
 
 def bare(tmp_path, status="working", **over):

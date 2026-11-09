@@ -15,7 +15,8 @@ DETAILS_CLOSE = escape("</details>")
 BOLD = re.compile(r"\*\*(.+?)\*\*")
 LINK = re.compile(r"https://[^\s<>&\"']+")
 KIND_LABELS = {"worker": "worker", "review": "review", "gate": "gate", "integrate": "integration",
-               "judge": "judge", "intervene": "intervention", "decisions": "decisions", "merge": "merge",
+               "euklides": "euklides", "judge": "judge",  # judge: runs recorded before Euklides
+               "intervene": "intervention", "decisions": "decisions", "merge": "merge",
                "wait-marco": "waiting for Marco"}
 
 CSS = """

@@ -34,9 +34,10 @@ DECISIONS_TICKS = 2       # paid ticks a run's close may start before the runner
 SKIP_ALERT_AFTER = 3      # integration checks that could not run before Marco hears about it
 
 # What a job's status says is running, and where the job goes back to if that process is not there.
-RUNNING = {"working": "worker", "gating": "gate", "reviewing": "review", "integrating": "integrate", "judging": "judge"}
+RUNNING = {"working": "worker", "gating": "gate", "reviewing": "review", "integrating": "integrate",
+           "euklides": "euklides"}
 WAITING = {"worker": "needs_worker", "gate": "needs_gate", "review": "needs_review",
-           "integrate": "needs_integrate", "judge": "needs_judge"}
+           "integrate": "needs_integrate", "euklides": "needs_euklides"}
 CHECK_KINDS = ("gate", "review", "integrate")  # what a new approval makes a job earn again
 REWOUND = ("gating", "needs_pr", "needs_review", "reviewing", "needs_integrate", "integrating", "needs_merge")
 WAITS_FOR_MARCO = ("waiting_answer", "attached")  # statuses only Marco can move
@@ -518,9 +519,14 @@ def on_judge(c: Ctx, job: str, r: dict) -> None:
     j.update(note=note, status="needs_worker")
 
 
+def on_euklides(c: Ctx, job: str, r: dict) -> None:
+    raise NotImplementedError  # T7
+
+
 DECISIONS = "_decisions.tick"  # the close-of-run tick belongs to the run, not to a job
-MODEL_KINDS = ("worker", "review", "judge")  # the others run a program of ours, not the model
-HANDLERS = {"worker": on_worker, "gate": on_gate, "review": on_review, "integrate": on_integrate, "judge": on_judge}
+MODEL_KINDS = ("worker", "review", "euklides", "judge")  # the others run a program of ours, not the model
+HANDLERS = {"worker": on_worker, "gate": on_gate, "review": on_review, "integrate": on_integrate, "judge": on_judge,
+            "euklides": on_euklides}
 
 
 def _usd(value) -> float:
@@ -1523,6 +1529,18 @@ def _good_questions(st: dict) -> bool:
         and "job" in q and (q["job"] is None or isinstance(q["job"], str)) for q in st["questions"])
 
 
+def _migrate(st: dict) -> dict:
+    """A run saved before Euklides: its judge step is a Euklides step. A judge still running is left
+    to end; its receipt finds nothing waiting for it."""
+    for j in st["jobs"].values():
+        if j["status"] in ("needs_judge", "judging"):
+            trigger = "question" if j.get("question") else "failure"
+            j["status"] = "needs_euklides"
+            j.setdefault("euklides", {"trigger": trigger, "situation": j.get("question") or j.get("failure") or "",
+                                      "kind": None})
+    return st
+
+
 def _load(repo: str, slug: str) -> dict | None:
     """run.load, plus the shape the loop relies on: valid JSON of the wrong shape is damage too."""
     st = run.load(repo, slug)
@@ -1533,7 +1551,7 @@ def _load(repo: str, slug: str) -> dict | None:
             or not isinstance(st.get("events"), list) or not isinstance(st.get("alerts"), list) or not _good_questions(st)
             or not all(isinstance(j, dict) and isinstance(j.get("status"), str) for j in jobs.values())):
         raise run.StateCorrupt(f"malformed run state {run.state_file(repo, slug)}")
-    return {**_clean(st), "repo": repo, "slug": slug}  # a lone surrogate is valid JSON, and no file can hold it; these two name the folder
+    return _migrate({**_clean(st), "repo": repo, "slug": slug})  # a lone surrogate is valid JSON, and no file can hold it; these two name the folder
 
 
 def _once(key: tuple, text: str, alerts: list[str]) -> bool:

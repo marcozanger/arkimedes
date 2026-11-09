@@ -299,7 +299,7 @@ def register(sub) -> None:
     s.set_defaults(fn=cmd_ps)
     s = sub.add_parser("logs", help="a job's log, readable")
     s.add_argument("job", help="<job> or <repo>/<slug>:<job>")
-    s.add_argument("--kind", default="worker", help="worker (default), gate, review, judge, intervene")
+    s.add_argument("--kind", default="worker", help="worker (default), gate, review, euklides, intervene")
     s.add_argument("-f", "--follow", action="store_true", help="follow it while it runs")
     s.set_defaults(fn=cmd_logs)
     s = sub.add_parser("stop", help="stop a job: it ends blocked")
