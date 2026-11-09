@@ -30,6 +30,10 @@ them.
 Ending a run stops every process and blocks every open job. No final PR is opened; what merged stays on `ark/<slug>`
 and the worktrees stay.
 
+A finished run (`done` or `blocked`) can still hold a plan back: an approved plan whose area overlaps it, in the
+same repo, keeps waiting while that run's final PR is open, and starts on the next cycle after the PR is merged or
+closed, from a default branch that already holds those changes. Marco hears that wait once, with the PR's URL.
+
 ## Notifications
 
 `notify` in `workspace.json` is an argv; the message becomes its last argument. Empty means no notifier. Alerts are

@@ -172,10 +172,12 @@ def _branch_collision(st: dict, jobs: list, repo: Path, others: list[dict]) -> s
     return ""
 
 
-def try_start(st: dict, others: list[dict]) -> bool:
+def try_start(st: dict, others: list[dict], forge) -> bool:
     """waiting → running: the approved plan still validates, the repo is there, none of its branches is a
-    branch of another started run, no running run in the same repo has an overlapping area, ark/<slug> and
-    its job branches do not exist yet. Then push ark/<slug>. The only way into "running", and one loop runs
+    branch of another started run, no running run in the same repo has an overlapping area, no finished run
+    in the same repo with an overlapping area has its final PR still open (asked of forge; a PR seen merged
+    or closed goes in st["settled_prs"] and is not asked again), ark/<slug> and its job branches do not
+    exist yet. Then push ark/<slug>. The only way into "running", and one loop runs
     at a time, so two started runs never share a branch: a new approval cannot change a started run's jobs."""
     plan = Path(st["plan"])
     problems = validate(plan, approved=True)
@@ -196,6 +198,22 @@ def try_start(st: dict, others: list[dict]) -> bool:
                     and areas_overlap(area, o.get("area") or []):
                 reason, normal = f"its area overlaps the {o['status']} plan {o['slug']}", o["status"] == "running"
                 break
+    if not reason:  # its own default branch would not hold that run's changes yet: Marco hears it once
+        settled = st.setdefault("settled_prs", [])
+        for o in others:
+            pr = o.get("final_pr")
+            if o is st or o["repo"] != st["repo"] or o["status"] not in ("done", "blocked") or not pr \
+                    or pr["url"] in settled or not areas_overlap(area, o.get("area") or []):
+                continue
+            try:
+                state = forge.view(repo, pr["number"])["state"]
+            except forge_mod.ForgeError as e:
+                reason = f"cannot read the final PR {pr['url']} of the plan {o['slug']}: {_clean(str(e))}"
+                break
+            if state == "OPEN":
+                reason = f"its area overlaps the plan {o['slug']}, whose final PR {pr['url']} is still open"
+                break
+            settled.append(pr["url"])
     if not reason:
         try:
             gitops.fetch(repo)
@@ -1386,7 +1404,7 @@ def step(st: dict, states: list[dict], forge, slots: Slots) -> None:
     if st["status"] == "waiting":
         if slots.capped:  # a run that has not started spends nothing by waiting
             return
-        if not try_start(st, states):
+        if not try_start(st, states, forge):
             return
         if not _save_now(st):  # the jobs exist now: a crash below finds its worker by them, not by chance
             return
