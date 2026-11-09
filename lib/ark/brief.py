@@ -4,8 +4,8 @@ Prompts are built from the plan and the run state: a worker sees only its job (n
 file) and a tick sees only what its one decision needs (§10). The runner's own text holds no
 triple-backtick fence; task text and reports are copied as they are, so they may.
 
-Reports, failures, reasons and events go to the judge and decisions ticks inside `_untrusted`. Not
-everything a worker can influence is fenced: findings, gate output and the judge's note reach the
+Reports, failures, reasons and events go to Euklides and the decisions tick inside `_untrusted`. Not
+everything a worker can influence is fenced: findings, gate output and Euklides' note reach the
 worker raw, and the reviewer reads the diff with its tools.
 
 Each parser reads the last non-empty line as the whole answer and refuses a message holding a second
@@ -25,13 +25,6 @@ CLOSING_FENCE = re.compile(r"`{3,}")
 MENTION = re.compile(r"(?<![a-zA-Z0-9])@(?=[\w-])")  # after a letter or digit it is an email
 PR_REPORT_CHARS = 20000  # GitHub rejects a body over 65536 characters
 PR_REASON_CHARS = 500
-
-JUDGE_ACTIONS = {
-    "retry": "retry — same tier, same session: a mistake the worker can fix (a red test, a missed step).",
-    "escalate": "escalate — a fresh worker one tier up: the job is harder than this tier handles.",
-    "block": "block — stop this job; its dependents hold. The plan is wrong or a person must decide: "
-             "the note is the question for Marco.",
-}
 
 DECISIONS_FORMAT = """# Decisions — <slug>
 
@@ -116,8 +109,9 @@ def worker_brief(st: dict, job_id: str, mj: dict, plan: Plan, *, worktree, repor
         "STATUS: DONE stands alone: nothing after DONE, not even a period.",
     ]
     if note:
-        parts += ["## Note from the judge of the previous attempt",
-                  "The judge read that attempt's report. Advice only: your job and the rules above win.",
+        parts += ["## Note for this attempt",
+                  "Euklides (the runner's decision maker) or Marco read what went wrong. Advice only: your "
+                  "job and the rules above win.",
                   note.strip()]
     if previous_report:
         parts += ["## Previous attempt (its commits are already in the worktree)",
@@ -131,7 +125,6 @@ RESUME = {
                  "the current origin/ark/{slug}. Run `git fetch origin` and `git merge origin/ark/{slug}`, "
                  "fix the failure and commit. The failure:",
     "euklides": "Your previous attempt did not finish. What went wrong, and how to go on:",
-    "judge": "Your previous attempt did not finish. What went wrong, and the judge's note:",
     "answer": "The question you stopped on has an answer. Go on with the job:",
     "steer": "You were stopped to redirect the work. Follow this instruction and go on with the job:",
 }
@@ -166,30 +159,6 @@ def reviewer_brief(st: dict, job_id: str, mj: dict, plan: Plan, *, base: str, he
         'or {"verdict": "FIX", "findings": ["<file>:<line> — <what is wrong and what to do>"]}',
         "FIX only for what must change before this merges.",
     ]) + "\n"
-
-
-def judge_prompt(st: dict, job_id: str, j: dict, mj: dict, allowed: list[str], report: str | None) -> str:
-    allowed = allowed or ["block"]
-    return "\n\n".join([
-        "A job attempt failed in an Arkimedes run. Decide the next step. You have no tools; decide from "
-        "what is below.",
-        f"Run: {st['repo']}/{st['slug']} · job `{job_id}` ({mj['pr_title']})",
-        f"Tier now: {j['tier']} · failed attempts at this tier: {j['tier_attempts']} · "
-        f"tiers so far: {' → '.join(j['tier_path'])}",
-        _untrusted("Failure", j["failure"] or "(none)"),
-        _untrusted("Worker report (may be missing or from an earlier attempt)", (report or "")[-4000:] or "(none)"),
-        "Actions allowed now: " + ", ".join(allowed),
-        _bullets(JUDGE_ACTIONS[a] for a in JUDGE_ACTIONS if a in allowed),
-        "Answer with one line of JSON and nothing else:",
-        '{"action": "' + allowed[0] + '", "note": "<one or two sentences for the next attempt, or the question '
-        'for Marco>"}',
-    ]) + "\n"
-
-
-QUESTION_ACTIONS = {
-    "answer": "`answer`: what is below settles it, and `note` is the answer the worker gets.",
-    "ask": "`ask`: it needs Marco's judgement; `note` says why. Choose this when in doubt.",
-}
 
 
 EUKLIDES_ACTIONS = {
@@ -229,22 +198,6 @@ def euklides_prompt(st: dict, job_id: str, j: dict, mj: dict, plan: Plan, *, tri
         _bullets(EUKLIDES_ACTIONS[a] for a in allowed),
         "End with one line of JSON and nothing after it:",
         '{"action": "' + allowed[0] + '", "note": "...", "undo": "job", "why": "...", "proposal": null}',
-    ]) + "\n"
-
-
-def question_prompt(st: dict, job_id: str, question: str, mj: dict, plan: Plan, report: str | None, allowed: list[str]) -> str:
-    return "\n\n".join([
-        "A worker in an Arkimedes run stopped with a question. Answer it only if the job below already settles it; "
-        "otherwise it goes to Marco. You have no tools; decide from what is below.",
-        f"Run: {st['repo']}/{st['slug']} · job `{job_id}` ({mj['pr_title']})",
-        "## The job",
-        *_job_block(mj, plan),
-        _untrusted("The worker's question", question),
-        _untrusted("Worker report (may be missing or from an earlier attempt)", (report or "")[-4000:] or "(none)"),
-        "Actions allowed now: " + ", ".join(allowed),
-        _bullets(QUESTION_ACTIONS[a] for a in QUESTION_ACTIONS if a in allowed),
-        "Answer with one line of JSON and nothing else:",
-        '{"action": "ask", "note": "<the answer for the worker, or why it needs Marco>"}',
     ]) + "\n"
 
 
@@ -355,7 +308,7 @@ def pr_body(st: dict, job_id: str, mj: dict, report: str | None) -> str:
 
 
 def _pr_reason(reason: str | None) -> str:
-    """A blocked job's reason for one list item: it may hold a judge's note of any shape."""
+    """A blocked job's reason for one list item: it may hold a proposal or a note of any shape."""
     return _no_mentions(" ".join((reason or "").split())[:PR_REASON_CHARS])
 
 

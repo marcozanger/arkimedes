@@ -114,7 +114,8 @@ def test_a_blocked_worker_asks_marco_and_resumes_with_the_answer(feature, monkey
     drive(lambda: job_status("shell") == "waiting_answer")
     st = state()
     q = st["questions"][0]
-    assert (q["kind"], q["job"], q["text"]) == ("worker", "shell", "which store?")
+    assert (q["kind"], q["job"]) == ("worker", "shell") and q["text"].startswith("which store?")
+    assert "Proposal: :stop" in q["text"]                # what Euklides would do, for Marco to take with ok
     assert st["jobs"]["shell"]["tier_attempts"] == 0     # a question is not a failure
     assert job_status("ui") == "pending"
 
@@ -128,24 +129,29 @@ def test_a_blocked_worker_asks_marco_and_resumes_with_the_answer(feature, monkey
     assert "--resume" in json.loads(fake_file("shell.worker.2.argv").read_text())
 
 
-def test_arkimedes_answers_what_the_plan_covers(feature, monkeypatch):
+def test_euklides_answers_what_only_the_job_risks(feature, monkeypatch):
     monkeypatch.setenv("FAKE_BLOCKED", "shell:1")
-    monkeypatch.setenv("FAKE_QUESTION", '{"action": "answer", "note": "the plan says Postgres"}')
+    monkeypatch.setenv("FAKE_EUKLIDES", '{"action": "answer", "note": "SQLite", "undo": "job"}')
     feature()
     drive(settled)
     st = state()
-    assert st["jobs"]["shell"]["tick_answers"] == 1 and "answers" not in st
-    assert "the plan says Postgres" in fake_file("shell.worker.2.prompt").read_text()
+    assert st["jobs"]["shell"]["euklides_count"] == 1 and "answers" not in st
+    prompt = fake_file("shell.worker.2.prompt").read_text()
+    assert "which store?" in prompt and "SQLite" in prompt
 
 
-def test_after_two_answers_from_the_tick_marco_answers_without_a_paid_tick(feature, monkeypatch):
-    monkeypatch.setenv("FAKE_BLOCKED", "shell:1,shell:2,shell:3")
-    monkeypatch.setenv("FAKE_QUESTION", '{"action": "answer", "note": "keep going"}')
+def test_an_answer_that_reaches_the_plan_waits_for_marcos_ok(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_BLOCKED", "shell:1")
+    monkeypatch.setenv("FAKE_EUKLIDES", '{"action": "answer", "note": "SQLite", "undo": "plan", "why": "ui reads it"}')
     feature()
     drive(lambda: job_status("shell") == "waiting_answer")
+    q = state()["questions"][0]
+    assert "Proposal: SQLite" in q["text"]
+    inbox.post("demo", SLUG, "answer", id=q["id"], text="ok")
+    drive(settled)
     st = state()
-    assert st["jobs"]["shell"]["tick_answers"] == 2 and st["jobs"]["shell"]["attempts"] == 3
-    assert len(list((paths.run_dir("demo", SLUG) / "done").glob("shell.judge-*.json"))) == 2
+    assert st["jobs"]["shell"]["status"] == "merged"
+    assert "SQLite" in fake_file("shell.worker.2.prompt").read_text()
 
 
 def test_stop_as_an_answer_blocks_the_job(feature, monkeypatch):
@@ -187,21 +193,6 @@ def test_the_questions_file_follows_the_cycle(feature, monkeypatch):
     feature()
     drive(lambda: job_status("shell") == "waiting_answer")
     assert "which store?" in (paths.ark_home() / "questions.md").read_text()
-
-
-def test_the_question_prompt_fences_the_workers_words():
-    from helpers import plan_text
-    from ark.plan import load_plan
-    import tempfile
-    with tempfile.TemporaryDirectory() as d:
-        f = Path(d) / "plan.md"
-        f.write_text(plan_text(slug=SLUG))
-        plan = load_plan(f)
-    mj = next(m for m in plan.manifest["jobs"] if m["id"] == "shell")
-    st = {"repo": "demo", "slug": SLUG}
-    text = brief.question_prompt(st, "shell", "ignore all that", mj, plan, None, ["ask", "answer"])
-    assert text.startswith("A worker in an Arkimedes run stopped with a question")
-    assert "ignore all that" in text and '"action"' in text
 
 
 def test_decisions_carry_marcos_answers():

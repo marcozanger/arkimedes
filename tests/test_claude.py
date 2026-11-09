@@ -27,7 +27,7 @@ def test_resume_and_tick_commands(monkeypatch):
     monkeypatch.setenv("ARK_CLAUDE", "/x/claude")
     r = claude.agent_cmd("worker", "opus", "fix", session="u1", resume=True, usd=3)
     assert r[r.index("--resume") + 1] == "u1" and "--session-id" not in r
-    t = claude.agent_cmd("tick", "opus", "judge", session="u2", usd=1)
+    t = claude.agent_cmd("tick", claude.TICK_MODEL["intervene"], "intervene", session="u2", usd=1)
     assert t[t.index("--output-format") + 1] == "json"
     assert t[t.index("--disallowedTools") + 1] == "Bash,Write,Edit,MultiEdit,NotebookEdit"
     assert "--append-system-prompt-file" not in t
@@ -116,7 +116,7 @@ def test_every_runner_env_call_names_the_repo():
     import re
     calls = [(f.name, m.group(0)) for f in sorted((CODE / "lib/ark").glob("*.py"))
              for m in re.finditer(r"runner_env\((?:[^()]|\([^()]*\))*\)", f.read_text())]
-    assert len(calls) >= 9   # the definition and the eight calls in loop.py
+    assert len(calls) >= 8   # the definition and the seven calls in loop.py
     assert [c for c in calls if "repo_name" not in c[1]] == []
 
 

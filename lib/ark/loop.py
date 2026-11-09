@@ -2,7 +2,7 @@
 
 Each cycle: every approval → its run (runs/<repo>/<slug>/state.json); start waiting runs; hold a
 run whose plan changed; consume process receipts; move every job forward within the limits.
-Claude runs only as workers, reviewers and two read-only ticks (judge, decisions)."""
+Claude runs only as workers, reviewers, Euklides and two read-only ticks (intervene, decisions)."""
 from __future__ import annotations
 
 import fcntl
@@ -18,7 +18,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from . import brief, caps, claude, forge as forge_mod, gitops, inbox, integrate, merge, notify, paths, proc, questions, reporting, run, usage
+from . import brief, caps, claude, euklides, forge as forge_mod, gitops, inbox, integrate, merge, notify, paths, proc, questions, reporting, run, usage
 from .globs import areas_overlap, match_any
 from .plan import load_plan, sha256_file
 from .validate import validate
@@ -34,13 +34,13 @@ DECISIONS_TICKS = 2       # paid ticks a run's close may start before the runner
 SKIP_ALERT_AFTER = 3      # integration checks that could not run before Marco hears about it
 
 # What a job's status says is running, and where the job goes back to if that process is not there.
-RUNNING = {"working": "worker", "gating": "gate", "reviewing": "review", "integrating": "integrate", "judging": "judge"}
+RUNNING = {"working": "worker", "gating": "gate", "reviewing": "review", "integrating": "integrate",
+           "euklides": "euklides"}
 WAITING = {"worker": "needs_worker", "gate": "needs_gate", "review": "needs_review",
-           "integrate": "needs_integrate", "judge": "needs_judge"}
+           "integrate": "needs_integrate", "euklides": "needs_euklides"}
 CHECK_KINDS = ("gate", "review", "integrate")  # what a new approval makes a job earn again
 REWOUND = ("gating", "needs_pr", "needs_review", "reviewing", "needs_integrate", "integrating", "needs_merge")
 WAITS_FOR_MARCO = ("waiting_answer", "attached")  # statuses only Marco can move
-TICK_ANSWERS = 2  # questions per job a tick may answer before Marco answers them all
 STEERED = "steered"
 INTERVENED = "stopped by the intervene tick"
 ATTACHED = "handed to Marco"
@@ -251,8 +251,9 @@ def try_start(st: dict, others: list[dict], forge) -> bool:
 
 def fail(c: Ctx, job: str, why: str) -> None:
     j, why = c.st["jobs"][job], _clean(why)
-    j.update(status="needs_judge", failure=why, tier_attempts=j["tier_attempts"] + 1)
+    j.update(failure=why, tier_attempts=j["tier_attempts"] + 1)
     run.event(c.st, f"{job} failed ({j['tier']}, attempt {j['tier_attempts']} at this tier): {why}")
+    to_euklides(c, job, "failure", why)
 
 
 def _block(st: dict, job: str, why: str, critical: bool = False) -> None:
@@ -265,14 +266,11 @@ def block(c: Ctx, job: str, why: str, critical: bool = False) -> None:
     _block(c.st, job, why, critical=critical)
 
 
-def allowed_actions(j: dict) -> list[str]:
-    """block always; retry while fewer than 2 failures at this tier; escalate below T2."""
-    out = ["block"]
-    if j["tier_attempts"] < 2:
-        out.append("retry")
-    if j["tier"] in claude.NEXT_TIER:
-        out.append("escalate")
-    return out
+def to_euklides(c: Ctx, job: str, trigger: str, situation: str, kind: str | None = None) -> None:
+    """Euklides decides how the job goes on. `kind` names a block a new attempt may fix:
+    area, review or integrate (what `unblock` has to reset)."""
+    c.st["jobs"][job].update(status="needs_euklides", euklides={
+        "trigger": trigger, "situation": _clean(situation)[:questions.MAX_TEXT], "kind": kind})
 
 
 def _error(c: Ctx, job: str, e: Exception) -> None:
@@ -345,10 +343,10 @@ def on_worker(c: Ctx, job: str, r: dict) -> None:
     if not _clean_exit(r):
         return fail(c, job, f"the worker ended with an error (exit {r['exit']})")
     status, detail = brief.worker_status(r["result"])
-    if status == "BLOCKED":  # not a failure: no attempt is charged, and a tick looks at it before Marco does
-        j.update(status="needs_judge", question=_clean(detail)[:questions.MAX_TEXT] or "the worker ended BLOCKED without a question")
+    if status == "BLOCKED":  # not a failure: no attempt is charged, and Euklides looks at it before Marco does
+        j["question"] = _clean(detail)[:questions.MAX_TEXT] or "the worker ended BLOCKED without a question"
         run.event(c.st, f"{job}: the worker asks: {j['question'][:300]}")
-        return
+        return to_euklides(c, job, "question", j["question"])
     if status != "DONE":
         return fail(c, job, f"the worker ended {status}: {detail}")
     wt = c.wt(job)
@@ -359,7 +357,7 @@ def on_worker(c: Ctx, job: str, r: dict) -> None:
         return fail(c, job, "the worker ended DONE without any change")
     outside = [_printable(f) for f in files if not match_any(f, c.mjobs[job]["area"])]
     if outside:
-        return block(c, job, "changed files outside its area: " + ", ".join(outside[:5]))
+        return to_euklides(c, job, "blocked", "changed files outside its area: " + ", ".join(outside[:5]), "area")
     j.update(status="needs_push", head=gitops.rev(wt, "HEAD"))
     run.event(c.st, f"{job}: worker done, head {j['head'][:8]}")
 
@@ -394,7 +392,7 @@ def on_review(c: Ctx, job: str, r: dict) -> None:
     if answer is None:
         j["review_errors"] += 1
         if j["review_errors"] >= 2:
-            return block(c, job, "the reviewer gave no verdict twice")
+            return to_euklides(c, job, "blocked", "the reviewer gave no verdict twice", "review")
         j["status"] = "needs_review"
         run.event(c.st, f"{job}: the reviewer gave no verdict; reviewing again")
         return
@@ -452,24 +450,19 @@ def on_integrate(c: Ctx, job: str, r: dict) -> None:
         return
     j["integrate_fails"] += 1
     if j["integrate_fails"] >= 2:
-        return block(c, job, f"integration gate failed twice: {reason}", critical=True)
+        return to_euklides(c, job, "blocked", f"integration gate failed twice: {reason}\n\n"
+                           f"{str(out.get('tail', ''))[-1500:]}", "integrate")
     j["resume_msg"] = brief.resume_message("integrate", f"{reason}\n\n{out.get('tail', '')}", c.st["slug"])
     j["status"] = "needs_worker"
     run.event(c.st, f"{job}: integration gate red ({reason}); back to the worker")
 
 
-def _judge_answer(r: dict) -> tuple[object, str]:
-    """(action, note) from an answer of exactly the agreed shape; (None, "") for anything else."""
+def _tick_answer(r: dict) -> tuple[object, str]:
+    """(action, note) from an intervene tick's answer of exactly the agreed shape; (None, "") for anything else."""
     d = _answer(r) if _clean_exit(r) else None
     if not isinstance(d, dict) or set(d) != {"action", "note"} or not isinstance(d["note"], str):
         return None, ""
     return d["action"], d["note"].strip()[:1000]
-
-
-def _ask_marco(c: Ctx, job: str) -> None:
-    j = c.st["jobs"][job]
-    questions.ask(c.st, "worker", j["question"], job=job)
-    j["status"] = "waiting_answer"
 
 
 def _resume_with_answer(st: dict, job: str, answer: str) -> None:
@@ -482,45 +475,66 @@ def _resume_with_answer(st: dict, job: str, answer: str) -> None:
     j["status"] = "needs_worker"
 
 
-def on_question(c: Ctx, job: str, r: dict) -> None:
-    """Anything but a clean `answer` goes to Marco: a wrong answer from here would be taken for his."""
-    j = c.st["jobs"][job]
-    action, note = _judge_answer(r)
-    if action == "answer" and note and j.get("tick_answers", 0) < TICK_ANSWERS:
-        j["tick_answers"] = j.get("tick_answers", 0) + 1
-        run.event(c.st, f"{job}: its question was answered from the plan: {_clean(note)}")
-        return _resume_with_answer(c.st, job, note)
-    _ask_marco(c, job)
-
-
 def _escalate(j: dict) -> None:
     j["tier"] = claude.NEXT_TIER[j["tier"]]
     j["tier_path"].append(j["tier"])
     j.update(tier_attempts=0, session=None, resume_msg=None, review_rounds=0)
 
 
-def on_judge(c: Ctx, job: str, r: dict) -> None:
+NO_ANSWER = {"action": "ask", "note": "Euklides gave no usable answer", "undo": None, "why": "", "proposal": None}
+
+
+def _go_on(st: dict, job: str, e: dict, text: str) -> None:
+    """Back to work after a decision (Euklides' or Marco's): what blocked the job starts over, and the
+    worker is told what to do. A review that never gave a verdict is simply run again."""
+    j = st["jobs"][job]
+    if e.get("kind") == "review":
+        j.update(review_errors=0, status="needs_review")
+        return
+    if e.get("kind") == "integrate":
+        j["integrate_fails"] = 0
+    if e["trigger"] == "question":
+        kind, msg = "answer", f"Question: {e['situation']}\n\nAnswer: {text}"
+    else:
+        kind, msg = ("integrate" if e.get("kind") == "integrate" else "euklides"), f"{e['situation']}\n\nNote: {text}"
+    if j["session"]:
+        j["resume_msg"] = brief.resume_message(kind, msg, st["slug"])
+    j.pop("question", None)
+    j.update(note=msg, status="needs_worker")
+
+
+def _euklides_ask(st: dict, job: str, e: dict, d: dict, decision: str | None) -> None:
+    j = st["jobs"][job]
+    proposal = d["proposal"] or "(none: write what the job should do, or :stop)"
+    questions.ask(st, "worker", f"{e['situation']}\n\nEuklides: {d['note']}\n\nProposal: {proposal}", job=job)
+    j["euklides_ask"] = {"proposal": d["proposal"], "decision": decision, "ctx": e}
+    j["status"] = "waiting_answer"
+
+
+def on_euklides(c: Ctx, job: str, r: dict) -> None:
     j = c.st["jobs"][job]
-    if j.get("question"):
-        return on_question(c, job, r)
-    allowed = allowed_actions(j)  # from the job as it is now: an action outside the list never runs
-    action, note = _judge_answer(r)
-    if not isinstance(action, str) or action not in allowed:
-        action = "retry" if "retry" in allowed else "escalate" if "escalate" in allowed else "block"
-        note = f"the judge gave no usable answer; the runner chose {action}"
-    run.event(c.st, f"{job} judge: {action} — {note}")
-    if action == "block":
-        return block(c, job, note or j["failure"])
-    if action == "escalate":
+    e = j.pop("euklides")
+    d = euklides.parse(_answer(r) if _clean_exit(r) else None, e.get("allowed") or ["ask"])
+    valid = d is not None
+    d = d or NO_ANSWER
+    try:
+        decision = euklides.record(c.st, job, e, d, valid=valid, usd=_usd(r.get("usd")))
+    except OSError as err:  # the journal is for learning, not for control
+        decision = None
+        run.event(c.st, f"{job}: the Euklides journal could not be written: {err}")
+    run.event(c.st, f"{job} euklides: {d['action']} — {_clean(d['note'])[:300]}")
+    if d["action"] == "ask":
+        return _euklides_ask(c.st, job, e, d, decision)
+    j["euklides_count"] = j.get("euklides_count", 0) + 1
+    if d["action"] == "escalate":
         _escalate(j)
-    elif j["session"]:
-        j["resume_msg"] = brief.resume_message("judge", f"{j['failure']}\n\nNote: {note}", c.st["slug"])
-    j.update(note=note, status="needs_worker")
+    _go_on(c.st, job, e, d["note"])
 
 
 DECISIONS = "_decisions.tick"  # the close-of-run tick belongs to the run, not to a job
-MODEL_KINDS = ("worker", "review", "judge")  # the others run a program of ours, not the model
-HANDLERS = {"worker": on_worker, "gate": on_gate, "review": on_review, "integrate": on_integrate, "judge": on_judge}
+MODEL_KINDS = ("worker", "review", "euklides")  # the others run a program of ours, not the model
+HANDLERS = {"worker": on_worker, "gate": on_gate, "review": on_review, "integrate": on_integrate,
+            "euklides": on_euklides}
 
 
 def _usd(value) -> float:
@@ -658,7 +672,7 @@ def on_intervene(c: Ctx, job: str, r: dict) -> None:
             or any(k in j for k in HANDLING)):
         return run.event(c.st, f"{job}: ignored the intervene tick: the worker it looked at is gone or being handled")
     allowed = _intervene_actions(j)
-    action, note = _judge_answer(r)
+    action, note = _tick_answer(r)
     if not isinstance(action, str) or action not in allowed:
         action = next(a for a in ("wait", "stop_escalate", "stop_block") if a in allowed)
         note = f"the intervene tick gave no usable answer; the runner chose {action}: {j.get('anomaly')}"
@@ -863,24 +877,22 @@ def do_merge(c: Ctx, job: str) -> None:
     _merged(c, job)
 
 
-def start_judge(c: Ctx, job: str) -> None:
+def _dependents(c: Ctx, job: str) -> list[str]:
+    return [m["id"] for m in c.plan.manifest["jobs"] if job in (m.get("after") or [])]
+
+
+def start_euklides(c: Ctx, job: str) -> None:
     j = c.st["jobs"][job]
-    if j.get("question"):
-        allowed = ["ask", "answer"] if j.get("tick_answers", 0) < TICK_ANSWERS else ["ask"]
-        if allowed == ["ask"]:  # nothing to decide: no tick is paid
-            return _ask_marco(c, job)
-        prompt = brief.question_prompt(c.st, job, j["question"], c.mjobs[job], c.plan, c.read_report(job), allowed)
-        cmd = claude.agent_cmd("tick", claude.TICK_MODEL["judge"], prompt, session=str(uuid.uuid4()), usd=1)
-        proc.start(c.dir, f"{job}.judge", cmd, cwd=ticks_dir(), env=claude.runner_env("tick", repo_name=c.st["repo"]), minutes=15)
-        j["status"] = "judging"
-        return
-    allowed = allowed_actions(j)
-    if allowed == ["block"]:
-        return block(c, job, f"{j['failure']} (no retry or escalation left)")
-    prompt = brief.judge_prompt(c.st, job, j, c.mjobs[job], allowed, c.read_report(job))
-    cmd = claude.agent_cmd("tick", claude.TICK_MODEL["judge"], prompt, session=str(uuid.uuid4()), usd=1)
-    proc.start(c.dir, f"{job}.judge", cmd, cwd=ticks_dir(), env=claude.runner_env("tick", repo_name=c.st["repo"]), minutes=15)
-    j["status"] = "judging"
+    e, mj = j["euklides"], c.mjobs[job]
+    e["allowed"] = euklides.allowed(e["trigger"], j, mj["budget"]["usd"])  # fixed now: the answer is checked against it
+    wt = c.wt(job)
+    prompt = brief.euklides_prompt(c.st, job, j, mj, c.plan, trigger=e["trigger"], situation=e["situation"],
+                                   allowed=e["allowed"], report=c.read_report(job), dependents=_dependents(c, job),
+                                   worktree=wt, log=c.dir / f"{job}.worker.log", lessons=euklides.lessons())
+    cmd = claude.agent_cmd("euklides", claude.EUKLIDES_MODEL, prompt, session=str(uuid.uuid4()), usd=claude.EUKLIDES_USD)
+    proc.start(c.dir, f"{job}.euklides", cmd, cwd=wt if wt.is_dir() else ticks_dir(),
+               env=claude.runner_env("euklides", repo_name=c.st["repo"]), minutes=claude.EUKLIDES_MINUTES)
+    j["status"] = "euklides"
 
 
 # ---- closing ----------------------------------------------------------------------------------
@@ -1101,7 +1113,7 @@ def _next_step(c: Ctx, job: str, j: dict, slots: Slots):
             return lambda: start_integrate(c, job)
     else:
         step_ = {"needs_push": push_job, "needs_pr": ensure_pr, "needs_review": start_review, "needs_merge": do_merge,
-                 "needs_judge": start_judge}.get(s)
+                 "needs_euklides": start_euklides}.get(s)
         if step_:
             return lambda: step_(c, job)
     return None
@@ -1127,7 +1139,7 @@ def start_intervene(c: Ctx, job: str, why: str) -> None:
     log = c.dir / f"{job}.worker.log"
     prompt = brief.intervene_prompt(c.st, job, c.mjobs[job]["pr_title"], why, usage.scan(log)["last"], log,
                                     _intervene_actions(j))
-    cmd = claude.agent_cmd("tick", claude.TICK_MODEL["judge"], prompt, session=str(uuid.uuid4()), usd=1)
+    cmd = claude.agent_cmd("tick", claude.TICK_MODEL["intervene"], prompt, session=str(uuid.uuid4()), usd=1)
     proc.start(c.dir, f"{job}.intervene", cmd, cwd=ticks_dir(), env=claude.runner_env("tick", repo_name=c.st["repo"]), minutes=15,
                meta={"attempt": j["attempts"]})
     j.update(intervening=True, anomaly=why)
@@ -1236,9 +1248,19 @@ def _answered_worker(st: dict, q: dict, text: str) -> None:
     j = st["jobs"].get(job)
     if j is None or j["status"] != "waiting_answer":
         return run.event(st, f"{q['id']} was answered, but {_clean(str(job))} no longer waits for it")
-    if text == questions.STOP_JOB:
-        return _block(st, job, f"stopped by Marco at question {q['id']}")
-    _resume_with_answer(st, job, text)
+    ask = j.pop("euklides_ask", None)
+    if ask and ask.get("decision"):
+        try:
+            euklides.set_marco(ask["decision"], text)
+        except OSError as err:
+            run.event(st, f"{job}: the Euklides journal could not be written: {err}")
+    if ask and text.strip().lower() == "ok" and ask.get("proposal"):
+        text = ask["proposal"]
+    if text == questions.STOP_JOB or text.startswith(questions.STOP_JOB + " "):
+        return _block(st, job, f"stopped by Marco at question {q['id']}: {text}"[:600])
+    if ask:
+        return _go_on(st, job, ask["ctx"], text)
+    _resume_with_answer(st, job, text)  # a question asked before Euklides
 
 
 def _apply_stop(st: dict, item: dict) -> None:
@@ -1523,6 +1545,18 @@ def _good_questions(st: dict) -> bool:
         and "job" in q and (q["job"] is None or isinstance(q["job"], str)) for q in st["questions"])
 
 
+def _migrate(st: dict) -> dict:
+    """A run saved before Euklides: its judge step is a Euklides step. A judge still running is left
+    to end; its receipt finds nothing waiting for it."""
+    for j in st["jobs"].values():
+        if j["status"] in ("needs_judge", "judging"):
+            trigger = "question" if j.get("question") else "failure"
+            j["status"] = "needs_euklides"
+            j.setdefault("euklides", {"trigger": trigger, "situation": j.get("question") or j.get("failure") or "",
+                                      "kind": None})
+    return st
+
+
 def _load(repo: str, slug: str) -> dict | None:
     """run.load, plus the shape the loop relies on: valid JSON of the wrong shape is damage too."""
     st = run.load(repo, slug)
@@ -1533,7 +1567,7 @@ def _load(repo: str, slug: str) -> dict | None:
             or not isinstance(st.get("events"), list) or not isinstance(st.get("alerts"), list) or not _good_questions(st)
             or not all(isinstance(j, dict) and isinstance(j.get("status"), str) for j in jobs.values())):
         raise run.StateCorrupt(f"malformed run state {run.state_file(repo, slug)}")
-    return {**_clean(st), "repo": repo, "slug": slug}  # a lone surrogate is valid JSON, and no file can hold it; these two name the folder
+    return _migrate({**_clean(st), "repo": repo, "slug": slug})  # a lone surrogate is valid JSON, and no file can hold it; these two name the folder
 
 
 def _once(key: tuple, text: str, alerts: list[str]) -> bool:

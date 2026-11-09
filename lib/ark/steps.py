@@ -15,7 +15,7 @@ from . import brief, claude, paths, run, usage
 
 LOG_LIMIT = 64 << 20                       # bytes of one log read for its result line
 RECEIPT_LIMIT = 1 << 20
-KINDS = ("worker", "review", "gate", "integrate", "judge", "intervene")
+KINDS = ("worker", "review", "gate", "integrate", "euklides", "judge", "intervene")  # judge: runs recorded before Euklides
 SCRIPTS = ("gate", "integrate")
 DECISIONS = "_decisions.tick"
 TIER_OF = {m: t for t, m in claude.MODELS.items()}       # "sonnet" -> "T1"

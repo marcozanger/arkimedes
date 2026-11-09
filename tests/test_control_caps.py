@@ -13,7 +13,7 @@ def ledger():
 def test_spending_adds_up_by_day(ark_home):
     assert caps.spent_today() == 0.0
     caps.record("r/s", "a.worker", 1.5)
-    caps.record("r/s", "a.judge", 0.25)
+    caps.record("r/s", "a.euklides", 0.25)
     caps.record("r/s", "a.gate", 0)
     assert caps.spent_today() == 1.75
     assert len(ledger().read_text().splitlines()) == 2

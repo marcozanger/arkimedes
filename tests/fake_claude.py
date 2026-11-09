@@ -8,7 +8,7 @@ worker    appends "attempt <n>" to <area[0] with ** -> <job>.txt> (or outside/<j
 reviewer  FIX on the first review of a job in FAKE_FIX, CLEAN otherwise.
 euklides  FAKE_EUKLIDES is its raw answer; by default retry for a failure and ask (proposal ":stop")
           otherwise. Each call leaves euklides.<n>.prompt and .cwd in FAKE_STATE.
-tick      the decisions file when asked for one, else a judge answer `retry`.
+tick      the decisions file when asked for one, else `retry` (no intervene action: the runner picks one).
 
 FAKE_EARLY_OUTSIDE=job makes a first commit outside the area, under a last commit inside it.
 FAKE_DIRTY=job:n leaves attempt n's file uncommitted; FAKE_EMPTY=job:n changes nothing. Both end DONE.
@@ -20,8 +20,7 @@ FAKE_USAGE=<n> makes a worker print an assistant line with n output tokens befor
 leaves <job>.worker.<n>.argv and .prompt in FAKE_STATE.
 
 FAKE_USD=<n> is what every process says it cost.
-FAKE_BLOCKED=job:n,... makes attempt n end BLOCKED with the question "which store?". FAKE_QUESTION is the raw answer of a
-tick asked a worker's question; the default answer is not valid there, so the question reaches Marco.
+FAKE_BLOCKED=job:n,... makes attempt n end BLOCKED with the question "which store?".
 FAKE_INTERVENE is the raw answer of an intervene tick.
 """
 import fcntl
@@ -141,8 +140,6 @@ elif ROLE == "tick":
         emit(json.loads(os.environ["FAKE_DECISIONS"]), stream=False)  # raw JSON: it can hold any escape
     elif "Write the decisions file" in PROMPT:
         emit("# Decisions — fake\n\n## shell — merged\n\n- **D1** · a fake decision · _arkimedes_\n", stream=False)
-    elif "stopped with a question" in PROMPT and os.environ.get("FAKE_QUESTION"):
-        emit(os.environ["FAKE_QUESTION"], stream=False)
     elif "A running worker looks wrong" in PROMPT and os.environ.get("FAKE_INTERVENE"):
         emit(os.environ["FAKE_INTERVENE"], stream=False)
     else:

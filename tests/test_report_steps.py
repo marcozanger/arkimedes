@@ -115,3 +115,11 @@ def test_resolve_keeps_when_it_was_asked():
     q = questions.ask(st, "worker", "which store?", job="shell")
     answer = questions.resolve(st, q["id"], "sqlite")
     assert answer["asked"] == q["asked"]
+
+
+def test_a_euklides_step_is_read_and_a_judge_one_still_is(ark_home):
+    receipt("shell.euklides", 0, 1, result='{"action": "retry", "note": "x"}', log=result_line())
+    receipt("shell.judge", 2, 3, result='{"action": "retry", "note": "x"}', log=result_line())
+    euklides, judge = build()
+    assert (euklides["job"], euklides["kind"]) == ("shell", "euklides")
+    assert (judge["job"], judge["kind"]) == ("shell", "judge")
