@@ -369,6 +369,26 @@ def overdue(run_dir) -> list[str]:
     return out
 
 
+def shift_deadlines(run_dir, seconds: float) -> list[str]:
+    """Move the deadline of every process still running by `seconds`: time the machine spent asleep is
+    no time it worked. Returns one line per process that could not be moved; it keeps its old deadline."""
+    run_dir, failed = Path(run_dir), []
+    for n in active(run_dir):
+        if (run_dir / f"{n}.receipt.json").exists():
+            continue
+        path = run_dir / f"{n}.proc"
+        info = _read(path)
+        if info is None:
+            failed.append(f"{n}: unreadable .proc")
+            continue
+        info["deadline"] += seconds
+        try:
+            _atomic(path, info)
+        except OSError as e:
+            failed.append(f"{n}: {e}")
+    return failed
+
+
 def _record_death(run_dir: Path, name: str, info: dict, state: str) -> None:
     """The wrapper is gone: no signal from here. Its watcher is ending the group, if the group is
     still ours; wait for that so a retry never runs next to the old process. A pid that was reused

@@ -11,6 +11,7 @@ import json
 import math
 import os
 import signal
+import socket
 import sys
 import tempfile
 import time
@@ -31,6 +32,10 @@ BACKOFF_FIRST = 15        # seconds before the first retry; it doubles each time
 BACKOFF_MAX = 900         # seconds, the ceiling of that wait
 REPORT_MAX = 1_000_000    # bytes of a worker's report the runner reads
 DECISIONS_TICKS = 2       # paid ticks a run's close may start before the runner writes the fallback itself
+SLEEP_MIN = 60            # seconds the wall clock must run ahead of the uptime clock to count as a sleep
+NET_WAIT_MAX = 600        # seconds the loop waits for the network after waking before it goes on
+NET_HOSTS = (("api.github.com", 443), ("api.anthropic.com", 443))
+CLOCK_KEYS = ("soft_deadline", "watch_from", "not_before", "holders_since")  # absolute times that limit a job
 SKIP_ALERT_AFTER = 3      # integration checks that could not run before Marco hears about it
 
 # What a job's status says is running, and where the job goes back to if that process is not there.
@@ -47,6 +52,7 @@ ATTACHED = "handed to Marco"
 OURS = (STEERED, INTERVENED, ATTACHED)  # we stopped it, knowing which session it was
 MAX_STEERS = 2
 
+_net_wait_until = 0.0  # after a wake, nothing new starts before the network is back or this time passes
 _said: set[tuple] = set()  # what was already alerted about a run with no state to remember it in
 
 
@@ -1114,7 +1120,7 @@ def _anomaly(j: dict, log: Path, now: float) -> str | None:
     """What looks wrong with this worker, or None (spec §6)."""
     if now > j["soft_deadline"]:
         return f"over its time for tier {j['tier']}"
-    if now - max(_mtime(log) / 1e9, j["watch_from"]) > claude.STALL_MINUTES * 60:
+    if now - max(_mtime(log) / 1e9, j["watch_from"], j.get("woke_at", 0)) > claude.STALL_MINUTES * 60:
         return f"no output for over {claude.STALL_MINUTES} minutes"
     tokens = usage.scan(log)["tokens"]
     if tokens > claude.TIER_TOKENS[j["tier"]] * j["token_factor"]:
@@ -1216,6 +1222,67 @@ def reconcile(st: dict) -> None:
                     start = (proc._read(d / f"{job}.worker.proc") or {}).get("start")
                     _watch_from(j, start if type(start) in (int, float) and math.isfinite(start) else time.time())
                 run.event(st, f"{job}: found its {kind} running; the state had not recorded it")
+
+
+# ---- sleep --------------------------------------------------------------------------------------
+
+def clocks() -> tuple[float, float]:
+    """(wall, uptime). The uptime clock does not advance while the Mac sleeps; CLOCK_MONOTONIC does on macOS."""
+    return time.time(), time.clock_gettime(time.CLOCK_UPTIME_RAW)
+
+
+def slept_between(before: tuple[float, float], after: tuple[float, float]) -> float:
+    """Seconds asleep between two clocks() samples; 0 for a short jump or a wall clock set back."""
+    slept = (after[0] - before[0]) - (after[1] - before[1])
+    return slept if slept > SLEEP_MIN else 0
+
+
+def _span(seconds: float) -> str:
+    m = int(seconds // 60)
+    return f"{m // 60}h{m % 60:02d}m"
+
+
+def shift_run(st: dict, slept: float, woke_at: float) -> None:
+    """Time asleep is no time worked: every limit moves by it, and whatever lived through it gets one free failure."""
+    d = paths.run_dir(st["repo"], st["slug"])
+    for j in st["jobs"].values():
+        for k in CLOCK_KEYS:
+            if j.get(k):
+                j[k] += slept
+        if j["status"] not in run.TERMINAL:
+            j["woke_at"] = woke_at
+    if st.get("closing_wait"):
+        st["closing_wait"] += slept
+    for name in proc.active(d):
+        if name == DECISIONS:
+            st["slept_through"] = woke_at
+            continue
+        job, _, kind = name.rpartition(".")
+        if job in st["jobs"]:
+            st["jobs"][job].setdefault("slept_through", {})[kind] = woke_at
+    for line in proc.shift_deadlines(d, slept):
+        run.event(st, f"a deadline could not be moved after the sleep: {_clean(line)}")
+    run.event(st, f"the machine slept {_span(slept)}: deadlines moved by that much")
+
+
+def on_wake(slept: float, woke_at: float) -> list[str]:
+    """Called by the poll before the cycle when the machine slept. Returns lines to print."""
+    global _net_wait_until
+    _net_wait_until = woke_at + NET_WAIT_MAX
+    out = []
+    for a in approvals():
+        try:
+            st = _load(a["repo"], a["slug"])
+        except Exception:  # the cycle says so, once
+            continue
+        if not st or st["status"] in ("done", "blocked"):
+            continue
+        shift_run(st, slept, woke_at)
+        try:
+            run.save(st)
+        except Exception as e:  # the free failure covers what this save loses
+            out.append(f"{a['repo']}/{a['slug']}: the state could not be saved after the sleep: {type(e).__name__}: {e}")
+    return out
 
 
 def _apply_answer(st: dict, item: dict) -> None:
@@ -1746,8 +1813,18 @@ def _setting(ws: dict, key: str) -> float:
 
 def _polling(once: bool) -> int:
     poll_default = paths.DEFAULTS["poll_seconds"]
-    last_line, last_sig, last_full, last_error = None, None, 0.0, None
+    last_line, last_sig, last_full, last_error, last_clocks = None, None, 0.0, None, None
     while True:
+        now_clocks = clocks()
+        slept = slept_between(last_clocks, now_clocks) if last_clocks else 0
+        last_clocks = now_clocks
+        if slept:
+            try:
+                for line in on_wake(slept, now_clocks[0]):
+                    print(f"⚠ {line}", flush=True)
+            except Exception as e:  # the free failure still covers the processes
+                print(f"⚠ the deadlines could not be moved after the sleep: {type(e).__name__}: {e}", flush=True)
+            last_sig = None  # a cycle right away
         poll = poll_default
         try:
             ws = paths.load_workspace()
