@@ -2815,6 +2815,9 @@ def test_overlapping_plans_in_one_repo_wait(feature, make_feature, monkeypatch):
     second = state(slug="notes-more")
     assert second["status"] == "waiting" and "overlaps the running plan notes-edit" in second["reason"]
     drive(run_finished)
+    prs_file = paths.find_repo("demo") / ".git" / "ark-local-prs.json"  # its final PR merged: the wait ends
+    prs_file.write_text(json.dumps([dict(pr, state="MERGED") if pr["url"] == state()["final_pr"]["url"] else pr
+                                    for pr in json.loads(prs_file.read_text())]))
     drive(lambda: state(slug="notes-more")["status"] in ("done", "blocked"))
     assert state(slug="notes-more")["status"] == "done"
 
