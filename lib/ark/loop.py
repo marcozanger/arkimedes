@@ -2,7 +2,7 @@
 
 Each cycle: every approval → its run (runs/<repo>/<slug>/state.json); start waiting runs; hold a
 run whose plan changed; consume process receipts; move every job forward within the limits.
-Claude runs only as workers, reviewers and two read-only ticks (judge, decisions)."""
+Claude runs only as workers, reviewers, Euklides and two read-only ticks (intervene, decisions)."""
 from __future__ import annotations
 
 import fcntl
@@ -41,7 +41,6 @@ WAITING = {"worker": "needs_worker", "gate": "needs_gate", "review": "needs_revi
 CHECK_KINDS = ("gate", "review", "integrate")  # what a new approval makes a job earn again
 REWOUND = ("gating", "needs_pr", "needs_review", "reviewing", "needs_integrate", "integrating", "needs_merge")
 WAITS_FOR_MARCO = ("waiting_answer", "attached")  # statuses only Marco can move
-TICK_ANSWERS = 2  # questions per job a tick may answer before Marco answers them all
 STEERED = "steered"
 INTERVENED = "stopped by the intervene tick"
 ATTACHED = "handed to Marco"
@@ -274,16 +273,6 @@ def to_euklides(c: Ctx, job: str, trigger: str, situation: str, kind: str | None
         "trigger": trigger, "situation": _clean(situation)[:questions.MAX_TEXT], "kind": kind})
 
 
-def allowed_actions(j: dict) -> list[str]:
-    """block always; retry while fewer than 2 failures at this tier; escalate below T2."""
-    out = ["block"]
-    if j["tier_attempts"] < 2:
-        out.append("retry")
-    if j["tier"] in claude.NEXT_TIER:
-        out.append("escalate")
-    return out
-
-
 def _error(c: Ctx, job: str, e: Exception) -> None:
     """A git / gh error while moving a job: it stays where it is and is retried next cycle, since a laptop
     offline must not block anything. Marco hears about it once, if it does not go away. Any other error
@@ -468,18 +457,12 @@ def on_integrate(c: Ctx, job: str, r: dict) -> None:
     run.event(c.st, f"{job}: integration gate red ({reason}); back to the worker")
 
 
-def _judge_answer(r: dict) -> tuple[object, str]:
-    """(action, note) from an answer of exactly the agreed shape; (None, "") for anything else."""
+def _tick_answer(r: dict) -> tuple[object, str]:
+    """(action, note) from an intervene tick's answer of exactly the agreed shape; (None, "") for anything else."""
     d = _answer(r) if _clean_exit(r) else None
     if not isinstance(d, dict) or set(d) != {"action", "note"} or not isinstance(d["note"], str):
         return None, ""
     return d["action"], d["note"].strip()[:1000]
-
-
-def _ask_marco(c: Ctx, job: str) -> None:
-    j = c.st["jobs"][job]
-    questions.ask(c.st, "worker", j["question"], job=job)
-    j["status"] = "waiting_answer"
 
 
 def _resume_with_answer(st: dict, job: str, answer: str) -> None:
@@ -492,40 +475,10 @@ def _resume_with_answer(st: dict, job: str, answer: str) -> None:
     j["status"] = "needs_worker"
 
 
-def on_question(c: Ctx, job: str, r: dict) -> None:
-    """Anything but a clean `answer` goes to Marco: a wrong answer from here would be taken for his."""
-    j = c.st["jobs"][job]
-    action, note = _judge_answer(r)
-    if action == "answer" and note and j.get("tick_answers", 0) < TICK_ANSWERS:
-        j["tick_answers"] = j.get("tick_answers", 0) + 1
-        run.event(c.st, f"{job}: its question was answered from the plan: {_clean(note)}")
-        return _resume_with_answer(c.st, job, note)
-    _ask_marco(c, job)
-
-
 def _escalate(j: dict) -> None:
     j["tier"] = claude.NEXT_TIER[j["tier"]]
     j["tier_path"].append(j["tier"])
     j.update(tier_attempts=0, session=None, resume_msg=None, review_rounds=0)
-
-
-def on_judge(c: Ctx, job: str, r: dict) -> None:
-    j = c.st["jobs"][job]
-    if j.get("question"):
-        return on_question(c, job, r)
-    allowed = allowed_actions(j)  # from the job as it is now: an action outside the list never runs
-    action, note = _judge_answer(r)
-    if not isinstance(action, str) or action not in allowed:
-        action = "retry" if "retry" in allowed else "escalate" if "escalate" in allowed else "block"
-        note = f"the judge gave no usable answer; the runner chose {action}"
-    run.event(c.st, f"{job} judge: {action} — {note}")
-    if action == "block":
-        return block(c, job, note or j["failure"])
-    if action == "escalate":
-        _escalate(j)
-    elif j["session"]:
-        j["resume_msg"] = brief.resume_message("judge", f"{j['failure']}\n\nNote: {note}", c.st["slug"])
-    j.update(note=note, status="needs_worker")
 
 
 NO_ANSWER = {"action": "ask", "note": "Euklides gave no usable answer", "undo": None, "why": "", "proposal": None}
@@ -579,8 +532,8 @@ def on_euklides(c: Ctx, job: str, r: dict) -> None:
 
 
 DECISIONS = "_decisions.tick"  # the close-of-run tick belongs to the run, not to a job
-MODEL_KINDS = ("worker", "review", "euklides", "judge")  # the others run a program of ours, not the model
-HANDLERS = {"worker": on_worker, "gate": on_gate, "review": on_review, "integrate": on_integrate, "judge": on_judge,
+MODEL_KINDS = ("worker", "review", "euklides")  # the others run a program of ours, not the model
+HANDLERS = {"worker": on_worker, "gate": on_gate, "review": on_review, "integrate": on_integrate,
             "euklides": on_euklides}
 
 
@@ -719,7 +672,7 @@ def on_intervene(c: Ctx, job: str, r: dict) -> None:
             or any(k in j for k in HANDLING)):
         return run.event(c.st, f"{job}: ignored the intervene tick: the worker it looked at is gone or being handled")
     allowed = _intervene_actions(j)
-    action, note = _judge_answer(r)
+    action, note = _tick_answer(r)
     if not isinstance(action, str) or action not in allowed:
         action = next(a for a in ("wait", "stop_escalate", "stop_block") if a in allowed)
         note = f"the intervene tick gave no usable answer; the runner chose {action}: {j.get('anomaly')}"
@@ -942,26 +895,6 @@ def start_euklides(c: Ctx, job: str) -> None:
     j["status"] = "euklides"
 
 
-def start_judge(c: Ctx, job: str) -> None:
-    j = c.st["jobs"][job]
-    if j.get("question"):
-        allowed = ["ask", "answer"] if j.get("tick_answers", 0) < TICK_ANSWERS else ["ask"]
-        if allowed == ["ask"]:  # nothing to decide: no tick is paid
-            return _ask_marco(c, job)
-        prompt = brief.question_prompt(c.st, job, j["question"], c.mjobs[job], c.plan, c.read_report(job), allowed)
-        cmd = claude.agent_cmd("tick", claude.TICK_MODEL["judge"], prompt, session=str(uuid.uuid4()), usd=1)
-        proc.start(c.dir, f"{job}.judge", cmd, cwd=ticks_dir(), env=claude.runner_env("tick", repo_name=c.st["repo"]), minutes=15)
-        j["status"] = "judging"
-        return
-    allowed = allowed_actions(j)
-    if allowed == ["block"]:
-        return block(c, job, f"{j['failure']} (no retry or escalation left)")
-    prompt = brief.judge_prompt(c.st, job, j, c.mjobs[job], allowed, c.read_report(job))
-    cmd = claude.agent_cmd("tick", claude.TICK_MODEL["judge"], prompt, session=str(uuid.uuid4()), usd=1)
-    proc.start(c.dir, f"{job}.judge", cmd, cwd=ticks_dir(), env=claude.runner_env("tick", repo_name=c.st["repo"]), minutes=15)
-    j["status"] = "judging"
-
-
 # ---- closing ----------------------------------------------------------------------------------
 
 STEP_ERRORS = (gitops.GitError, forge_mod.ForgeError)  # offline, a refused push: healed by trying again
@@ -1180,7 +1113,7 @@ def _next_step(c: Ctx, job: str, j: dict, slots: Slots):
             return lambda: start_integrate(c, job)
     else:
         step_ = {"needs_push": push_job, "needs_pr": ensure_pr, "needs_review": start_review, "needs_merge": do_merge,
-                 "needs_judge": start_judge, "needs_euklides": start_euklides}.get(s)
+                 "needs_euklides": start_euklides}.get(s)
         if step_:
             return lambda: step_(c, job)
     return None
@@ -1206,7 +1139,7 @@ def start_intervene(c: Ctx, job: str, why: str) -> None:
     log = c.dir / f"{job}.worker.log"
     prompt = brief.intervene_prompt(c.st, job, c.mjobs[job]["pr_title"], why, usage.scan(log)["last"], log,
                                     _intervene_actions(j))
-    cmd = claude.agent_cmd("tick", claude.TICK_MODEL["judge"], prompt, session=str(uuid.uuid4()), usd=1)
+    cmd = claude.agent_cmd("tick", claude.TICK_MODEL["intervene"], prompt, session=str(uuid.uuid4()), usd=1)
     proc.start(c.dir, f"{job}.intervene", cmd, cwd=ticks_dir(), env=claude.runner_env("tick", repo_name=c.st["repo"]), minutes=15,
                meta={"attempt": j["attempts"]})
     j.update(intervening=True, anomaly=why)
