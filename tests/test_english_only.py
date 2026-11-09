@@ -46,6 +46,10 @@ ALLOWLIST = [
     # the report test checks the Spanish headings are gone and `más` still reads
     ("tests/test_report_render.py", "Resumen"),
     ("tests/test_report_render.py", "más"),
+    # run decision logs quote the Spanish words the allowlist above covers
+    ("docs/decisions/english-only-texts.md", '"sí"'),
+    ("docs/decisions/english-only-texts.md", "diseño"),
+    ("docs/decisions/wait-final-pr-2.md", "`más`"),
     # this file lists the Spanish markers it looks for
     ("tests/test_english_only.py", ""),
 ]
