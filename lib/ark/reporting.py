@@ -57,26 +57,26 @@ def _one(st: dict) -> dict:
 
 def cmd_report(args) -> int:
     if "ARK_ROLE" in os.environ:
-        print("ark report: no corre dentro de un proceso del runner (ARK_ROLE): escribe el historial.", file=sys.stderr)
+        print("ark report: does not run inside a runner process (ARK_ROLE): it writes the history.", file=sys.stderr)
         return 2
     if args.all:
         done = [st for st in _states() if closed(st)]
         for st in done:
             print(_one(st)["path"])
-        print(f"{len(done)} corridas cerradas con reporte; insights en {history.history_dir() / 'insights.md'}")
+        print(f"{len(done)} closed runs with a report; insights in {history.history_dir() / 'insights.md'}")
         return 0
     if not args.target:
-        print("ark report: falta <repo>/<slug> (o --all)", file=sys.stderr)
+        print("ark report: missing <repo>/<slug> (or --all)", file=sys.stderr)
         return 1
     repo, _, slug = args.target.rstrip("/").rpartition("/")
     st = run.load(repo, slug) if repo and slug else None
     if st is None:
-        print(f"ark report: no hay corrida de {args.target}", file=sys.stderr)
+        print(f"ark report: no run for {args.target}", file=sys.stderr)
         return 1
     out = _one(st)
     s = out["summary"]
-    note = "" if closed(st) else " · sin historial: la corrida no cerró"
-    print(f"{out['path']}\n{s['merged']} mergeados · {s['blocked']} bloqueados · {report.minutes(s['wall_minutes'])} · "
+    note = "" if closed(st) else " · no history: the run did not close"
+    print(f"{out['path']}\n{s['merged']} merged · {s['blocked']} blocked · {report.minutes(s['wall_minutes'])} · "
           f"{report.usd(s['usd'])}{note}")
     if args.open:
         open_file(out["path"])
@@ -85,18 +85,18 @@ def cmd_report(args) -> int:
 
 def cmd_stats(args) -> int:
     if "ARK_ROLE" in os.environ:
-        print("ark stats: no corre dentro de un proceso del runner (ARK_ROLE).", file=sys.stderr)
+        print("ark stats: does not run inside a runner process (ARK_ROLE).", file=sys.stderr)
         return 2
     path = stats.write()
-    print(f"{path} · {len(path.read_text().splitlines())} líneas")
+    print(f"{path} · {len(path.read_text().splitlines())} lines")
     return 0
 
 
 def register(sub) -> None:
-    s = sub.add_parser("report", help="el reporte de una corrida (y su historial si cerró)")
+    s = sub.add_parser("report", help="a run's report (and its history if it closed)")
     s.add_argument("target", nargs="?", help="<repo>/<slug>")
-    s.add_argument("--all", action="store_true", help="todas las corridas cerradas")
-    s.add_argument("--open", action="store_true", help="abrir report.html")
+    s.add_argument("--all", action="store_true", help="every closed run")
+    s.add_argument("--open", action="store_true", help="open report.html")
     s.set_defaults(fn=cmd_report)
-    s = sub.add_parser("stats", help="reescribir history/insights.md")
+    s = sub.add_parser("stats", help="rewrite history/insights.md")
     s.set_defaults(fn=cmd_stats)

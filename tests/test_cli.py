@@ -23,8 +23,8 @@ def test_approve_closes_the_plan_and_writes_the_approval(make_feature, capsys):
     p = make_feature()
     code, out, _ = run(capsys, "approve", "demo/notes-edit")
     assert code == 0
-    assert "Aprobado demo/notes-edit" in out
-    assert "shell" in out and "PR final" in out
+    assert "Approved demo/notes-edit" in out
+    assert "shell" in out and "Final PR" in out
     assert load_plan(p).frontmatter["status"] == "closed"
     rec = json.loads(paths.approval_file("demo", "notes-edit").read_text())
     assert rec["sha256"] == sha256_file(p)
@@ -77,7 +77,7 @@ def test_status_groups_features_by_repo(make_feature, capsys):
 
 
 def test_status_on_an_empty_desk(ark_home, capsys):
-    assert "Desk vacío" in run(capsys, "status")[1]
+    assert "Desk empty" in run(capsys, "status")[1]
 
 
 def test_validate_accepts_a_path(make_feature, capsys):
@@ -105,6 +105,20 @@ def test_approve_refuses_a_plan_edited_during_confirmation(make_feature, capsys,
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("builtins.input", edit_then_yes)
     code, _, err = run(capsys, "approve", "demo/notes-edit")
-    assert code == 1 and "cambió" in err
+    assert code == 1 and "changed" in err
     assert load_plan(p).frontmatter["status"] == "draft"
     assert not paths.approval_file("demo", "notes-edit").exists()
+
+
+@pytest.mark.parametrize("answer,ok", [("y", True), ("yes", True), ("s", True), ("si", True), ("sí", True),
+                                       ("", False), ("n", False)])
+def test_approve_prompt_is_in_english_and_takes_these_answers(make_feature, capsys, monkeypatch, answer, ok):
+    p = make_feature()
+    prompts = []
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt: prompts.append(prompt) or answer)
+    code, out, _ = run(capsys, "approve", "demo/notes-edit")
+    assert prompts == ["Approve this plan? [y/N] "]
+    assert (code == 0) is ok
+    assert ("Not approved." in out) is (not ok)
+    assert (load_plan(p).frontmatter["status"] == "closed") is ok

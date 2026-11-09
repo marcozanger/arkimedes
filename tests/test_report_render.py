@@ -7,7 +7,7 @@ Plan: /x/plan.md · approved 2026-11-07 · closed 2026-11-07
 ## shell — merged
 
 - **D1** · Kept the store in **sqlite** <img src=x onerror=alert(1)>. · _worker (T1)_
-  <details><summary>más</summary>
+  <details><summary>more</summary>
 
   Why: see https://example.test/pr/1 and <script>alert(2)</script>
   </details>
@@ -21,14 +21,23 @@ def render(st, decisions=DECISIONS):
     return report.render_html(summary.summarize(st, rows, mjobs()), rows, decisions)
 
 
-def test_the_report_has_every_section_in_spanish(ark_home):
+def test_the_report_has_every_section_in_english(ark_home):
     receipt("shell.worker", 0, 10, usd=1.25, log=result_line(usd=1.25))
     html = render(run_state())
-    for heading in ("Resumen", "Decisiones", "Por PR", "Línea de tiempo", "Agentes", "Por rol", "Por modelo"):
+    for heading in ("Summary", "Decisions", "By PR", "Timeline", "Agents", "By role", "By model"):
         assert f">{heading}<" in html
-    assert "$1.25" in html and "USD equivalente API" in html
+    for es in ("Resumen", "Decisiones", "Por PR", "Línea de tiempo", "Agentes", "Por rol", "Por modelo"):
+        assert f">{es}<" not in html
+    assert "$1.25" in html and "API-equivalent USD" in html
     assert "notes-edit" in html and "https://example.test/pr/9" in html
     assert html.count("<details>") == html.count("</details>") == 1
+
+
+def test_both_details_markers_render_as_more(ark_home):
+    for marker in ("more", "más"):
+        html = render(run_state(), decisions=DECISIONS.replace("<summary>more</summary>", f"<summary>{marker}</summary>"))
+        assert html.count("<details><summary>more</summary>") == 1
+        assert html.count("<details>") == html.count("</details>") == 1
 
 
 def test_untrusted_text_is_escaped(ark_home):
@@ -42,11 +51,11 @@ def test_untrusted_text_is_escaped(ark_home):
 
 def test_estimated_cells_say_so(ark_home):
     receipt("shell.worker", 0, 10, usd=None, log="")
-    assert "estimado" in render(run_state())
+    assert "estimated" in render(run_state())
 
 
 def test_no_decisions_file_is_said(ark_home):
-    assert "Sin archivo de decisiones" in render(run_state(), decisions=None)
+    assert "No decisions file" in render(run_state(), decisions=None)
 
 
 def test_write_puts_it_in_the_run_folder(ark_home):
@@ -85,5 +94,5 @@ def test_total_time_is_shown_against_the_estimate(ark_home):
     st = run_state()
     s = summary.summarize(st, steps.build(st), mjobs())
     html = report.render_html(s, [], None)
-    assert "Estimado (punta a punta)" in html and "30 min" in html
+    assert "Estimated (end to end)" in html and "30 min" in html
     assert "1 h 00 min wall (estimated 30 min)" in report.summary_md(s, "/x/report.html")

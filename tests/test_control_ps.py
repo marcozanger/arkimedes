@@ -73,7 +73,7 @@ def test_ps_header_uses_desk_times(monkeypatch):
 
 
 def test_ps_with_nothing_running(ark_home, capsys):
-    assert ark(capsys, "ps") == (0, "nada corriendo\n")
+    assert ark(capsys, "ps") == (0, "nothing running\n")
 
 
 def test_logs_render_the_live_log_then_the_archived_one(feature, monkeypatch, tmp_path, capsys):
@@ -94,7 +94,7 @@ def test_stop_ends_a_job_blocked(feature, monkeypatch, tmp_path, capsys):
     go = hold(feature, monkeypatch, tmp_path)
     capsys.readouterr()
     code, out = ark(capsys, "stop", "shell")
-    assert code == 0 and "detenido" in out
+    assert code == 0 and "stopped" in out
     drive(settled)
     st = run.load("demo", SLUG)
     assert st["jobs"]["shell"]["status"] == "blocked" and st["jobs"]["shell"]["reason"] == proc.STOPPED_BY_MARCO

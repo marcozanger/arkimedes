@@ -1235,7 +1235,7 @@ def main(argv=None) -> int:
         repo, _, slug = argv[1].rpartition("/")
         d = paths.run_dir(repo, slug)
         stopped = [n for n in active(d) if n.startswith(argv[2] + ".") and stop(d, n, "stopped by Marco")]
-        print("detenido: " + ", ".join(stopped) if stopped else f"nada corriendo para {argv[2]}")
+        print("stopped: " + ", ".join(stopped) if stopped else f"nothing running for {argv[2]}")
         return 0 if stopped else 1
     print("uso: ark-dispatch stop <repo>/<slug> <job>", file=sys.stderr)
     return 2
@@ -1339,7 +1339,7 @@ def test_decisions_prompt_and_fallback(tmp_path):
     st["jobs"]["ui"].update(status="blocked", reason="integration gate failed twice")
     reports = {"shell": "## DECISIONS\n\n- Kept notes in one file. Why: simpler.\n\n## Open issues\n\nnone"}
     p = brief.decisions_prompt(st, reports)
-    assert "Kept notes in one file" in p and "<details><summary>más</summary>" in p and "```" not in p
+    assert "Kept notes in one file" in p and "<details><summary>more</summary>" in p and "```" not in p
     f = brief.fallback_decisions(st, reports)
     assert f.startswith("# Decisions — notes-edit")
     assert "Kept notes in one file" in f and "integration gate failed twice" in f and "Open issues" not in f
@@ -1385,7 +1385,7 @@ Jobs: <n> merged, <n> blocked · Decisions: <n> worker, <n> reviewer, <n> arkime
 ## <job id> — <merged | blocked>
 
 - **D1** · <the decision in 1-2 sentences> · _<author: worker (<model>) | reviewer | arkimedes>_
-  <details><summary>más</summary>
+  <details><summary>more</summary>
 
   Why: <the reason>
   Rejected: <the alternatives>
@@ -3416,7 +3416,7 @@ def test_ark_loop_runs_once_at_a_time(ark_home):
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         r = subprocess.run([str(CODE / "bin/ark-loop"), "--once"], capture_output=True, text=True,
                            env=env_for(ark_home))
-    assert r.returncode == 1 and "ya está corriendo" in r.stderr
+    assert r.returncode == 1 and "already running" in r.stderr
 
 
 def test_ark_dispatch_only_stops(ark_home):
@@ -3481,8 +3481,8 @@ def signature() -> str:
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if os.environ.get("ANTHROPIC_API_KEY"):
-        print("ark-loop no corre con ANTHROPIC_API_KEY: los workers facturarían por token en vez de usar "
-              "tu suscripción. Hacé `unset ANTHROPIC_API_KEY` y volvé a correrlo.", file=sys.stderr)
+        print("ark-loop does not run with ANTHROPIC_API_KEY: the workers would bill per token instead of using "
+              "your subscription. Run `unset ANTHROPIC_API_KEY` and start it again.", file=sys.stderr)
         return 2
     if os.environ.get("ARK_ROLE"):
         print("ark-loop no corre dentro de un proceso del runner.", file=sys.stderr)
@@ -3492,7 +3492,7 @@ def main(argv=None) -> int:
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        print("ark-loop ya está corriendo.", file=sys.stderr)
+        print("ark-loop is already running.", file=sys.stderr)
         return 1
     once = "--once" in argv
     ws = paths.load_workspace()

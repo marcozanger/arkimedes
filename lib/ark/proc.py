@@ -50,7 +50,7 @@ OURS, GONE, REUSED, UNKNOWN = "ours", "gone", "reused", "unknown"
 
 # ps must answer the same whatever the caller's locale, timezone or PATH. Dates stay in English
 # (LC_TIME=C) but the command comes out as UTF-8: with LC_ALL=C, ps prints non-ASCII bytes as `M-CM-1`
-# and a run path like `diseño` would never match what .proc recorded.
+# and a run path like `café` would never match what .proc recorded.
 PS_ENV = {"LC_CTYPE": "en_US.UTF-8", "LC_TIME": "C", "TZ": "UTC", "PATH": "/bin:/usr/bin"}
 LSOF_ENV = {"LC_CTYPE": "en_US.UTF-8", "PATH": "/usr/sbin:/usr/bin:/sbin:/bin"}
 
@@ -543,8 +543,8 @@ def _stop_cli(d: Path, job: str) -> int:
         ok = stop(d, n, STOPPED_BY_MARCO)
         if unreadable and stop_requested(d, n):           # who it is cannot be known: it may still be running
             _receipt(d, n, -15, STOPPED_BY_MARCO, survivors=True)
-            notes.append(f"ojo: {n}: su .proc no se puede leer, así que no se mandó ninguna señal y su proceso "
-                         "puede seguir vivo; revisalo a mano. El job queda bloqueado.")
+            notes.append(f"warning: {n}: its .proc cannot be read, so no signal was sent and its process "
+                         "may still be alive; check it by hand. The job ends blocked.")
             continue
         left = (_read(d / f"{n}.receipt.json") or {}).get("survivors")
         had_receipt = (d / f"{n}.receipt.json").exists()  # before `.proc`: consume removes `.proc` first
@@ -553,24 +553,24 @@ def _stop_cli(d: Path, job: str) -> int:
         if ok:
             stopped.append(n)
             if left:
-                notes.append(f"ojo: {n}: se mandó SIGTERM y SIGKILL, pero quedan procesos del grupo vivos; "
-                             "revisalos a mano.")
+                notes.append(f"warning: {n}: SIGTERM and SIGKILL were sent, but processes of the group are still alive; "
+                             "check them by hand.")
         elif gone and not marked:                         # it crossed consume, which may or may not have seen the mark
-            notes.append(f"{n}: terminó justo mientras lo detenías y no se puede saber si el pedido llegó a tiempo: "
-                         "el job puede quedar bloqueado o seguir su curso. Revisá su estado con `ark status`.")
+            notes.append(f"{n}: it ended just while you were stopping it and there is no way to know if the request arrived in time: "
+                         "the job may end blocked or carry on. Check its state with `ark status`.")
         elif left:
-            notes.append(f"ojo: {n}: el proceso principal ya no estaba, pero quedan procesos de su grupo "
-                         "que no se pudieron verificar; no se mandó ninguna señal. El job queda bloqueado.")
+            notes.append(f"warning: {n}: the main process was already gone, but processes of its group remain "
+                         "that could not be verified; no signal was sent. The job ends blocked.")
         elif not had_receipt and not gone:
-            notes.append(f"{n}: no se pudo verificar qué proceso es (ps no respondió); no se mandó ninguna señal. "
-                         "El pedido quedó anotado: cuando termine, el job queda bloqueado. "
-                         "Reintentá en unos segundos para detenerlo ya.")
+            notes.append(f"{n}: could not verify which process it is (ps did not answer); no signal was sent. "
+                         "The request is noted: when it ends, the job ends blocked. "
+                         "Retry in a few seconds to stop it now.")
         elif marked:                                      # it had already ended: the job still ends here
             stopped.append(n)
     if stopped:
-        print("detenido: " + ", ".join(stopped))
+        print("stopped: " + ", ".join(stopped))
     elif not notes:
-        print(f"nada corriendo para {job}")
+        print(f"nothing running for {job}")
     for note in notes:
         print(note)
     return 0 if stopped else 1

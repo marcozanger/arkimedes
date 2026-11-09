@@ -207,8 +207,8 @@ def test_dispatch_stop_with_survivors_after_signalling_says_so(ark_home, capsys,
     monkeypatch.setattr(proc, "_group_ended", lambda pgid, seconds: False)
     code, out = stop_cli(ark_home, capsys)
     assert code == 0
-    assert "detenido: j.worker" in out and "quedan" in out
-    assert "ninguna señal" not in out and "nada corriendo" not in out
+    assert "stopped: j.worker" in out and "still alive" in out
+    assert "no signal" not in out and "nothing running" not in out
 
 
 def test_dispatch_stop_with_survivors_of_a_dead_wrapper_does_not_say_nothing_runs(ark_home, capsys, monkeypatch):
@@ -227,7 +227,7 @@ def test_dispatch_stop_with_survivors_of_a_dead_wrapper_does_not_say_nothing_run
     (d / "j.worker.proc").write_text(json.dumps({**info, "pid": leader.pid}))
     code, out = stop_cli(ark_home, capsys)
     assert code == 1
-    assert "quedan" in out and "nada corriendo" not in out and "no se mandó ninguna señal" in out
+    assert "remain" in out and "nothing running" not in out and "no signal was sent" in out
     assert running(member)
 
 
@@ -238,7 +238,7 @@ def test_dispatch_stop_with_an_undecided_identity_does_not_say_nothing_runs(ark_
     monkeypatch.setattr(proc, "_describe", lambda pid: proc.UNKNOWN)
     code, out = stop_cli(ark_home, capsys)
     assert code == 1
-    assert "nada corriendo" not in out and "no se pudo verificar" in out and "j.worker" in out
+    assert "nothing running" not in out and "could not verify" in out and "j.worker" in out
     assert running(info["pid"])
 
 
@@ -744,7 +744,7 @@ def test_a_stop_after_the_process_ended_still_counts_until_its_receipt_is_consum
     proc.start(d, "j.worker", ["true"], cwd=d, env=dict(os.environ), minutes=5)
     wait_receipt(d, "j.worker")
     code, out = stop_cli(ark_home, capsys)
-    assert code == 0 and "detenido: j.worker" in out
+    assert code == 0 and "stopped: j.worker" in out
     assert proc.consume(d, "j.worker")["reason"] == STOPPED
 
 
@@ -752,7 +752,7 @@ def test_a_stop_of_a_dead_wrapper_counts_and_says_so(ark_home, capsys):
     d = paths.run_dir("demo", "x")
     dead_wrapper_proc(d, "j.worker")
     code, out = stop_cli(ark_home, capsys)
-    assert code == 0 and "detenido: j.worker" in out
+    assert code == 0 and "stopped: j.worker" in out
     assert proc.consume(d, "j.worker")["reason"] == STOPPED
 
 
@@ -763,7 +763,7 @@ def test_a_stop_ps_could_not_verify_still_counts_when_the_process_ends(ark_home,
     with monkeypatch.context() as m:
         m.setattr(proc, "_describe", lambda pid: proc.UNKNOWN)
         code, out = stop_cli(ark_home, capsys)
-    assert code == 1 and "no se mandó ninguna señal" in out and "bloqueado" in out
+    assert code == 1 and "no signal was sent" in out and "blocked" in out
     os.killpg(info["pid"], signal.SIGKILL)
     _mine[-1].wait(10)
     assert proc.reap(d) == ["j.worker"]
@@ -775,7 +775,7 @@ def test_a_stop_with_an_unreadable_proc_counts_and_warns_it_may_still_run(ark_ho
     d.mkdir(parents=True)
     (d / "j.worker.proc").write_text("{not json")
     code, out = stop_cli(ark_home, capsys)
-    assert code == 1 and "ninguna señal" in out and "bloqueado" in out
+    assert code == 1 and "no signal" in out and "blocked" in out
     r = proc.consume(d, "j.worker")
     assert r["reason"] == STOPPED and r["survivors"] is True
 
@@ -858,7 +858,7 @@ def test_a_fifo_as_the_stop_mark_is_no_mark(tmp_path, must_not_hang):
 # stop writes its mark, then looks for `.proc`. consume removes `.proc`, then looks for the mark. So at least
 # one sees the other: a stop that saw `.proc` always counts, and one that did not cannot know.
 
-UNKNOWABLE = "no se puede saber"
+UNKNOWABLE = "no way to know"
 
 
 def ended_with_a_natural_receipt(d):
@@ -895,7 +895,7 @@ def run_around_the_mark(monkeypatch, action, before_write=False):
 
 
 def test_a_stop_landing_just_before_consume_removes_the_proc_really_stops_the_job(ark_home, capsys, monkeypatch):
-    """The 'detenido' that was false: said after consume's only check, and the job followed the natural receipt."""
+    """The 'stopped' that was false: said after consume's only check, and the job followed the natural receipt."""
     d = paths.run_dir("demo", "x")
     ended_with_a_natural_receipt(d)
     said = {}
@@ -905,7 +905,7 @@ def test_a_stop_landing_just_before_consume_removes_the_proc_really_stops_the_jo
     run_before_proc_goes(monkeypatch, stop_now)
 
     r = proc.consume(d, "j.worker")
-    assert said["code"] == 0 and "detenido: j.worker" in said["out"]
+    assert said["code"] == 0 and "stopped: j.worker" in said["out"]
     assert (r["reason"], r["exit"], r["cause"]) == (STOPPED, -15, "")
     assert "STATUS: DONE" in r["result"]
     archived = [json.loads(f.read_text()) for f in (d / "done").glob("j.worker-*.json")]
@@ -914,7 +914,7 @@ def test_a_stop_landing_just_before_consume_removes_the_proc_really_stops_the_jo
 
 
 def test_a_stop_that_saw_the_proc_gone_while_consume_missed_its_mark_says_it_cannot_tell(ark_home, capsys, monkeypatch):
-    """The job follows its natural receipt here. The CLI may neither say 'detenido' nor blame ps."""
+    """The job follows its natural receipt here. The CLI may neither say 'stopped' nor blame ps."""
     d = paths.run_dir("demo", "x")
     ended_with_a_natural_receipt(d)
     consumed = {}
@@ -926,7 +926,7 @@ def test_a_stop_that_saw_the_proc_gone_while_consume_missed_its_mark_says_it_can
     code, out = stop_cli(ark_home, capsys)
     assert consumed["r"]["reason"] == ""
     assert code == 1 and UNKNOWABLE in out
-    assert "detenido" not in out and "ps no respondió" not in out and "nada corriendo" not in out
+    assert "stopped" not in out and "ps did not answer" not in out and "nothing running" not in out
     assert not (d / "j.worker.stop").exists()                               # it must not speak for a later process
 
 
@@ -943,20 +943,20 @@ def test_a_stop_that_saw_the_proc_gone_while_consume_took_its_mark_blocks_and_sa
 
     code, out = stop_cli(ark_home, capsys)
     assert consumed["r"]["reason"] == STOPPED
-    assert code == 1 and UNKNOWABLE in out and "detenido" not in out
+    assert code == 1 and UNKNOWABLE in out and "stopped" not in out
 
 
 def test_a_stop_between_the_two_unlinks_of_consume_cannot_tell(ark_home, capsys, monkeypatch):
-    """`.proc` is gone, the receipt not yet: 'nada corriendo' would be a guess, consume may yet see the mark."""
+    """`.proc` is gone, the receipt not yet: 'nothing running' would be a guess, consume may yet see the mark."""
     d = paths.run_dir("demo", "x")
     ended_with_a_natural_receipt(d)
     (d / "j.worker.proc").unlink()
     monkeypatch.setattr(proc, "active", lambda _: ["j.worker"])
     code, out = stop_cli(ark_home, capsys)
-    assert code == 1 and UNKNOWABLE in out and "nada corriendo" not in out
+    assert code == 1 and UNKNOWABLE in out and "nothing running" not in out
 
 
-def test_a_stop_in_time_says_detenido_even_if_consume_ends_before_the_cli_looks(ark_home, capsys, monkeypatch):
+def test_a_stop_in_time_says_stopped_even_if_consume_ends_before_the_cli_looks(ark_home, capsys, monkeypatch):
     """The mark was seen with `.proc` in place, so it counts, whatever is gone by the time the CLI words it."""
     d = paths.run_dir("demo", "x")
     ended_with_a_natural_receipt(d)
@@ -970,7 +970,7 @@ def test_a_stop_in_time_says_detenido_even_if_consume_ends_before_the_cli_looks(
     monkeypatch.setattr(proc, "stop", stop_then_consume)
     code, out = stop_cli(ark_home, capsys)
     assert consumed["r"]["reason"] == STOPPED
-    assert code == 0 and "detenido: j.worker" in out and "ps no respondió" not in out
+    assert code == 0 and "stopped: j.worker" in out and "ps did not answer" not in out
 
 
 def test_consume_second_look_ignores_the_mark_of_an_older_process(tmp_path, monkeypatch):
