@@ -12,6 +12,7 @@ import pytest
 from helpers import approve, job, manifest, plan_text
 
 from ark import claude, forge, gitops, integrate, loop, merge, paths, proc, run
+from ark import euklides as euklides_mod, questions
 from ark.plan import sha256_file
 
 SLUG = "notes-edit"
@@ -3194,3 +3195,119 @@ def test_start_euklides_without_a_worktree_runs_in_the_ticks_folder(tmp_path, mo
     monkeypatch.setattr(loop.brief, "task_texts", lambda plan: {}, raising=False)
     loop.start_euklides(c, "shell")
     assert started["cwd"] == loop.ticks_dir()
+
+
+# -- Euklides: what its answer does
+
+def at_euklides(tmp_path, trigger="failure", allowed=("retry", "escalate", "ask"), kind=None, situation="red", **over):
+    return bare(tmp_path, status="euklides", failure=situation if trigger == "failure" else None,
+                question=situation if trigger == "question" else None,
+                euklides={"trigger": trigger, "situation": situation, "kind": kind, "allowed": list(allowed)}, **over)
+
+
+def euk_answer(**d):
+    return receipt(json.dumps(d), usd=0.4)
+
+
+def test_a_retry_resumes_the_session_with_the_note_and_is_journaled(tmp_path, ark_home):
+    c = at_euklides(tmp_path, session="s1")
+    loop.on_euklides(c, "shell", euk_answer(action="retry", note="fix the import"))
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "needs_worker" and "fix the import" in j["resume_msg"] and "euklides" not in j
+    assert j["euklides_count"] == 1
+    [row] = euklides_mod.decisions()
+    assert row["action"] == "retry" and row["valid"] is True and row["usd"] == 0.4 and row["trigger"] == "failure"
+
+
+def test_an_escalation_starts_fresh_one_tier_up(tmp_path, ark_home):
+    c = at_euklides(tmp_path, session="s1")
+    loop.on_euklides(c, "shell", euk_answer(action="escalate", note="harder than it looks"))
+    j = c.st["jobs"]["shell"]
+    assert j["tier"] == "T2" and j["session"] is None and j["resume_msg"] is None
+    assert "harder than it looks" in j["note"] and j["status"] == "needs_worker"
+
+
+def test_an_answer_goes_back_to_the_worker(tmp_path, ark_home):
+    c = at_euklides(tmp_path, trigger="question", allowed=("answer", "ask"), situation="which store?", session="s1")
+    loop.on_euklides(c, "shell", euk_answer(action="answer", note="SQLite", undo="job", why="local"))
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "needs_worker" and "which store?" in j["resume_msg"] and "SQLite" in j["resume_msg"]
+    assert "question" not in j and not c.st.get("questions")
+
+
+def test_an_answer_that_reaches_the_plan_asks_marco_with_it_as_proposal(tmp_path, ark_home):
+    c = at_euklides(tmp_path, trigger="question", allowed=("answer", "ask"), situation="rename the column?")
+    loop.on_euklides(c, "shell", euk_answer(action="answer", note="yes, to user_id", undo="plan", why="ui reads it"))
+    j = c.st["jobs"]["shell"]
+    [q] = c.st["questions"]
+    assert j["status"] == "waiting_answer" and "Proposal: yes, to user_id" in q["text"]
+    assert j.get("euklides_count", 0) == 0
+    [row] = euklides_mod.decisions()
+    assert row["action"] == "ask" and row["undo"] == "plan"
+
+
+@pytest.mark.parametrize("r", [receipt("no json"), receipt('{"action": "block", "note": "x"}'),
+                               receipt('{"action": "retry", "note": "x"}', reason="timeout"),
+                               receipt('{"action": "retry", "note": "x"}', exit=1)])
+def test_an_unusable_answer_asks_marco_and_is_journaled_invalid(tmp_path, ark_home, r):
+    c = at_euklides(tmp_path)
+    loop.on_euklides(c, "shell", r)
+    assert c.st["jobs"]["shell"]["status"] == "waiting_answer" and "red" in c.st["questions"][0]["text"]
+    assert euklides_mod.decisions()[0]["valid"] is False
+
+
+def test_unblock_after_the_integration_gate_failed_twice_resets_the_count(tmp_path, ark_home):
+    c = at_euklides(tmp_path, trigger="blocked", allowed=("unblock", "ask"), kind="integrate",
+                    situation="integration gate failed twice: red", integrate_fails=2, session="s1")
+    loop.on_euklides(c, "shell", euk_answer(action="unblock", note="merge the base first"))
+    j = c.st["jobs"]["shell"]
+    assert j["integrate_fails"] == 0 and j["status"] == "needs_worker"
+    assert "git merge origin/ark/" in j["resume_msg"] and "merge the base first" in j["resume_msg"]
+
+
+def test_unblock_after_two_reviews_without_verdict_reviews_again(tmp_path, ark_home):
+    c = at_euklides(tmp_path, trigger="blocked", allowed=("unblock", "ask"), kind="review",
+                    situation="the reviewer gave no verdict twice", review_errors=2)
+    loop.on_euklides(c, "shell", euk_answer(action="unblock", note="review again"))
+    j = c.st["jobs"]["shell"]
+    assert j["review_errors"] == 0 and j["status"] == "needs_review"
+
+
+def asked(tmp_path, proposal=":stop — widen the area to src/db/**"):
+    c = at_euklides(tmp_path, trigger="blocked", allowed=("unblock", "ask"), kind="area",
+                    situation="changed files outside its area: src/db/x.py", session="s1")
+    loop.on_euklides(c, "shell", euk_answer(action="ask", note="widen the area?", proposal=proposal))
+    return c
+
+
+def test_ok_to_a_stop_proposal_blocks_with_it_and_journals_marco(tmp_path, ark_home):
+    c = asked(tmp_path)
+    loop._apply_answer(c.st, {"id": "q1", "text": "ok"})
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "blocked" and "widen the area to src/db/**" in j["reason"]
+    assert euklides_mod.decisions()[0]["marco"] == "ok"
+
+
+def test_ok_to_a_proposal_makes_it_the_answer(tmp_path, ark_home):
+    c = asked(tmp_path, proposal="revert src/db/x.py and keep the change inside src/shell")
+    loop._apply_answer(c.st, {"id": "q1", "text": "ok"})
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "needs_worker" and "revert src/db/x.py" in j["resume_msg"]
+
+
+def test_any_other_answer_is_the_answer(tmp_path, ark_home):
+    c = asked(tmp_path)
+    loop._apply_answer(c.st, {"id": "q1", "text": "move it to src/shell/db.py"})
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "needs_worker" and "move it to src/shell/db.py" in j["resume_msg"]
+    assert euklides_mod.decisions()[0]["marco"] == "move it to src/shell/db.py"
+
+
+def test_a_journal_that_cannot_be_written_does_not_stop_the_decision(tmp_path, ark_home, monkeypatch):
+    def broken(*a, **k):
+        raise OSError("disk full")
+    monkeypatch.setattr(euklides_mod, "record", broken)
+    c = at_euklides(tmp_path, session="s1")
+    loop.on_euklides(c, "shell", euk_answer(action="retry", note="again"))
+    assert c.st["jobs"]["shell"]["status"] == "needs_worker"
+    assert any("journal" in e for e in c.st["events"])

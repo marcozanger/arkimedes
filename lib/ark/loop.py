@@ -528,8 +528,54 @@ def on_judge(c: Ctx, job: str, r: dict) -> None:
     j.update(note=note, status="needs_worker")
 
 
+NO_ANSWER = {"action": "ask", "note": "Euklides gave no usable answer", "undo": None, "why": "", "proposal": None}
+
+
+def _go_on(st: dict, job: str, e: dict, text: str) -> None:
+    """Back to work after a decision (Euklides' or Marco's): what blocked the job starts over, and the
+    worker is told what to do. A review that never gave a verdict is simply run again."""
+    j = st["jobs"][job]
+    if e.get("kind") == "review":
+        j.update(review_errors=0, status="needs_review")
+        return
+    if e.get("kind") == "integrate":
+        j["integrate_fails"] = 0
+    if e["trigger"] == "question":
+        kind, msg = "answer", f"Question: {e['situation']}\n\nAnswer: {text}"
+    else:
+        kind, msg = ("integrate" if e.get("kind") == "integrate" else "euklides"), f"{e['situation']}\n\nNote: {text}"
+    if j["session"]:
+        j["resume_msg"] = brief.resume_message(kind, msg, st["slug"])
+    j.pop("question", None)
+    j.update(note=msg, status="needs_worker")
+
+
+def _euklides_ask(st: dict, job: str, e: dict, d: dict, decision: str | None) -> None:
+    j = st["jobs"][job]
+    proposal = d["proposal"] or "(none: write what the job should do, or :stop)"
+    questions.ask(st, "worker", f"{e['situation']}\n\nEuklides: {d['note']}\n\nProposal: {proposal}", job=job)
+    j["euklides_ask"] = {"proposal": d["proposal"], "decision": decision, "ctx": e}
+    j["status"] = "waiting_answer"
+
+
 def on_euklides(c: Ctx, job: str, r: dict) -> None:
-    raise NotImplementedError  # T7
+    j = c.st["jobs"][job]
+    e = j.pop("euklides")
+    d = euklides.parse(_answer(r) if _clean_exit(r) else None, e.get("allowed") or ["ask"])
+    valid = d is not None
+    d = d or NO_ANSWER
+    try:
+        decision = euklides.record(c.st, job, e, d, valid=valid, usd=_usd(r.get("usd")))
+    except OSError as err:  # the journal is for learning, not for control
+        decision = None
+        run.event(c.st, f"{job}: the Euklides journal could not be written: {err}")
+    run.event(c.st, f"{job} euklides: {d['action']} — {_clean(d['note'])[:300]}")
+    if d["action"] == "ask":
+        return _euklides_ask(c.st, job, e, d, decision)
+    j["euklides_count"] = j.get("euklides_count", 0) + 1
+    if d["action"] == "escalate":
+        _escalate(j)
+    _go_on(c.st, job, e, d["note"])
 
 
 DECISIONS = "_decisions.tick"  # the close-of-run tick belongs to the run, not to a job
@@ -1269,9 +1315,19 @@ def _answered_worker(st: dict, q: dict, text: str) -> None:
     j = st["jobs"].get(job)
     if j is None or j["status"] != "waiting_answer":
         return run.event(st, f"{q['id']} was answered, but {_clean(str(job))} no longer waits for it")
-    if text == questions.STOP_JOB:
-        return _block(st, job, f"stopped by Marco at question {q['id']}")
-    _resume_with_answer(st, job, text)
+    ask = j.pop("euklides_ask", None)
+    if ask and ask.get("decision"):
+        try:
+            euklides.set_marco(ask["decision"], text)
+        except OSError as err:
+            run.event(st, f"{job}: the Euklides journal could not be written: {err}")
+    if ask and text.strip().lower() == "ok" and ask.get("proposal"):
+        text = ask["proposal"]
+    if text == questions.STOP_JOB or text.startswith(questions.STOP_JOB + " "):
+        return _block(st, job, f"stopped by Marco at question {q['id']}: {text}"[:600])
+    if ask:
+        return _go_on(st, job, ask["ctx"], text)
+    _resume_with_answer(st, job, text)  # a question asked before Euklides
 
 
 def _apply_stop(st: dict, item: dict) -> None:
