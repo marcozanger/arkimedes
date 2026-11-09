@@ -1,6 +1,6 @@
 import pytest
 
-from ark.plan import PlanError, load_plan, set_status, sha256_file, split_frontmatter, split_sections
+from ark.plan import PlanError, load_plan, task_blocks, task_groups, task_texts, set_status, sha256_file, split_frontmatter, split_sections
 from helpers import plan_text
 
 
@@ -67,3 +67,58 @@ def test_task_texts_by_id(tmp_path):
     assert list(t) == ["T1", "T2"]
     assert t["T1"] == "### T1 — first\n\nDo one."
     assert t["T2"].startswith("### T2 — second") and "Do two." in t["T2"]
+
+
+GROUPED = "\n".join([
+    "<!-- fold -->", "",
+    "### shell — feat(shell): notes.delete IPC", "",
+    "#### T1 — handler", "", "Do one.", "", "##### Steps", "", "a step", "",
+    "#### T2 — test", "", "Do two.", "",
+    "### ui — feat(ui): delete button", "",
+    "#### T3 — button", "", "Do three.",
+])
+
+FLAT = "\n".join([
+    "intro", "",
+    "### T1 — first", "", "Do one.", "", "#### Files", "", "a.py", "",
+    "### T2 — second", "", "Do two.",
+])
+
+
+def test_grouped_task_blocks_end_at_the_next_group():
+    b = task_blocks(GROUPED)
+    assert [(x.id, x.level, x.group) for x in b] == [
+        ("T1", 4, "shell"), ("T2", 4, "shell"), ("T3", 4, "ui")]
+    assert b[0].text == "#### T1 — handler\n\nDo one.\n\n##### Steps\n\na step"
+    assert b[1].text == "#### T2 — test\n\nDo two."
+    assert task_groups(GROUPED) == ["shell", "ui"]
+
+
+def test_flat_task_blocks_keep_todays_text():
+    b = task_blocks(FLAT)
+    assert [(x.id, x.level, x.group) for x in b] == [("T1", 3, None), ("T2", 3, None)]
+    assert b[0].text == "### T1 — first\n\nDo one.\n\n#### Files\n\na.py"
+    assert task_groups(FLAT) == []
+
+
+def test_load_plan_reads_grouped_tasks(tmp_path):
+    p = tmp_path / "plan.md"
+    p.write_text("---\nstatus: draft\n---\n# X\n\n## Tasks\n\n" + GROUPED + "\n\n## PR plan\n\nx\n")
+    plan = load_plan(p)
+    assert plan.tasks == ["T1", "T2", "T3"]
+    assert [b.group for b in plan.blocks] == ["shell", "shell", "ui"]
+    t = task_texts(plan)
+    assert t["T3"] == "#### T3 — button\n\nDo three."
+
+
+def test_helper_plan_is_layered_and_flat_on_request(tmp_path):
+    p = tmp_path / "plan.md"
+    p.write_text(plan_text())
+    plan = load_plan(p)
+    assert list(plan.sections) == ["Goal", "Context", "PR plan", "Decisions", "Tasks", "Run manifest"]
+    assert plan.sections["Tasks"].startswith("<!-- fold -->")
+    assert [(b.id, b.group) for b in plan.blocks] == [("T1", "shell"), ("T2", "shell"), ("T3", "ui")]
+    p.write_text(plan_text(flat=True))
+    flat = load_plan(p)
+    assert [(b.id, b.level) for b in flat.blocks] == [("T1", 3), ("T2", 3), ("T3", 3)]
+    assert "Decisions" not in flat.sections
