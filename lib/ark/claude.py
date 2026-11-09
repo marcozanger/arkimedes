@@ -15,7 +15,12 @@ TIER_TOKENS = {"T0": 150_000, "T1": 400_000, "T2": 800_000}  # per process: inpu
 STALL_MINUTES = 20  # no new line in the log for this long
 HARD_FACTOR = 2     # the tier minutes call the intervene tick; the process dies at this many times them
 NEXT_TIER = {"T0": "T1", "T1": "T2"}
-TICK_MODEL = {"judge": "opus", "decisions": "sonnet"}
+TICK_MODEL = {"intervene": "opus", "decisions": "sonnet", "distill": "sonnet"}
+EUKLIDES_MODEL = "opus"
+EUKLIDES_USD = 3
+EUKLIDES_MINUTES = 20
+EUKLIDES_TOOLS = "Read,Grep,Glob"
+EUKLIDES_DENIED = "Bash,Write,Edit,MultiEdit,NotebookEdit,WebFetch,WebSearch,Task,Agent"
 ROLE_FILES = {"worker": "ark-dev.md", "reviewer": "ark-reviewer.md"}
 NO_TOOLS = "Bash,Write,Edit,MultiEdit,NotebookEdit"
 DEAD_PUSH_URL = "/dev/null/no-push-from-workers"
@@ -34,6 +39,9 @@ def agent_cmd(role: str, model: str, prompt: str, *, session: str, resume: bool 
     if role in ROLE_FILES:
         cmd += ["--append-system-prompt-file", str(code / "agents" / ROLE_FILES[role]),
                 "--output-format", "stream-json", "--verbose"]
+    elif role == "euklides":  # reads the worktree and the worker log; never writes, runs or browses
+        cmd += ["--append-system-prompt-file", str(code / "agents" / "euklides.md"),
+                "--output-format", "json", "--allowedTools", EUKLIDES_TOOLS, "--disallowedTools", EUKLIDES_DENIED]
     else:
         cmd += ["--output-format", "json", "--disallowedTools", NO_TOOLS]
     cmd += ["--resume", session] if resume else ["--session-id", session]

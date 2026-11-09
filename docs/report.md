@@ -12,7 +12,7 @@ The close alert ends with `· report: <path>`. If any of this fails, the run sti
 
 ## steps.jsonl
 
-One row per step: every process in `done/` (worker, review, gate, integrate, judge, intervene, decisions),
+One row per step: every process in `done/` (worker, review, gate, integrate, euklides, intervene, decisions; `judge` in runs recorded before Euklides),
 every merge and every wait for Marco. Rows are rebuilt from the archived receipts and logs each time, so old
 runs get them too.
 

@@ -30,6 +30,7 @@ session (a hook enforces `approvals/`), and never run `ark approve` on your own 
 | `ark estimate <repo>/<slug>` | budget per job, totals, end-to-end time, plan sha256; `--json` |
 | `ark approve <repo>/<slug>` | validate, show the PR table, close the plan, write the approval — Marco confirms |
 | `ark report <repo>/<slug> [--open]` | a run's report.html and steps.jsonl; a closed run also goes to `history/` (`--all`: every closed run) |
+| `ark review [<repo>/<slug>] [--all]` | review Euklides' decisions; new verdicts are distilled into history/euklides/lessons.md |
 | `ark stats` | rewrite `history/insights.md` from `history/jobs.jsonl` |
 
 Over running plans, also without a model: `ark ps`, `ark logs`, `ark stop`, `ark steer`, `ark attach`, `ark answer`.

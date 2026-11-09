@@ -21,11 +21,40 @@ them.
 
 | Kind | Asked when | Answers |
 |---|---|---|
-| worker | a worker ends BLOCKED and a tick cannot settle it from the plan | any text; `:stop` blocks the job |
+| worker | Euklides asks (see below) | `ok` takes its proposal; any other text is the answer; `:stop` blocks the job |
 | plan_changed | the plan changed after its approval and the run is held | `stop` ends the run; restoring or re-approving the plan closes it |
 | cap_run | the run spent more than the sum of its budgets | `raise <usd>`, or `stop` to end the run |
 
 `questions.md` at the Arkimedes root lists them. It is rewritten by the loop and never read back.
+
+## Euklides
+
+Euklides (Opus, read-only: Read, Grep, Glob, in the job's worktree) decides how a job goes on. The job's status is
+`needs_euklides` while it waits for it and `euklides` while it runs. It is called when:
+
+| Trigger | When |
+|---|---|
+| failure | a worker attempt failed: FAILED, an error, a red job gate, three review rounds without CLEAN |
+| question | a worker ended BLOCKED; its question goes to Euklides before Marco |
+| blocked | changed files outside the area, a reviewer without verdict twice, an integration gate failed twice |
+
+Every other block still blocks at once: stopped by Marco, ark-merge refused, an unreachable model, a dependency
+blocked, an error that does not heal.
+
+The runner, not the model, decides which actions are open: `retry` (same tier, same session) and `escalate` (a fresh
+worker one tier up) after a failure, `answer` to a question, `unblock` after a fixable block, and always `ask`. A job
+over its budget, or with 4 decisions already taken without Marco, can only `ask`. An `answer` whose mistake would
+reach beyond the job (`undo: plan`) is asked instead, with that answer as the proposal. An answer Euklides cannot
+give in the agreed shape also asks.
+
+`ask` becomes a worker question holding the situation, Euklides' note and its proposal. `ok` takes the proposal (a
+proposal of `:stop …` blocks the job), `:stop` blocks it, and any other text is the answer the job goes on with.
+
+Every decision appends one line to `history/euklides/decisions.jsonl` (`valid: false` when the answer was unusable),
+and Marco's answer to a question it asked is written on that line. Euklides reads `history/euklides/lessons.md` on
+every call. A journal that cannot be written is an event; the decision still applies.
+
+A run saved before Euklides, with a job in `needs_judge` or `judging`, loads as `needs_euklides`.
 
 Ending a run stops every process and blocks every open job. No final PR is opened; what merged stays on `ark/<slug>`
 and the worktrees stay.
@@ -38,7 +67,7 @@ closed, from a default branch that already holds those changes. Marco hears that
 
 `notify` in `workspace.json` is an argv; the message becomes its last argument. Empty means no notifier. Alerts are
 always kept in `runs/alerts.jsonl`, whether or not the notifier works. Critical alerts: a question from a cap, a merge
-refused, an integration gate that failed twice, an unreachable model, a run's end, and "nothing left to advance".
+refused, an unreachable model, a run's end, and "nothing left to advance".
 
 For the phone, for example:
 

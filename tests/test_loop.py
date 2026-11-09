@@ -12,6 +12,7 @@ import pytest
 from helpers import approve, job, manifest, plan_text
 
 from ark import claude, forge, gitops, integrate, loop, merge, paths, proc, run
+from ark import euklides as euklides_mod, inbox, questions
 from ark.plan import sha256_file
 
 SLUG = "notes-edit"
@@ -48,6 +49,25 @@ def drive(until, cycles=400):
         f.read_text() for f in paths.runs_dir().glob("**/*.md")))
 
 
+def stopping(until, repo="demo", slug=SLUG):
+    """`until`, while Marco answers :stop to every question Euklides asks him: a job Euklides cannot
+    fix ends blocked, as one did before Euklides."""
+    sent = set()
+
+    def check():
+        for q in (state(repo, slug) or {}).get("questions") or []:
+            if q["kind"] == "worker" and q["id"] not in sent:
+                sent.add(q["id"])
+                inbox.post(repo, slug, "answer", id=q["id"], text=":stop")
+        return until()
+    return check
+
+
+def asked_marco(text, repo="demo", slug=SLUG):
+    """Whether a question Marco answered held `text`."""
+    return any(text in a["question"] for a in (state(repo, slug) or {}).get("answers") or [])
+
+
 def test_jobs_merge_in_order(feature):
     repo, _ = feature()
     drive(jobs_settled)
@@ -65,23 +85,37 @@ def test_jobs_merge_in_order(feature):
     assert gitops.git(repo, "rev-parse", "origin/master") == st["base_sha"]     # default branch untouched
 
 
+def waits_for_marco(job="shell"):
+    st = state()
+    return bool(st and st["jobs"]) and st["jobs"][job]["status"] == "waiting_answer"
+
+
+def answer_open_question(text, job="shell"):
+    [q] = [q for q in state()["questions"] if q["job"] == job]
+    inbox.post("demo", SLUG, "answer", id=q["id"], text=text)
+    return q
+
+
 def test_outside_area_blocks_the_job_and_its_dependents(feature, monkeypatch):
     monkeypatch.setenv("FAKE_OUTSIDE", "shell")
     repo, _ = feature()
+    drive(waits_for_marco)
+    q = answer_open_question("ok")
+    assert "outside its area" in q["text"] and "Proposal: :stop" in q["text"]
     drive(jobs_settled)
     st = state()
-    assert st["jobs"]["shell"]["status"] == "blocked" and "outside its area" in st["jobs"]["shell"]["reason"]
-    assert st["jobs"]["ui"]["status"] == "blocked"
+    assert st["jobs"]["shell"]["status"] == "blocked" and st["jobs"]["ui"]["status"] == "blocked"
     assert gitops.remote_sha(repo, f"ark/{SLUG}-shell") is None                 # never pushed
 
 
-def test_failed_attempt_is_judged_and_retried(feature, monkeypatch):
+def test_a_failed_attempt_goes_to_euklides_and_is_retried(feature, monkeypatch, tmp_path):
     monkeypatch.setenv("FAKE_FAIL", "shell:1")
     feature()
     drive(jobs_settled)
     j = state()["jobs"]["shell"]
     assert j["status"] == "merged" and j["attempts"] == 2 and j["tier_path"] == ["T1"]
-    assert any("judge: retry" in e for e in state()["events"])
+    assert any("euklides: retry" in e for e in state()["events"])
+    assert (tmp_path / "fake" / "euklides.count").read_text() == "1"
 
 
 def test_review_fix_resumes_the_worker(feature, monkeypatch):
@@ -94,20 +128,26 @@ def test_review_fix_resumes_the_worker(feature, monkeypatch):
 
 def test_red_integration_gate_never_merges(feature):
     repo, _ = feature(manifest(integration_gate="exit 1"))
+    drive(waits_for_marco)
+    q = answer_open_question(":stop")
+    assert "integration gate failed twice" in q["text"]
     drive(jobs_settled)
     st = state()
     assert st["jobs"]["shell"]["status"] == "blocked"
-    assert "integration gate failed twice" in st["jobs"]["shell"]["reason"]
     assert st["jobs"]["shell"]["attempts"] == 2                                 # sent back once
     gitops.fetch(repo)
     assert gitops.changed_files(repo, st["base_sha"], f"origin/ark/{SLUG}") == [f"docs/decisions/{SLUG}.md"]  # nothing merged
 
 
-def test_allowed_actions():
-    j = {"tier": "T1", "tier_attempts": 1}
-    assert loop.allowed_actions(j) == ["block", "retry", "escalate"]
-    assert loop.allowed_actions({**j, "tier_attempts": 2}) == ["block", "escalate"]
-    assert loop.allowed_actions({"tier": "T2", "tier_attempts": 2}) == ["block"]
+def test_an_integration_gate_failed_twice_is_unblocked_and_runs_again(feature, monkeypatch, tmp_path):
+    monkeypatch.setenv("FAKE_EUKLIDES", '{"action": "unblock", "note": "merge the base"}')
+    count = tmp_path / "fake" / "igate"
+    gate = f'n=$(cat "{count}" 2>/dev/null || echo 0); echo $((n+1)) > "{count}"; [ "$n" -ge 2 ]'
+    feature(manifest(integration_gate=gate))
+    drive(jobs_settled)
+    j = state()["jobs"]["shell"]
+    assert j["status"] == "merged" and j["integrate_fails"] == 0
+    assert [r["action"] for r in euklides_mod.decisions()] == ["unblock"]
 
 
 def test_existing_integration_branch_keeps_the_run_waiting(feature):
@@ -119,12 +159,32 @@ def test_existing_integration_branch_keeps_the_run_waiting(feature):
     assert not proc.active(paths.run_dir("demo", SLUG))
 
 
+def test_a_state_saved_while_judging_is_loaded_as_a_euklides_step(feature):
+    feature()
+    loop.cycle()
+    st = state()
+    st["jobs"]["shell"].update(status="needs_judge", failure="tests are red")
+    st["jobs"]["ui"].update(status="judging", question="which store?")
+    run.save(st)
+    got = loop._load("demo", SLUG)["jobs"]
+    assert got["shell"]["status"] == "needs_euklides"
+    assert got["shell"]["euklides"] == {"trigger": "failure", "situation": "tests are red", "kind": None}
+    assert got["ui"]["status"] == "needs_euklides" and got["ui"]["euklides"]["trigger"] == "question"
+
+
+def test_euklides_is_a_model_step():
+    assert loop.RUNNING["euklides"] == "euklides" and loop.WAITING["euklides"] == "needs_euklides"
+    assert "euklides" in loop.MODEL_KINDS and loop.HANDLERS["euklides"] is loop.on_euklides
+
+
 # ---- beyond the plan's list: each of these is a way an unattended loop could go wrong ------------
 
 def bare(tmp_path, status="working", **over):
     """A context with no repo behind it, for handlers that decide from a receipt alone."""
     st = run.new_state({"repo": "demo", "slug": SLUG, "plan": "/nowhere", "sha256": "0" * 64, "approved_at": "t"})
     mj = job("shell", ["T1"], ["src/shell/**"])
+    if status in ("euklides", "needs_euklides"):
+        over.setdefault("euklides", {"trigger": "failure", "situation": "red", "kind": None})
     st["jobs"]["shell"] = {**run.new_job(mj), "status": status, **over}
     return SimpleNamespace(st=st, dir=tmp_path, base=f"ark/{SLUG}", mjobs={"shell": mj}, repo=tmp_path,
                            wt=lambda j: tmp_path / j, branch=lambda j: f"ark/{SLUG}-{j}")
@@ -248,13 +308,13 @@ def test_survivors_reach_marco(tmp_path, monkeypatch):
     c = bare(tmp_path)
     consume_one(monkeypatch, c, "shell.worker", receipt(exit=-15, reason="timeout: over its time limit", survivors=True))
     assert len(c.st["alerts"]) == 1 and "outlived" in c.st["alerts"][0] and "timeout" in c.st["alerts"][0]
-    assert c.st["jobs"]["shell"]["status"] == "needs_judge"
+    assert c.st["jobs"]["shell"]["status"] == "needs_euklides"
 
 
 # -- receipts
 
 @pytest.mark.parametrize("status,kind", [("gating", "gate"), ("reviewing", "review"), ("integrating", "integrate"),
-                                         ("judging", "judge"), ("working", "worker")])
+                                         ("euklides", "euklides"), ("working", "worker")])
 def test_stopped_by_marco_blocks_whatever_was_running(tmp_path, monkeypatch, status, kind):
     c = bare(tmp_path, status=status)
     consume_one(monkeypatch, c, f"shell.{kind}", receipt(exit=-15, reason="stopped by Marco"))
@@ -280,7 +340,7 @@ def test_a_handler_that_raises_fails_the_job_instead_of_losing_it(tmp_path, monk
     c = bare(tmp_path, status="gating")
     monkeypatch.setitem(loop.HANDLERS, "gate", lambda *a: 1 / 0)
     consume_one(monkeypatch, c, "shell.gate", receipt())
-    assert c.st["jobs"]["shell"]["status"] == "needs_judge" and "ZeroDivisionError" in c.st["jobs"]["shell"]["failure"]
+    assert c.st["jobs"]["shell"]["status"] == "needs_euklides" and "ZeroDivisionError" in c.st["jobs"]["shell"]["failure"]
 
 
 # -- the worker's receipt
@@ -289,7 +349,7 @@ def test_a_handler_that_raises_fails_the_job_instead_of_losing_it(tmp_path, monk
 def test_a_worker_that_ended_in_error_is_a_failure_whatever_it_says(tmp_path, r):
     c = bare(tmp_path)
     loop.on_worker(c, "shell", r)
-    assert c.st["jobs"]["shell"]["status"] == "needs_judge" and "error" in c.st["jobs"]["shell"]["failure"]
+    assert c.st["jobs"]["shell"]["status"] == "needs_euklides" and "error" in c.st["jobs"]["shell"]["failure"]
 
 
 @pytest.mark.parametrize("r,done", [(receipt("STATUS: FAILED — no"), True), (receipt(reason="setup failed: x", exit=1), False),
@@ -305,57 +365,35 @@ def test_a_file_name_that_is_not_utf8_cannot_break_the_state(tmp_path, monkeypat
     monkeypatch.setattr(gitops, "is_clean", lambda wt: True)
     monkeypatch.setattr(gitops, "changed_files", lambda *a: ["bad\udcff.txt"])
     loop.on_worker(c, "shell", receipt("STATUS: DONE"))
-    assert c.st["jobs"]["shell"]["status"] == "blocked" and "outside its area" in c.st["jobs"]["shell"]["reason"]
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "needs_euklides" and "outside its area" in j["euklides"]["situation"]
     run.render(c.st).encode("utf-8")
 
 
-# -- the judge
+# -- Euklides' limits
 
-JUDGE_GARBAGE = [
-    receipt("no json here"), receipt('{"action": "rm -rf /", "note": "x"}'), receipt('{"action": "retry"}'),
-    receipt('{"action": "retry", "note": "x", "extra": 1}'), receipt('{"action": ["retry"], "note": "x"}'),
-    receipt('{"action": "retry", "note": 5}'), receipt('{"action": "retry", "note": "x"}', exit=1),
-    receipt('{"action": "retry", "note": "x"}', is_error=True), receipt('{"action": "retry", "note": "x"}', reason="timeout"),
-]
+def test_a_retry_past_the_budget_is_not_open_and_asks_marco(tmp_path, ark_home):
+    c = bare(tmp_path, status="needs_euklides", usd=5.0, euklides={"trigger": "failure", "situation": "red", "kind": None})
+    assert euklides_mod.allowed("failure", c.st["jobs"]["shell"], 2) == ["ask"]
 
 
-@pytest.mark.parametrize("r", JUDGE_GARBAGE)
-def test_an_unusable_judge_answer_never_runs(tmp_path, r):
-    c = bare(tmp_path, status="judging", tier="T2", tier_attempts=1, failure="red", tier_path=["T2"])
-    loop.on_judge(c, "shell", r)
-    j = c.st["jobs"]["shell"]
-    assert j["status"] == "needs_worker" and j["tier"] == "T2" and "no usable answer" in j["note"]
-
-
-def test_a_retry_the_job_has_no_right_to_becomes_an_escalation(tmp_path):
-    c = bare(tmp_path, status="judging", tier="T1", tier_attempts=2, failure="red", session="s")
-    loop.on_judge(c, "shell", receipt('{"action": "retry", "note": "again"}'))
-    j = c.st["jobs"]["shell"]
-    assert j["tier"] == "T2" and j["tier_path"] == ["T1", "T2"] and j["tier_attempts"] == 0 and j["session"] is None
-
-
-def test_an_escalation_at_the_top_tier_becomes_a_block_when_nothing_else_is_left(tmp_path):
-    c = bare(tmp_path, status="judging", tier="T2", tier_attempts=2, failure="red")
-    loop.on_judge(c, "shell", receipt('{"action": "escalate", "note": "x"}'))
-    assert c.st["jobs"]["shell"]["status"] == "blocked"
-
-
-def test_a_judge_that_always_retries_cannot_retry_past_the_limit(feature, monkeypatch):
+def test_retries_are_capped_by_euklides_decisions_not_by_the_tier(feature, monkeypatch):
     monkeypatch.setenv("FAKE_FAIL", "shell:1,shell:2")
     feature()
     drive(jobs_settled)
     j = state()["jobs"]["shell"]
-    assert j["status"] == "merged" and j["tier_path"] == ["T1", "T2"] and j["attempts"] == 3
+    assert j["status"] == "merged" and j["tier_path"] == ["T1"] and j["attempts"] == 3
 
 
-def test_every_tier_exhausted_blocks_the_job_and_its_dependents(feature, monkeypatch):
-    monkeypatch.setenv("FAKE_FAIL", "shell:1,shell:2,shell:3,shell:4")
+def test_the_fifth_failure_asks_marco_and_stop_blocks_the_dependents(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_FAIL", "shell:1,shell:2,shell:3,shell:4,shell:5")
     feature()
+    drive(waits_for_marco)
+    assert state()["jobs"]["shell"]["euklides_count"] == 4
+    answer_open_question(":stop")
     drive(jobs_settled)
     st = state()
-    assert st["jobs"]["shell"]["status"] == "blocked" and st["jobs"]["shell"]["attempts"] == 4
-    assert "no retry or escalation left" in st["jobs"]["shell"]["reason"]
-    assert st["jobs"]["ui"]["status"] == "blocked"
+    assert st["jobs"]["shell"]["status"] == "blocked" and st["jobs"]["ui"]["status"] == "blocked"
 
 
 # -- the reviewer
@@ -372,7 +410,7 @@ def test_an_unusable_review_is_no_verdict(tmp_path, r):
     assert c.st["jobs"]["shell"]["status"] == "needs_review"
     assert merge.read_record(tmp_path, "shell", "verdict") is None
     loop.on_review(c, "shell", r)
-    assert c.st["jobs"]["shell"]["status"] == "blocked"
+    assert c.st["jobs"]["shell"]["status"] == "needs_euklides"
 
 
 def test_a_real_verdict_forgives_an_earlier_review_error(tmp_path):
@@ -453,9 +491,9 @@ def test_a_red_result_clears_the_counts_of_lost_checks(tmp_path):
 def test_a_red_gate_full_of_non_ascii_still_reaches_the_loop_as_red(feature):
     gate = f"{sys.executable} -c \"import sys; sys.stdout.buffer.write(b'\\xc3\\xa9' * 3000)\"; exit 1"
     feature(manifest(integration_gate=gate))
-    drive(jobs_settled)
+    drive(stopping(jobs_settled))
     j = state()["jobs"]["shell"]
-    assert j["status"] == "blocked" and j["integrate_fails"] == 2 and j["reason"].endswith("(exit 1)")
+    assert j["status"] == "blocked" and j["integrate_fails"] == 2 and asked_marco("(exit 1)")
     assert "é" in merge.read_record(paths.run_dir("demo", SLUG), "shell", "integrate")["tail"]
 
 
@@ -567,7 +605,8 @@ def test_a_step_that_works_clears_the_error_and_one_job_does_not_stop_the_next(t
 
 @pytest.mark.parametrize("status,kind,after", [("working", "worker", "needs_worker"), ("gating", "gate", "needs_gate"),
                                                ("reviewing", "review", "needs_review"),
-                                               ("integrating", "integrate", "needs_integrate"), ("judging", "judge", "needs_judge")])
+                                               ("integrating", "integrate", "needs_integrate"),
+                                               ("euklides", "euklides", "needs_euklides")])
 def test_a_process_gone_without_a_result_goes_back_a_step(ark_home, status, kind, after, tmp_path):
     st = bare(tmp_path, status=status).st
     loop.reconcile(st)
@@ -578,7 +617,7 @@ def test_a_process_gone_without_a_result_goes_back_a_step(ark_home, status, kind
 @pytest.mark.parametrize("status,kind,after,attempts", [
     ("pending", "worker", "working", 1), ("needs_worker", "worker", "working", 1), ("needs_gate", "gate", "gating", 0),
     ("needs_review", "review", "reviewing", 0), ("needs_integrate", "integrate", "integrating", 0),
-    ("needs_judge", "judge", "judging", 0)])
+    ("needs_euklides", "euklides", "euklides", 0)])
 def test_a_process_the_state_missed_is_adopted_never_started_twice(ark_home, status, kind, after, attempts, tmp_path):
     st = bare(tmp_path, status=status).st
     d = paths.run_dir("demo", SLUG)
@@ -693,7 +732,7 @@ def down(**over):
 
 @pytest.mark.parametrize("r", [down(), down(is_error=True, usd=0), down(is_error=True), down(exit=-9)])
 @pytest.mark.parametrize("status,kind,back", [("working", "worker", "needs_worker"), ("reviewing", "review", "needs_review"),
-                                              ("judging", "judge", "needs_judge")])
+                                              ("euklides", "euklides", "needs_euklides")])
 def test_a_process_that_learned_nothing_charges_nothing(tmp_path, monkeypatch, r, status, kind, back):
     c = bare(tmp_path, status=status, attempts=1, failure="red")
     consume_one(monkeypatch, c, f"shell.{kind}", r)
@@ -713,7 +752,7 @@ def test_a_process_that_did_something_is_charged_as_usual(tmp_path, monkeypatch,
     c = bare(tmp_path, status="working")
     consume_one(monkeypatch, c, "shell.worker", r)
     j = c.st["jobs"]["shell"]
-    assert j["status"] == "needs_judge" and j["tier_attempts"] == 1 and "not_before" not in j
+    assert j["status"] == "needs_euklides" and j["tier_attempts"] == 1 and "not_before" not in j
 
 
 @pytest.mark.parametrize("status,kind", [("gating", "gate"), ("integrating", "integrate")])
@@ -914,11 +953,11 @@ def test_a_review_finding_with_bad_text_is_stored_clean(tmp_path, name, dirty, c
 
 
 @pytest.mark.parametrize("name,dirty,clean", BAD_TEXT)
-def test_a_judge_note_with_bad_text_is_stored_clean(tmp_path, name, dirty, clean):
-    c = bare(tmp_path, status="judging", failure="red", session="s")
-    loop.on_judge(c, "shell", receipt(json.dumps({"action": "retry", "note": dirty})))
+def test_a_euklides_note_with_bad_text_is_stored_clean(tmp_path, ark_home, name, dirty, clean):
+    c = at_euklides(tmp_path, session="s")
+    loop.on_euklides(c, "shell", receipt(json.dumps({"action": "retry", "note": dirty})))
     j = c.st["jobs"]["shell"]
-    assert j["note"] == clean and clean in j["resume_msg"] and dirty not in j["resume_msg"]
+    assert j["note"].endswith(clean) and clean in j["resume_msg"] and dirty not in j["resume_msg"]
 
 
 @pytest.mark.parametrize("name,dirty,clean", BAD_TEXT)
@@ -1136,11 +1175,11 @@ def test_an_approval_whose_file_differs_is_not_adopted(feature, monkeypatch):
 
 # -- the guards, one by one: each test fails when its guard is removed
 
-def test_a_red_job_gate_goes_to_the_judge_and_is_recorded_red(tmp_path):
+def test_a_red_job_gate_goes_to_euklides_and_is_recorded_red(tmp_path):
     c = bare(tmp_path, status="gating")
     loop.on_gate(c, "shell", receipt("assert failed", exit=1))
     j = c.st["jobs"]["shell"]
-    assert j["status"] == "needs_judge" and j["tier_attempts"] == 1 and "job gate red" in j["failure"]
+    assert j["status"] == "needs_euklides" and j["tier_attempts"] == 1 and "job gate red" in j["failure"]
     rec = merge.read_record(tmp_path, "shell", "gate")
     assert rec["ok"] is False and rec["exit"] == 1 and "assert failed" in rec["tail"]
 
@@ -1148,7 +1187,7 @@ def test_a_red_job_gate_goes_to_the_judge_and_is_recorded_red(tmp_path):
 def test_a_job_whose_gate_stays_red_gets_no_pr_and_never_merges(feature):
     red = job("shell", ["T1", "T2"], ["src/shell/**"], gate="exit 1")
     repo, _ = feature(manifest(jobs=[red, job("ui", ["T3"], ["src/ui/**"], after=["shell"])]))
-    drive(jobs_settled)
+    drive(stopping(jobs_settled))
     st = state()
     assert st["jobs"]["shell"]["status"] == "blocked" and st["jobs"]["shell"]["pr"] is None
     assert st["jobs"]["ui"]["status"] == "blocked" and forge.LocalForge().list(repo) == []
@@ -1158,7 +1197,7 @@ def test_a_job_whose_gate_stays_red_gets_no_pr_and_never_merges(feature):
 def test_a_gate_stopped_by_its_time_limit_is_red_even_with_exit_zero(tmp_path):
     c = bare(tmp_path, status="gating")
     loop.on_gate(c, "shell", receipt(exit=0, reason="timeout: over its time limit"))
-    assert c.st["jobs"]["shell"]["status"] == "needs_judge"
+    assert c.st["jobs"]["shell"]["status"] == "needs_euklides"
     assert merge.read_record(tmp_path, "shell", "gate")["ok"] is False
 
 
@@ -1187,9 +1226,9 @@ def test_an_integration_record_prefers_the_head_the_check_reports(tmp_path):
 def test_a_good_last_commit_does_not_hide_an_earlier_one_outside_the_area(feature, monkeypatch):
     monkeypatch.setenv("FAKE_EARLY_OUTSIDE", "shell")
     feature()
-    drive(jobs_settled)
+    drive(stopping(jobs_settled))
     j = state()["jobs"]["shell"]
-    assert j["status"] == "blocked" and "outside/shell.txt" in j["reason"] and j["pr"] is None
+    assert j["status"] == "blocked" and asked_marco("outside/shell.txt") and j["pr"] is None
 
 
 def test_done_with_uncommitted_changes_is_a_failure(feature, monkeypatch):
@@ -1218,7 +1257,7 @@ def test_review_rounds_have_a_limit(tmp_path):
     c.st["jobs"]["shell"]["status"] = "reviewing"
     loop.on_review(c, "shell", receipt(fix))
     j = c.st["jobs"]["shell"]
-    assert j["status"] == "needs_judge" and "3 review rounds" in j["failure"] and j["tier_attempts"] == 1
+    assert j["status"] == "needs_euklides" and "3 review rounds" in j["failure"] and j["tier_attempts"] == 1
 
 
 def test_a_verdict_that_is_neither_clean_nor_fix_is_no_verdict(tmp_path):
@@ -1228,9 +1267,9 @@ def test_a_verdict_that_is_neither_clean_nor_fix_is_no_verdict(tmp_path):
     assert j["status"] == "needs_review" and j["review_errors"] == 1 and j["review_rounds"] == 0
 
 
-def test_an_escalation_starts_its_review_rounds_over(tmp_path):
-    c = bare(tmp_path, status="judging", review_rounds=2, session="s", failure="red")
-    loop.on_judge(c, "shell", receipt(json.dumps({"action": "escalate", "note": "harder"})))
+def test_an_escalation_starts_its_review_rounds_over(tmp_path, ark_home):
+    c = at_euklides(tmp_path, review_rounds=2, session="s")
+    loop.on_euklides(c, "shell", receipt(json.dumps({"action": "escalate", "note": "harder"})))
     j = c.st["jobs"]["shell"]
     assert j["tier"] == "T2" and j["review_rounds"] == 0 and j["session"] is None
 
@@ -1366,7 +1405,7 @@ def test_a_base_that_moved_since_the_check_goes_back_to_the_check(at_merge, tmp_
     assert st["jobs"]["shell"]["status"] == "needs_integrate"
 
 
-def test_a_refused_merge_blocks_and_never_reaches_the_judge(at_merge, monkeypatch):
+def test_a_refused_merge_blocks_and_never_reaches_euklides(at_merge, monkeypatch):
     _, st, c = at_merge
     def refused(*a):
         raise merge.MergeRefused("the PR head moved")
@@ -1696,7 +1735,7 @@ def test_a_job_past_its_checks_runs_the_gates_of_the_plan_approved_now(at_merge,
     loop.cycle()
     st = state()
     assert st["status"] == "running" and st["plan_sha"] == sha256_file(p)
-    drive(jobs_settled)
+    drive(stopping(jobs_settled))
     assert state()["jobs"]["shell"]["status"] == "blocked"
 
 
@@ -1758,7 +1797,7 @@ def test_a_gate_that_started_under_the_old_plan_does_not_count(feature, monkeypa
     approve(p, "demo", SLUG)
     loop.cycle()
     assert state()["status"] == "held"                                          # it still runs: nothing to believe yet
-    drive(jobs_settled)
+    drive(stopping(jobs_settled))
     assert runs_of("shell", "gate") >= 2 and state()["jobs"]["shell"]["status"] == "blocked"
 
 
@@ -1876,7 +1915,7 @@ fi
 exec "$REAL_FAKE" "$@"
 ''')
     feature()
-    drive(jobs_settled)
+    drive(stopping(jobs_settled))
     j = state()["jobs"]["shell"]
     assert j["status"] == "blocked" and "infra_tries" not in j
     assert int((tmp_path / "fake" / "w").read_text()) == j["attempts"] <= 6
@@ -2062,7 +2101,7 @@ def test_blocked_run_writes_the_fallback_when_the_tick_fails(feature, monkeypatc
     monkeypatch.setenv("FAKE_OUTSIDE", "shell")
     repo, _ = feature()
     monkeypatch.setattr(loop.brief, "decisions_prompt", lambda st, reports: "say nothing useful")
-    drive(run_finished)
+    drive(stopping(run_finished))
     st = state()
     assert st["status"] == "blocked" and st["final_pr"] is None             # nothing merged: no final PR
     gitops.fetch(repo)
@@ -3114,3 +3153,181 @@ def test_a_planted_name_of_no_job_goes_at_once(feature):
     (d / "evil.worker.proc").mkdir()
     drive(lambda: state()["status"] in ("done", "blocked"))
     assert state()["status"] == "done" and not os.path.lexists(d / "evil.worker.proc")
+
+
+# -- Euklides: what goes to it
+
+def test_a_failure_goes_to_euklides(tmp_path):
+    c = bare(tmp_path)
+    loop.fail(c, "shell", "tests are red")
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "needs_euklides" and j["failure"] == "tests are red"
+    assert j["euklides"] == {"trigger": "failure", "situation": "tests are red", "kind": None}
+
+
+def test_a_blocked_worker_question_goes_to_euklides(tmp_path, monkeypatch):
+    c = bare(tmp_path)
+    monkeypatch.setattr(loop, "_clean_exit", lambda r: True)
+    loop.on_worker(c, "shell", receipt("need it\nSTATUS: BLOCKED — which store?"))
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "needs_euklides" and j["euklides"]["trigger"] == "question"
+    assert j["euklides"]["situation"] == j["question"] == "which store?"
+
+
+def test_a_reviewer_without_verdict_twice_goes_to_euklides(tmp_path):
+    c = bare(tmp_path, status="reviewing", review_errors=1)
+    loop.on_review(c, "shell", receipt("no idea"))
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "needs_euklides" and j["euklides"]["trigger"] == "blocked"
+    assert j["euklides"]["kind"] == "review" and "no verdict twice" in j["euklides"]["situation"]
+
+
+def test_blocks_euklides_never_sees_stay_blocks(tmp_path):
+    c = bare(tmp_path, status="integrating", integrate_lost=1)
+    loop.on_integrate(c, "shell", receipt(reason="timeout"))
+    assert c.st["jobs"]["shell"]["status"] == "blocked"
+
+
+def test_start_euklides_runs_read_only_in_the_worktree(tmp_path, monkeypatch):
+    c = bare(tmp_path, status="needs_euklides", euklides={"trigger": "failure", "situation": "red", "kind": None})
+    (tmp_path / "shell").mkdir()
+    c.plan = SimpleNamespace(manifest={"jobs": [c.mjobs["shell"], job("ui", ["T2"], ["src/ui/**"], after=["shell"])]},
+                             sections={"Goal": "g"})
+    c.read_report = lambda j: "report"
+    started = {}
+    monkeypatch.setattr(proc, "start", lambda d, name, cmd, **kw: started.update(name=name, cmd=cmd, **kw))
+    monkeypatch.setattr(loop.brief, "task_texts", lambda plan: {}, raising=False)
+    loop.start_euklides(c, "shell")
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "euklides" and j["euklides"]["allowed"] == ["retry", "escalate", "ask"]
+    assert started["name"] == "shell.euklides" and started["cwd"] == tmp_path / "shell"
+    assert started["minutes"] == claude.EUKLIDES_MINUTES and started["env"]["ARK_ROLE"] == "euklides"
+    assert started["cmd"][started["cmd"].index("--allowedTools") + 1] == "Read,Grep,Glob"
+    assert "Jobs that build on this one: ui" in started["cmd"][started["cmd"].index("-p") + 1]
+
+
+def test_start_euklides_without_a_worktree_runs_in_the_ticks_folder(tmp_path, monkeypatch):
+    c = bare(tmp_path, status="needs_euklides", euklides={"trigger": "question", "situation": "q", "kind": None})
+    c.plan = SimpleNamespace(manifest={"jobs": [c.mjobs["shell"]]}, sections={"Goal": "g"})
+    c.read_report = lambda j: None
+    started = {}
+    monkeypatch.setattr(proc, "start", lambda d, name, cmd, **kw: started.update(**kw))
+    monkeypatch.setattr(loop.brief, "task_texts", lambda plan: {}, raising=False)
+    loop.start_euklides(c, "shell")
+    assert started["cwd"] == loop.ticks_dir()
+
+
+# -- Euklides: what its answer does
+
+def at_euklides(tmp_path, trigger="failure", allowed=("retry", "escalate", "ask"), kind=None, situation="red", **over):
+    return bare(tmp_path, status="euklides", failure=situation if trigger == "failure" else None,
+                question=situation if trigger == "question" else None,
+                euklides={"trigger": trigger, "situation": situation, "kind": kind, "allowed": list(allowed)}, **over)
+
+
+def euk_answer(**d):
+    return receipt(json.dumps(d), usd=0.4)
+
+
+def test_a_retry_resumes_the_session_with_the_note_and_is_journaled(tmp_path, ark_home):
+    c = at_euklides(tmp_path, session="s1")
+    loop.on_euklides(c, "shell", euk_answer(action="retry", note="fix the import"))
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "needs_worker" and "fix the import" in j["resume_msg"] and "euklides" not in j
+    assert j["euklides_count"] == 1
+    [row] = euklides_mod.decisions()
+    assert row["action"] == "retry" and row["valid"] is True and row["usd"] == 0.4 and row["trigger"] == "failure"
+
+
+def test_an_escalation_starts_fresh_one_tier_up(tmp_path, ark_home):
+    c = at_euklides(tmp_path, session="s1")
+    loop.on_euklides(c, "shell", euk_answer(action="escalate", note="harder than it looks"))
+    j = c.st["jobs"]["shell"]
+    assert j["tier"] == "T2" and j["session"] is None and j["resume_msg"] is None
+    assert "harder than it looks" in j["note"] and j["status"] == "needs_worker"
+
+
+def test_an_answer_goes_back_to_the_worker(tmp_path, ark_home):
+    c = at_euklides(tmp_path, trigger="question", allowed=("answer", "ask"), situation="which store?", session="s1")
+    loop.on_euklides(c, "shell", euk_answer(action="answer", note="SQLite", undo="job", why="local"))
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "needs_worker" and "which store?" in j["resume_msg"] and "SQLite" in j["resume_msg"]
+    assert "question" not in j and not c.st.get("questions")
+
+
+def test_an_answer_that_reaches_the_plan_asks_marco_with_it_as_proposal(tmp_path, ark_home):
+    c = at_euklides(tmp_path, trigger="question", allowed=("answer", "ask"), situation="rename the column?")
+    loop.on_euklides(c, "shell", euk_answer(action="answer", note="yes, to user_id", undo="plan", why="ui reads it"))
+    j = c.st["jobs"]["shell"]
+    [q] = c.st["questions"]
+    assert j["status"] == "waiting_answer" and "Proposal: yes, to user_id" in q["text"]
+    assert j.get("euklides_count", 0) == 0
+    [row] = euklides_mod.decisions()
+    assert row["action"] == "ask" and row["undo"] == "plan"
+
+
+@pytest.mark.parametrize("r", [receipt("no json"), receipt('{"action": "block", "note": "x"}'),
+                               receipt('{"action": "retry", "note": "x"}', reason="timeout"),
+                               receipt('{"action": "retry", "note": "x"}', exit=1)])
+def test_an_unusable_answer_asks_marco_and_is_journaled_invalid(tmp_path, ark_home, r):
+    c = at_euklides(tmp_path)
+    loop.on_euklides(c, "shell", r)
+    assert c.st["jobs"]["shell"]["status"] == "waiting_answer" and "red" in c.st["questions"][0]["text"]
+    assert euklides_mod.decisions()[0]["valid"] is False
+
+
+def test_unblock_after_the_integration_gate_failed_twice_resets_the_count(tmp_path, ark_home):
+    c = at_euklides(tmp_path, trigger="blocked", allowed=("unblock", "ask"), kind="integrate",
+                    situation="integration gate failed twice: red", integrate_fails=2, session="s1")
+    loop.on_euklides(c, "shell", euk_answer(action="unblock", note="merge the base first"))
+    j = c.st["jobs"]["shell"]
+    assert j["integrate_fails"] == 0 and j["status"] == "needs_worker"
+    assert "git merge origin/ark/" in j["resume_msg"] and "merge the base first" in j["resume_msg"]
+
+
+def test_unblock_after_two_reviews_without_verdict_reviews_again(tmp_path, ark_home):
+    c = at_euklides(tmp_path, trigger="blocked", allowed=("unblock", "ask"), kind="review",
+                    situation="the reviewer gave no verdict twice", review_errors=2)
+    loop.on_euklides(c, "shell", euk_answer(action="unblock", note="review again"))
+    j = c.st["jobs"]["shell"]
+    assert j["review_errors"] == 0 and j["status"] == "needs_review"
+
+
+def asked(tmp_path, proposal=":stop — widen the area to src/db/**"):
+    c = at_euklides(tmp_path, trigger="blocked", allowed=("unblock", "ask"), kind="area",
+                    situation="changed files outside its area: src/db/x.py", session="s1")
+    loop.on_euklides(c, "shell", euk_answer(action="ask", note="widen the area?", proposal=proposal))
+    return c
+
+
+def test_ok_to_a_stop_proposal_blocks_with_it_and_journals_marco(tmp_path, ark_home):
+    c = asked(tmp_path)
+    loop._apply_answer(c.st, {"id": "q1", "text": "ok"})
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "blocked" and "widen the area to src/db/**" in j["reason"]
+    assert euklides_mod.decisions()[0]["marco"] == "ok"
+
+
+def test_ok_to_a_proposal_makes_it_the_answer(tmp_path, ark_home):
+    c = asked(tmp_path, proposal="revert src/db/x.py and keep the change inside src/shell")
+    loop._apply_answer(c.st, {"id": "q1", "text": "ok"})
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "needs_worker" and "revert src/db/x.py" in j["resume_msg"]
+
+
+def test_any_other_answer_is_the_answer(tmp_path, ark_home):
+    c = asked(tmp_path)
+    loop._apply_answer(c.st, {"id": "q1", "text": "move it to src/shell/db.py"})
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "needs_worker" and "move it to src/shell/db.py" in j["resume_msg"]
+    assert euklides_mod.decisions()[0]["marco"] == "move it to src/shell/db.py"
+
+
+def test_a_journal_that_cannot_be_written_does_not_stop_the_decision(tmp_path, ark_home, monkeypatch):
+    def broken(*a, **k):
+        raise OSError("disk full")
+    monkeypatch.setattr(euklides_mod, "record", broken)
+    c = at_euklides(tmp_path, session="s1")
+    loop.on_euklides(c, "shell", euk_answer(action="retry", note="again"))
+    assert c.st["jobs"]["shell"]["status"] == "needs_worker"
+    assert any("journal" in e for e in c.st["events"])
