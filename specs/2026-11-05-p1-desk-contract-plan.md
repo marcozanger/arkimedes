@@ -1178,7 +1178,7 @@ def test_status_groups_features_by_repo(make_feature, capsys):
 
 
 def test_status_on_an_empty_desk(ark_home, capsys):
-    assert "Desk vacío" in run(capsys, "status")[1]
+    assert "Desk empty" in run(capsys, "status")[1]
 
 
 def test_validate_accepts_a_path(make_feature, capsys):
@@ -1298,7 +1298,7 @@ def _resolve(target: str) -> Path:
 def cmd_status(args) -> int:
     fs = [f for f in desk.features() if not args.repo or f.repo == args.repo]
     if not fs:
-        print(f"Sin features para {args.repo}." if args.repo else "Desk vacío: todavía no hay features.")
+        print(f"No features for {args.repo}." if args.repo else "Desk empty: no features yet.")
         return 0
     repo = None
     for f in fs:
@@ -1314,7 +1314,7 @@ def cmd_plans(args) -> int:
     if not fs:
         print("No hay planes en el desk.")
         return 0
-    print(f"{'repo/slug':<40} {'plan':<7} {'aprobación':<11} run")
+    print(f"{'repo/slug':<40} {'plan':<7} {'approval':<11} run")
     for f in fs:
         print(f"{f.repo + '/' + f.slug:<40} {f.plan:<7} {f.approval:<11} {f.run}")
     return 0
@@ -1344,8 +1344,8 @@ def _pr_table(m: dict) -> str:
 
 def cmd_approve(args) -> int:
     if os.environ.get("ARK_ROLE"):
-        print("ark approve: rechazado. Lo está corriendo un proceso del runner (ARK_ROLE); "
-              "solo Marco aprueba planes.", file=sys.stderr)
+        print("ark approve: refused. A runner process is running it (ARK_ROLE); "
+              "only Marco approves plans.", file=sys.stderr)
         return 2
     path = _resolve(args.target)
     problems = validate.validate(path)
@@ -1357,7 +1357,7 @@ def cmd_approve(args) -> int:
     plan = load_plan(path)
     print(_pr_table(plan.manifest))
     if sys.stdin.isatty():
-        answer = input("¿Aprobar este plan? [s/N] ").strip().lower()
+        answer = input("Approve this plan? [y/N] ").strip().lower()
         if answer not in ("s", "si", "sí", "y", "yes"):
             print("No aprobado.")
             return 1
@@ -1381,11 +1381,11 @@ def main(argv=None) -> int:
     s = sub.add_parser("status", help="features del desk por repo")
     s.add_argument("repo", nargs="?")
     s.set_defaults(fn=cmd_status)
-    s = sub.add_parser("plans", help="todos los planes con su aprobación y su run")
+    s = sub.add_parser("plans", help="every plan with its approval and its run")
     s.set_defaults(fn=cmd_plans)
     s = sub.add_parser("validate", help="el contrato del plan")
     s.add_argument("target", help="<repo>/<slug> o ruta a plan.md")
-    s.add_argument("--approved", action="store_true", help="también chequea la aprobación")
+    s.add_argument("--approved", action="store_true", help="also checks the approval")
     s.set_defaults(fn=cmd_validate)
     s = sub.add_parser("approve", help="cerrar un plan (Marco confirma)")
     s.add_argument("target", help="<repo>/<slug>")
@@ -1500,7 +1500,7 @@ alias ark='claude --agent arkimedes --settings ~/.claude/arkimedes/settings.json
 Then: `ln -sf ~/.claude/arkimedes/bin/ark ~/.local/bin/ark` (`~/.local/bin` is already on PATH, line 16 of `~/.zshrc`).
 
 Check in a new shell: `zsh -ic 'type ark; ark status'`
-Expected: `ark is /Users/marcozanger/.local/bin/ark` and `Desk vacío: todavía no hay features.`
+Expected: `ark is /Users/marcozanger/.local/bin/ark` and `Desk empty: no features yet.`
 
 - [ ] **Step 6: Commit**
 
@@ -2038,11 +2038,11 @@ git -C ~/.claude/arkimedes push -q origin main
 
 No code. Each check is done by Marco or with him watching; write the results at the end of this plan file under `## Smoke results`.
 
-- [ ] **Step 1: Terminal.** In a new terminal: `ark status` → `Desk vacío…`; `ark` (no args) still opens interactive Arkimedes; exit.
+- [ ] **Step 1: Terminal.** In a new terminal: `ark status` → `Desk empty…`; `ark` (no args) still opens interactive Arkimedes; exit.
 - [ ] **Step 2: Desk session.** `ark plan` → the session greets with the desk overview (desk-start hook works from the folder's project settings) and asks for repo and feature.
 - [ ] **Step 3: A throwaway plan.** In that session, ask Claude to copy `templates/plan.md` to `desk/humanharness/ark-smoke/plan.md` (repo `humanharness`, `spec: none`). `ark validate humanharness/ark-smoke` → `OK`.
 - [ ] **Step 4: The ask rule.** Ask Claude to run `ark approve humanharness/ark-smoke`. A permission prompt must appear, also in auto mode, and also from the phone via Remote Control. **Decline it.** Then ask Claude to write `approvals/humanharness/ark-smoke.json` directly → desk-guard denies it.
-- [ ] **Step 5: Marco approves by hand.** Marco runs `ark approve humanharness/ark-smoke` in his terminal → PR table, `¿Aprobar este plan? [s/N]`, `s` → `Aprobado …`. `ark plans` shows `closed ok -`.
+- [ ] **Step 5: Marco approves by hand.** Marco runs `ark approve humanharness/ark-smoke` in his terminal → PR table, `Approve this plan? [y/N]`, `y` → `Approved …`. `ark plans` shows `closed ok -`.
 - [ ] **Step 6: Clean up.** Marco removes the smoke files by hand: `rm -r ~/.claude/arkimedes/desk/humanharness/ark-smoke ~/.claude/arkimedes/approvals/humanharness/ark-smoke.json`. Commit the smoke results and push.
 
 ---
