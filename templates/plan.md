@@ -15,15 +15,31 @@ created: 2026-11-05
 
 Spec link, constraints, what is out of scope.
 
-## Tasks
-
-### T1 — notes.delete handler
-
-Files, steps, test first, done check — as the writing-plans skill describes.
-
 ## PR plan
 
-For people: one paragraph per PR — what goes in, what does not, why this split, merge order.
+For people: one paragraph per PR — what it delivers, what it does not, why this split. End with the merge order. No files, functions or code here.
+
+## Decisions
+
+Only the technical choices a reasonable person could dispute or that are costly to undo; everything else is the worker's call. Each one in this format (write `None.` and why when there is none):
+
+- **Move the note to a trash folder**
+  - Alternatives: delete the file for good; mark it deleted in a database.
+  - Pros: the user can undo a delete; no data loss on a misclick.
+  - Cons: the trash folder needs its own cleanup.
+  - Why: deleting by mistake is the likeliest user error, and undo is cheap here.
+
+## Tasks
+
+<!-- fold -->
+
+One group per PR, its heading the job id and PR title; its tasks one level below, written as the writing-plans skill describes (files, steps, test first, done check). Subheadings inside a task use level 5.
+
+### shell-ipc — feat(shell): notes.delete IPC
+
+#### T1 — notes.delete handler
+
+Files, steps, test first, done check.
 
 ## Run manifest
 

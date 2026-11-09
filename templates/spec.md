@@ -12,15 +12,28 @@ Who needs what, and why now.
 
 ## Goal
 
-The outcome; how we know it worked.
+The outcome and how we know it worked. What it does seen from outside: what the user sees, the flows. No files, functions or commands; a technical choice appears only as a decision.
 
 ## Decisions
 
-Each: the choice, the alternatives, why (one line each).
+Each choice a reasonable person could dispute or that is costly to undo, in this format:
+
+- **Move the note to a trash folder**
+  - Alternatives: delete the file for good; mark it deleted in a database.
+  - Pros: the user can undo a delete.
+  - Cons: the trash folder needs its own cleanup.
+  - Why: deleting by mistake is the likeliest user error, and undo is cheap here.
 
 ## Design
 
-Components, data flow, errors. Diagrams welcome (Mermaid).
+Behaviour from outside: components, data flow, errors. Diagrams welcome (Mermaid). For a visual change, a before/after pair and a link to the mockup:
+
+![Before: the notes list today](before.png)
+![After: each note with a delete button](after.png)
+
+[Open mockup](https://claude.ai/artifact/...)
+
+Images sit next to spec.md in the desk folder.
 
 ## Testing
 

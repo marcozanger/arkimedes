@@ -23,6 +23,23 @@ Talk to Marco in Spanish. Write every file in English.
 - A repo that is not under a workspace root (`~/.claude/arkimedes/workspace.json`), or has no
   `origin`, fails validation: tell Marco.
 
+## Writing in layers
+
+- **Spec layers:** problem → goal → behaviour seen from outside (what the user sees, flows) →
+  decisions. No files, functions or commands; a technical choice enters only as a decision.
+- **Plan layers:** goal and context → PR plan (what each PR delivers, in order) → decisions →
+  tasks, grouped by PR and folded (`<!-- fold -->` as the first line of `## Tasks`, one level-3
+  `<job-id> — <PR title>` heading per job, its tasks at level 4). Code only inside tasks.
+- **Decision format:** the chosen option in bold, then `Alternatives:`, `Pros:`, `Cons:`, `Why:`
+  in that order. It is for choices a reasonable person could dispute (a new technology or
+  library, a file format or contract such as CLI, hooks or API, where code lives when there is
+  more than one sensible place, anything against the spec or a repo pattern) and anything costly
+  to undo (dependencies, data migrations, schema changes, deleting files or commands).
+  Everything else is the worker's call and is not listed.
+- **Visual changes:** a before/after image pair in the spec (alt text starting `Before:` and
+  `After:`, images next to spec.md), with a link to the mockup Artifact right after it.
+- `ark validate` enforces the plan's layers while the plan is not closed.
+
 ## Steps
 
 1. **Entry.** `/ark-plan` with no arguments: run `ark status`, show it, and ask what to plan.
@@ -44,16 +61,18 @@ Talk to Marco in Spanish. Write every file in English.
    - Write `desk/<repo>/<slug>/spec.md` from `~/.claude/arkimedes/templates/spec.md`.
      `## Open questions` must be empty before approval.
    - Review page: copy the spec to the scratchpad, translate its prose to Spanish, and run the
-     `spec-review` skill on the copy.
+     `spec-review` skill on the copy, passing `--base desk/<repo>/<slug>` to its render step: the
+     translated copy sits in the scratchpad and the images do not.
    - Marco approves in chat → set `status: approved`.
 5. **Plan.** `writing-plans` skill → `desk/<repo>/<slug>/plan.md`, from
    `~/.claude/arkimedes/templates/plan.md`. It reads `history/insights.md`, `history/lessons.md`
    and `repos/<repo>/analysis.md` first when they exist. Plan only: `spec: none` in the
    frontmatter, and a short what-and-why in `## Context`. Run `ark validate <repo>/<slug>` and fix
-   every problem until it prints `OK`.
+   every problem until it prints `OK`. The template's task layout (grouped by PR) wins over the
+   flat `T<n>` headings the writing-plans skill describes.
 6. **Plan review page.** Copy the plan to the scratchpad and translate its prose to Spanish. Run
-   `ark estimate <repo>/<slug>` and add its output to the copy, right after the title, under the
-   heading `## Presupuesto`: the table per job, the totals, the end-to-end time and the plan's
+   `ark estimate <repo>/<slug>` and add its output to the copy, right before `## Tasks` (after
+   `## Decisions`), under the heading `## Presupuesto`: the table per job, the totals, the end-to-end time and the plan's
    sha256. Then run the `spec-review` skill on the copy.
 7. **Approval.** When Marco approves the review, prepare `ark approve <repo>/<slug>` and run it as
    its own whole command, exactly that (or `~/.local/bin/ark approve <repo>/<slug>`): no
