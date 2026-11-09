@@ -3,13 +3,15 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
 
 FRONTMATTER = re.compile(r"\A---\n(.*?)\n---\n?", re.S)
-TASK = re.compile(r"^### (T\d+)\b", re.M)
+TASK = re.compile(r"^(#{3,4}) (T\d+)\b", re.M)
+GROUP = re.compile(r"^### (?!T\d+\b)(\S+)", re.M)
+LEVEL3 = re.compile(r"^### ", re.M)
 YAML_BLOCK = re.compile(r"^```ya?ml[ \t]*\n(.*?)^```[ \t]*$", re.S | re.M)
 HEADING = re.compile(r"^## (.+?)\s*$")
 
@@ -26,6 +28,7 @@ class Plan:
     tasks: list[str]
     manifest: dict | None
     manifest_error: str | None
+    blocks: list = field(default_factory=list)
 
 
 def split_frontmatter(text: str) -> tuple[dict, str]:
@@ -84,7 +87,8 @@ def load_plan(path) -> Plan:
     fm, body = split_frontmatter(text)
     secs = split_sections(body)
     manifest, err = parse_manifest(secs.get("Run manifest", ""))
-    return Plan(path, fm, secs, TASK.findall(secs.get("Tasks", "")), manifest, err)
+    blocks = task_blocks(secs.get("Tasks", ""))
+    return Plan(path, fm, secs, [b.id for b in blocks], manifest, err, blocks)
 
 
 def set_status(path, status: str) -> None:
@@ -108,10 +112,39 @@ def sha256_file(path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-TASK_SPLIT = re.compile(r"^(### (T\d+)\b[^\n]*)\n?", re.M)
+@dataclass(frozen=True)
+class TaskBlock:
+    id: str
+    level: int            # 3 in a flat plan, 4 inside a PR group
+    group: str | None     # the `### <job-id>` heading above a level-4 task
+    text: str             # heading included
+
+
+def task_blocks(section: str) -> list[TaskBlock]:
+    """Each task of `## Tasks`: a task ends at the next task heading; a level-4 one also at the
+    next level-3 heading (the next PR group)."""
+    heads = list(TASK.finditer(section))
+    groups = list(GROUP.finditer(section))
+    out: list[TaskBlock] = []
+    for i, m in enumerate(heads):
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(section)
+        level = len(m.group(1))
+        group = None
+        if level == 4:
+            nxt = LEVEL3.search(section, m.end(), end)
+            if nxt:
+                end = nxt.start()
+            above = [g for g in groups if g.start() < m.start()]
+            group = above[-1].group(1) if above else None
+        out.append(TaskBlock(m.group(2), level, group, section[m.start():end].strip()))
+    return out
+
+
+def task_groups(section: str) -> list[str]:
+    """The `### <job-id>` group headings under `## Tasks`, in order."""
+    return [g.group(1) for g in GROUP.finditer(section)]
 
 
 def task_texts(plan: Plan) -> dict[str, str]:
-    """Each `### T<n>` section of `## Tasks`, heading included, by task id."""
-    parts = TASK_SPLIT.split(plan.sections.get("Tasks", ""))
-    return {parts[i + 1]: (parts[i] + "\n" + parts[i + 2]).strip() for i in range(1, len(parts), 3)}
+    """Each task of `## Tasks`, heading included, by task id."""
+    return {b.id: b.text for b in task_blocks(plan.sections.get("Tasks", ""))}
