@@ -1,5 +1,5 @@
 from ark.validate import validate
-from helpers import job, manifest, plan_text, set_accounts
+from helpers import approve, job, manifest, plan_text, set_accounts
 
 
 def checks(path, **kw):
@@ -262,3 +262,70 @@ def test_falsy_or_mistyped_job_value_is_a_problem(make_feature, field, value):
     m = manifest(jobs=[j])
     probs = validate(make_feature(plan_text(m)))
     assert any(p.check in ("jobs", "after") and "shell" in str(p) for p in probs), (field, value)
+
+
+# 7. layers (only while the plan is not closed)
+
+def test_layered_helper_plan_is_valid(make_feature):
+    assert validate(make_feature()) == []
+
+
+def test_flat_draft_plan_is_rejected(make_feature):
+    p = make_feature(plan_text(flat=True))
+    assert checks(p) == ["layers"]
+    assert "`## Decisions`" in messages(p) and "T1, T2, T3" in messages(p)
+
+
+def test_flat_closed_plan_still_passes_approved(make_feature):
+    p = make_feature(plan_text(flat=True))
+    approve(p)
+    assert validate(p, approved=True) == []
+    assert validate(p) == []
+
+
+def test_empty_decisions_section(make_feature):
+    p = make_feature(plan_text(drop=("Decisions",)))
+    assert "missing or empty section `## Decisions`" in messages(p)
+
+
+def test_sections_out_of_layer_order(make_feature):
+    text = plan_text()
+    pr = "## PR plan\n\nShell first, then the UI.\n\n"
+    text = text.replace(pr, "").replace("## Run manifest", pr + "## Run manifest")
+    assert "sections must come in the order" in messages(make_feature(text))
+
+
+def test_decision_missing_cons(make_feature):
+    text = plan_text().replace("Cons: nothing to see until PR 2. ", "")
+    msg = messages(make_feature(text))
+    assert "decision 'Shell first.'" in msg and "`Cons:`" in msg
+
+
+def test_decision_without_bold_choice(make_feature):
+    text = plan_text().replace("- **Shell first.**", "- Shell first.")
+    assert "chosen option in bold" in messages(make_feature(text))
+
+
+def test_decision_labels_out_of_order(make_feature):
+    text = plan_text().replace("Pros: the UI has an API to call. Cons: nothing to see until PR 2.",
+                               "Cons: nothing to see until PR 2. Pros: the UI has an API to call.")
+    assert "in that order" in messages(make_feature(text))
+
+
+def test_tasks_need_the_fold_line(make_feature):
+    text = plan_text().replace("<!-- fold -->\n\n", "")
+    assert "`<!-- fold -->`" in messages(make_feature(text))
+
+
+def test_group_must_be_a_job(make_feature):
+    text = plan_text().replace("### ui — ", "### front — ")
+    msg = messages(make_feature(text))
+    assert "`### front`" in msg and "not a job id" in msg
+
+
+def test_group_holding_another_jobs_task(make_feature):
+    m = manifest(jobs=[job("shell", ["T1"], ["src/shell/**"]),
+                       job("ui", ["T2", "T3"], ["src/ui/**"], after=["shell"])])
+    text = plan_text(m).replace("### ui — feat: ui\n\n#### T2", "#### T2")
+    msg = messages(make_feature(text))
+    assert "group `shell` holds T1, T2, T3 but its job lists T1" in msg

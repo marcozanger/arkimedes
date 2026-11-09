@@ -1,6 +1,6 @@
-"""The plan contract (spec §2b), checks 1–6. A script, no model.
+"""The plan contract (spec §2b), checks 1–7. A script, no model.
 
-1 frontmatter + repo · spec · sections · 2 tasks · 3 job fields · 4 after · 5 areas · 6 approval
+1 frontmatter + repo · spec · sections · 2 tasks · 3 job fields · 4 after · 5 areas · 6 approval · 7 layers (not closed)
 """
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pathlib import Path
 
 from . import accounts, paths
 from .globs import areas_overlap
-from .plan import PlanError, load_plan, sha256_file, split_frontmatter
+from .plan import PlanError, load_plan, sha256_file, split_frontmatter, task_groups
 
 REQUIRED_SECTIONS = ("Goal", "Context", "Tasks", "PR plan", "Run manifest")
 JOB_FIELDS = ("pr_title", "includes", "excludes", "area", "gate", "tier", "done", "budget")
@@ -70,6 +70,8 @@ def validate(path, *, approved: bool = False) -> list[Problem]:
         add("manifest", plan.manifest_error)
     else:
         _check_manifest(plan.manifest, plan.tasks, add)
+    if fm.get("status") != "closed":
+        _check_layers(plan, add)
     if approved:
         _check_approval(path, fm, add)
     return out
@@ -266,6 +268,89 @@ def _check_areas(jobs, reach, add):
             if _str_list(a.get("area")) and _str_list(b.get("area")) and areas_overlap(a["area"], b["area"]):
                 add("areas", f"{a['id']} and {b['id']} may run at the same time and their areas overlap; "
                              "split the areas or order them with `after`")
+
+
+LAYER_ORDER = ("Goal", "Context", "PR plan", "Decisions", "Tasks", "Run manifest")
+CARD_LABELS = ("Alternatives:", "Pros:", "Cons:", "Why:")
+CARD_START = re.compile(r"^- \*\*([^*\n]+)\*\*")
+FOLD = "<!-- fold -->"
+
+
+def _check_layers(plan, add):
+    """The layer contract of a plan that is not closed yet (spec review-layers)."""
+    secs = plan.sections
+    if not secs.get("Decisions"):
+        add("layers", "missing or empty section `## Decisions` (write `None.` and why when no "
+                      "choice needs the full format)")
+    present = [n for n in secs if n in LAYER_ORDER]
+    if present != [n for n in LAYER_ORDER if n in present]:
+        add("layers", "sections must come in the order " + " → ".join(f"`## {n}`" for n in LAYER_ORDER))
+    for item in _list_items(secs.get("Decisions", "")):
+        problem = _card_problem(item)
+        if problem:
+            m = CARD_START.match(item)
+            name = m.group(1).strip() if m else item[2:42].strip()
+            add("layers", f"decision {name!r}: {problem}")
+    _check_task_groups(plan, add)
+
+
+def _list_items(text: str) -> list[str]:
+    """Top-level `- ` items, each with its indented or blank continuation lines."""
+    items: list[list[str]] = []
+    cur: list[str] | None = None
+    for line in text.splitlines():
+        if line.startswith("- "):
+            cur = [line]
+            items.append(cur)
+        elif cur is not None and (not line.strip() or line[:1] in (" ", "\t")):
+            cur.append(line)
+        else:
+            cur = None
+    return ["\n".join(i).strip() for i in items]
+
+
+def _card_problem(item: str) -> str | None:
+    if not CARD_START.match(item):
+        return "must start with the chosen option in bold"
+    flat = " ".join(item.split())
+    pos = 0
+    for label in CARD_LABELS:
+        i = flat.find(label, pos)
+        if i < 0:
+            return (f"needs {', '.join(f'`{x}`' for x in CARD_LABELS)} in that order; "
+                    f"`{label}` is missing or out of order")
+        pos = i + len(label)
+    return None
+
+
+def _check_task_groups(plan, add):
+    section = plan.sections.get("Tasks", "")
+    if not section.lstrip().startswith(FOLD):
+        add("layers", f"`## Tasks` must start with a `{FOLD}` line")
+    flat = [b.id for b in plan.blocks if b.level == 3]
+    if flat:
+        add("layers", f"tasks {', '.join(flat)} are level-3 headings; put each as a level-4 "
+                      "`#### T<n>` under its PR's `### <job-id>` heading")
+    loose = [b.id for b in plan.blocks if b.level == 4 and b.group is None]
+    if loose:
+        add("layers", f"tasks {', '.join(loose)} are not under a `### <job-id>` heading")
+    if plan.manifest is None:
+        return
+    jobs = {str(j.get("id")): j for j in plan.manifest.get("jobs") or [] if isinstance(j, dict)}
+    seen: set[str] = set()
+    for g in task_groups(section):
+        if g in seen:
+            add("layers", f"`### {g}` appears twice under `## Tasks`")
+            continue
+        seen.add(g)
+        if g not in jobs:
+            add("layers", f"`### {g}` under `## Tasks` is not a job id in the Run manifest")
+            continue
+        under = [b.id for b in plan.blocks if b.group == g]
+        want = [str(t) for t in jobs[g].get("tasks") or []] if isinstance(jobs[g].get("tasks"), list) else []
+        if sorted(under) != sorted(want):
+            add("layers", f"group `{g}` holds {', '.join(under) or 'no tasks'} "
+                          f"but its job lists {', '.join(want) or 'none'}")
 
 
 def _check_approval(path, fm, add):
