@@ -28,5 +28,6 @@ def test_every_ark_command_it_names_exists(capsys):
 
 def test_it_carries_the_desk_rules():
     text = SKILL.read_text()
-    for rule in ("approvals/", "runs/", "history/", "repos/", "stale", "Spanish", "## Presupuesto"):
+    for rule in ("approvals/", "runs/", "history/", "repos/", "stale", "Spanish", "## Presupuesto",
+                 "<!-- fold -->", "Alternatives:", "--base", "## Writing in layers"):
         assert rule in text
