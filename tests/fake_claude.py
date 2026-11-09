@@ -6,6 +6,8 @@ worker    appends "attempt <n>" to <area[0] with ** -> <job>.txt> (or outside/<j
           makes attempt n end FAILED. FAKE_SLEEP=seconds delays it. FAKE_HOLD=file keeps it alive until the file exists.FAKE_STATE/max_active records
           the most workers alive at once.
 reviewer  FIX on the first review of a job in FAKE_FIX, CLEAN otherwise.
+euklides  FAKE_EUKLIDES is its raw answer; by default retry for a failure and ask (proposal ":stop")
+          otherwise. Each call leaves euklides.<n>.prompt and .cwd in FAKE_STATE.
 tick      the decisions file when asked for one, else a judge answer `retry`.
 
 FAKE_EARLY_OUTSIDE=job makes a first commit outside the area, under a last commit inside it.
@@ -145,5 +147,15 @@ elif ROLE == "tick":
         emit(os.environ["FAKE_INTERVENE"], stream=False)
     else:
         emit('{"action": "retry", "note": "try again"}', stream=False)
+elif ROLE == "euklides":
+    n = bump("euklides")
+    (STATE / f"euklides.{n}.prompt").write_text(PROMPT)
+    (STATE / f"euklides.{n}.cwd").write_text(os.getcwd())
+    if os.environ.get("FAKE_EUKLIDES"):
+        emit(os.environ["FAKE_EUKLIDES"], stream=False)  # raw JSON: it can hold any escape
+    elif "Trigger: failure" in PROMPT and "`retry`" in PROMPT:
+        emit('{"action": "retry", "note": "try again"}', stream=False)
+    else:
+        emit('{"action": "ask", "note": "needs Marco", "proposal": ":stop"}', stream=False)
 else:
     sys.exit(f"fake claude: unknown ARK_ROLE {ROLE!r}")
