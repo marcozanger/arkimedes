@@ -55,6 +55,16 @@ For the phone, for example:
   which chooses wait (once), steer (twice per job), stop and escalate, or stop and block. The process's hard deadline
   is twice its tier's minutes.
 
+## Sleep
+
+At each poll the loop compares the wall clock with `CLOCK_UPTIME_RAW`; a gap over 60 s is a sleep.
+Every deadline of a live run moves by it (job limits, `closing_wait`, each `.proc` deadline), with
+one event, "the machine slept …". Every process alive at the wake gets one free failure: no
+attempt, tier or counter is spent, and a worker resumes its session. Nothing new starts until
+`api.github.com` and `api.anthropic.com` answer, for up to 10 minutes (one event if it gives up);
+meanwhile the status line is prefixed with a Spanish notice, "waiting for the network after a suspension" (`esperando red tras suspensi\u00f3n` in code, escaped to keep the sources ASCII). A sleep while `ark-loop` is not
+running is not seen.
+
 ## Smoke on a real claude
 
 Run these by hand after the merge; the suite uses a fake claude:
