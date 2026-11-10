@@ -1816,7 +1816,7 @@ def cycle(forge=None) -> tuple[str, list[str], bool]:
     if problem:
         _once(("notify",), problem, alerts)
     line = status_line(list(states.values()))
-    return ("esperando red tras suspensión · " + line if net == "wait" else line), alerts, changed
+    return ("esperando red tras suspensi\u00f3n \u00b7 " + line if net == "wait" else line), alerts, changed
 
 
 # ---- main ---------------------------------------------------------------------------------------

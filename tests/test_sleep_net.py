@@ -34,7 +34,7 @@ def test_nothing_starts_during_the_wait_and_it_starts_once_the_network_is_back(f
     monkeypatch.setattr(loop, "_net_up", lambda: up[0])
     loop._net_wait_until = time.time() + 600
     line, _, _ = loop.cycle()
-    assert line.startswith("esperando red tras suspensión")
+    assert line.startswith("esperando red tras suspensi\u00f3n")
     st = state()
     assert st is None or not any(j["status"] == "working" for j in st["jobs"].values())
     up[0] = True
