@@ -18,7 +18,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from . import brief, caps, claude, euklides, forge as forge_mod, gitops, inbox, integrate, merge, notify, paths, proc, questions, reporting, run, usage
+from . import beat, brief, caps, claude, euklides, forge as forge_mod, gitops, inbox, integrate, merge, notify, paths, proc, questions, reporting, run, usage
 from .globs import areas_overlap, match_any
 from .plan import load_plan, sha256_file
 from .validate import validate
@@ -1678,12 +1678,15 @@ def cycle(forge=None) -> tuple[str, list[str], bool]:
             _guarded(st, "error", lambda d=paths.run_dir(*key): proc.reap(d))
         else:
             _guarded(st, "error", lambda st=st: step(st, list(states.values()), forge, slots))
-    changed, critical = False, []
+    changed, critical, origins = False, [], {}
     if slots.capped:
         text = f"daily spending cap reached (${caps.spent_today():.2f}): nothing new starts until tomorrow, or until limits.usd_per_day is raised"
         if _once(("day_cap", caps.today()), text, alerts):
             critical.append(text)
     for key, st in states.items():
+        run.stamp_times(st)
+        for line in st["alerts"]:
+            origins[line] = notify.origin(st, line)
         alerts += st["alerts"]
         critical += st.pop("critical", [])
         st["alerts"] = []
@@ -1702,8 +1705,8 @@ def cycle(forge=None) -> tuple[str, list[str], bool]:
         questions.save_file(list(states.values()))
     except OSError as e:
         _once(("questions_file",), f"cannot write questions.md: {e}", alerts)
-    alerts, critical = _clean(alerts), _clean(critical)  # an approval's names reach them unchecked; notify catches only OSError
-    problem = notify.deliver(alerts, critical)  # never raises: it says what went wrong
+    alerts, critical, origins = _clean(alerts), _clean(critical), _clean(origins)  # an approval's names reach them unchecked; notify catches only OSError
+    problem = notify.deliver(alerts, critical, origins)  # never raises: it says what went wrong
     if problem:
         _once(("notify",), problem, alerts)
     return status_line(list(states.values())), alerts, changed
@@ -1778,14 +1781,25 @@ def _setting(ws: dict, key: str) -> float:
     return v
 
 
+def _beat(poll: float, said: str | None) -> str | None:
+    """Write the heartbeat; print a failure once per distinct message. Returns what was said."""
+    problem = beat.write(poll)
+    if problem and problem != said:
+        print(f"⚠ {problem}", flush=True)
+    return problem
+
+
 def _polling(once: bool) -> int:
     poll_default = paths.DEFAULTS["poll_seconds"]
     last_line, last_sig, last_full, last_error = None, None, 0.0, None
+    beat_poll, beat_said = poll_default, None
     while True:
+        beat_said = _beat(beat_poll, beat_said)
         poll = poll_default
         try:
             ws = paths.load_workspace()
             poll, tick = _setting(ws, "poll_seconds"), _setting(ws, "tick_minutes") * 60
+            beat_poll = poll
             sig = signature()
             if once or sig != last_sig or time.time() - last_full >= tick or _retry_due():
                 for _ in range(5):                   # follow-up passes while things move
@@ -1796,6 +1810,7 @@ def _polling(once: bool) -> int:
                     if not changed or _retry_due():  # a retry waits for the next poll, not for the next pass
                         break
                 last_full, last_sig = time.time(), None if changed else sig  # None: go on at the next poll
+                beat_said = _beat(beat_poll, beat_said)
                 if line != last_line:
                     print(f"{datetime.now():%H:%M} {line}", flush=True)
                     last_line = line
