@@ -5,6 +5,7 @@ last argument. Nothing here may stop a cycle, so every failure comes back as tex
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 
 from . import paths, run
@@ -13,12 +14,25 @@ MAX_PER_CYCLE = 5   # a cycle waits for the notifier: at SEND_TIMEOUT each, a bu
 SEND_TIMEOUT = 10   # seconds
 
 
-def record(alerts: list[str], critical: list[str]) -> None:
+NO_ORIGIN = {"repo": "", "slug": "", "job": ""}
+
+
+def origin(st: dict, line: str) -> dict:
+    """The run and job of a line run.alert wrote. The job is the text's first word when it names one of
+    the run's jobs; alerts about the whole run name none."""
+    prefix = f"{st['repo']}/{st['slug']}: "
+    text = line[len(prefix):] if line.startswith(prefix) else line
+    first = re.split(r"[\s:]", text, maxsplit=1)[0]
+    return {"repo": st["repo"], "slug": st["slug"], "job": first if first in st.get("jobs", {}) else ""}
+
+
+def record(alerts: list[str], critical: list[str], origins: dict | None = None) -> None:
     if not alerts:
         return
     paths.runs_dir().mkdir(parents=True, exist_ok=True)
-    urgent, at = set(critical), run.now()
-    text = "".join(json.dumps({"at": at, "text": a, "critical": a in urgent}, ensure_ascii=False) + "\n" for a in alerts)
+    urgent, at, origins = set(critical), run.now(), origins or {}
+    text = "".join(json.dumps({"at": at, "text": a, "critical": a in urgent, **origins.get(a, NO_ORIGIN)},
+                              ensure_ascii=False) + "\n" for a in alerts)
     with open(paths.runs_dir() / "alerts.jsonl", "a", encoding="utf-8") as f:
         f.write(text)
 
@@ -35,11 +49,11 @@ def send(command: list[str], text: str) -> None:
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
 
-def deliver(alerts: list[str], critical: list[str]) -> str | None:
+def deliver(alerts: list[str], critical: list[str], origins: dict | None = None) -> str | None:
     """Record every alert and send the critical ones. What went wrong, or None."""
     problem = None
     try:
-        record(alerts, critical)
+        record(alerts, critical, origins)
     except OSError as e:
         problem = f"cannot write alerts.jsonl: {e}"
     if not critical:
