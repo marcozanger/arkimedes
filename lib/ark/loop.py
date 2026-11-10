@@ -576,6 +576,42 @@ def _model_unreachable(c: Ctx, job: str, kind: str) -> None:
     run.event(c.st, f"{job}: its {kind} got no answer from the model; try {n}")
 
 
+def _slept_through(j: dict, kind: str) -> bool:
+    """Whether this process lived through a sleep. The mark is spent by its receipt, whatever it says."""
+    marks = j.get("slept_through") or {}
+    hit = marks.pop(kind, None) is not None
+    if not marks:
+        j.pop("slept_through", None)
+    return hit
+
+
+def _clean_success(kind: str, r: dict) -> bool:
+    if not _clean_exit(r):
+        return False
+    if kind == "review":
+        return _review_answer(r) is not None
+    if kind in ("judge", "intervene"):
+        return _judge_answer(r)[0] is not None
+    if kind == "integrate":
+        out = _answer(r)
+        return isinstance(out, dict) and "ok" in out
+    return True
+
+
+def _free_retry(c: Ctx, job: str, kind: str, r: dict) -> None:
+    """It lived through a sleep and failed: the network most likely went with the lid. Nothing is charged and
+    there is no backoff: the wait for the network after the wake already covered that."""
+    j = c.st["jobs"][job]
+    j["status"] = WAITING[kind]
+    if kind == "worker":
+        j["attempts"] = max(0, j["attempts"] - 1)
+        j["session"] = r.get("session")
+        j["resume_msg"] = brief.resume_message("wake", "Check `git status` and your report first.", c.st["slug"]) \
+            if j["session"] else None
+    why = _clean(r["reason"] or f"exit {r['exit']}")
+    run.event(c.st, f"{job}: its {kind} failed after the machine slept ({why}); trying again, nothing charged")
+
+
 def _save_now(st: dict) -> bool:
     """Progress on disk before the next step pays for anything. Whether it got there: if not, nothing new
     starts in this cycle; the save at the end of the cycle tries again, and that one tells Marco."""
@@ -657,7 +693,7 @@ def _steer(st: dict, job: str, text: str) -> None:
     proc.stop(paths.run_dir(st["repo"], st["slug"]), f"{job}.worker", STEERED)
 
 
-def on_intervene(c: Ctx, job: str, r: dict) -> None:
+def on_intervene(c: Ctx, job: str, r: dict, slept: bool = False) -> None:
     j = c.st["jobs"][job]
     j.pop("intervening", None)
     if (j["status"] != "working" or (r.get("meta") or {}).get("attempt") != j["attempts"]
@@ -666,6 +702,9 @@ def on_intervene(c: Ctx, job: str, r: dict) -> None:
     allowed = _intervene_actions(j)
     action, note = _judge_answer(r)
     if not isinstance(action, str) or action not in allowed:
+        if slept:  # looked at with the clocks of before the sleep: watch() looks again with the moved ones
+            j["anomaly"] = None
+            return run.event(c.st, f"{job}: the intervene tick failed after the machine slept; the worker is looked at again")
         action = next(a for a in ("wait", "stop_escalate", "stop_block") if a in allowed)
         note = f"the intervene tick gave no usable answer; the runner chose {action}: {j.get('anomaly')}"
     note = _clean(str(note or j.get("anomaly") or action))
@@ -685,7 +724,13 @@ def on_intervene(c: Ctx, job: str, r: dict) -> None:
 def _on_receipt(c: Ctx, name: str, r: dict) -> None:
     _charge(c.st, name, r)
     if name == DECISIONS:
+        slept = c.st.pop("slept_through", None)
         if c.st["closing"] == "decisions":
+            text = _clean(r["result"] or "").strip()
+            if slept and not (_clean_exit(r) and text.startswith("# Decisions")):
+                c.st["closing"] = None  # maybe_close starts it again; this one was not paid for in vain
+                c.st["decisions_ticks"] = max(0, c.st.get("decisions_ticks", 0) - 1)
+                return run.event(c.st, "the decisions tick failed after the machine slept; it starts again")
             try:
                 on_decisions(c, r)
             except Exception as e:  # the receipt is gone and the tick is paid: publish takes it from here
@@ -696,6 +741,7 @@ def _on_receipt(c: Ctx, name: str, r: dict) -> None:
         return
     job, _, kind = name.rpartition(".")
     j = c.st["jobs"].get(job)
+    slept = j is not None and _slept_through(j, kind)
     if r.get("survivors"):
         run.alert(c.st, f"{_clean(job)}: processes of its {_clean(kind)} outlived it ({r['reason'] or 'it ended'}): "
                         "look for leftovers before they touch its worktree")
@@ -704,7 +750,7 @@ def _on_receipt(c: Ctx, name: str, r: dict) -> None:
         return
     if j is not None and kind == "intervene":  # never the job's main process: it does not move the job's status
         try:
-            on_intervene(c, job, r)
+            on_intervene(c, job, r, slept)
         except Exception as e:
             j.pop("intervening", None)
             run.event(c.st, f"{job}: the intervene tick's answer failed: {type(e).__name__}: {_clean(str(e))}")
@@ -712,6 +758,8 @@ def _on_receipt(c: Ctx, name: str, r: dict) -> None:
     if j is None or kind not in HANDLERS or RUNNING.get(j["status"]) != kind:
         run.event(c.st, f"ignored the result of {_clean(name)}: nothing was waiting for it")
         return
+    if slept and not _clean_success(kind, r) and r["reason"] not in OURS and not any(k in j for k in HANDLING):
+        return _free_retry(c, job, kind, r)
     if kind in MODEL_KINDS:
         if _learned_nothing(r) and not j.get("attaching"):
             _model_unreachable(c, job, kind)

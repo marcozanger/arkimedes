@@ -132,6 +132,7 @@ RESUME = {
                  "fix the failure and commit. The failure:",
     "judge": "Your previous attempt did not finish. What went wrong, and the judge's note:",
     "answer": "The question you stopped on has an answer. Go on with the job:",
+    "wake": "The machine slept and your process ended. Nothing is lost: go on with the job from where you were.",
     "steer": "You were stopped to redirect the work. Follow this instruction and go on with the job:",
 }
 
