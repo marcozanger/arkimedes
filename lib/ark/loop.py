@@ -1313,6 +1313,29 @@ def shift_run(st: dict, slept: float, woke_at: float) -> None:
     run.event(st, f"the machine slept {_span(slept)}: deadlines moved by that much")
 
 
+def _net_up() -> bool:
+    for host, port in NET_HOSTS:
+        try:
+            socket.create_connection((host, port), timeout=3).close()
+        except OSError:
+            return False
+    return True
+
+
+def net_hold() -> str:
+    """After a wake: "wait" while the network is not back, "gave_up" once when NET_WAIT_MAX ran out, "" otherwise."""
+    global _net_wait_until
+    if not _net_wait_until:
+        return ""
+    if time.time() >= _net_wait_until:
+        _net_wait_until = 0.0
+        return "gave_up"
+    if _net_up():
+        _net_wait_until = 0.0
+        return ""
+    return "wait"
+
+
 def on_wake(slept: float, woke_at: float) -> list[str]:
     """Called by the poll before the cycle when the machine slept. Returns lines to print."""
     global _net_wait_until
@@ -1512,12 +1535,12 @@ def apply_inbox(st: dict) -> None:
             inbox.done(item)
 
 
-def step(st: dict, states: list[dict], forge, slots: Slots) -> None:
+def step(st: dict, states: list[dict], forge, slots: Slots, hold: bool = False) -> None:
     if st["status"] in ("done", "blocked"):
         inbox.drop_all(st["repo"], st["slug"])  # nobody will read them
         return
     if st["status"] == "waiting":
-        if slots.capped:  # a run that has not started spends nothing by waiting
+        if slots.capped or hold:  # a run that has not started spends nothing by waiting
             return
         if not try_start(st, states, forge):
             return
@@ -1547,7 +1570,7 @@ def step(st: dict, states: list[dict], forge, slots: Slots) -> None:
     _finish_attach(c)
     if consume_receipts(c):
         _check_run_cap(c)
-        if slots.capped:  # closing pays for a tick too
+        if slots.capped or hold:  # closing pays for a tick too; after a wake, nothing starts before the network
             return
         if not st.get("cap_hold"):
             schedule(c, slots)
@@ -1753,12 +1776,17 @@ def cycle(forge=None) -> tuple[str, list[str], bool]:
     for st in states.values():
         _guarded(st, "reconcile_error", lambda st=st: reconcile(st))
     slots = Slots(states.values(), limits)
+    net = net_hold()
+    if net == "gave_up":
+        for st in states.values():
+            if st["status"] not in ("done", "blocked"):
+                run.event(st, "the network did not come back in 10 minutes; going on")
     home = str(paths.ark_home())
     for key, st in states.items():
         if (home, "unsaved", *key) in _said:  # moving it on would pay again for work it cannot remember
             _guarded(st, "error", lambda d=paths.run_dir(*key): proc.reap(d))
         else:
-            _guarded(st, "error", lambda st=st: step(st, list(states.values()), forge, slots))
+            _guarded(st, "error", lambda st=st: step(st, list(states.values()), forge, slots, hold=net == "wait"))
     changed, critical = False, []
     if slots.capped:
         text = f"daily spending cap reached (${caps.spent_today():.2f}): nothing new starts until tomorrow, or until limits.usd_per_day is raised"
@@ -1787,7 +1815,8 @@ def cycle(forge=None) -> tuple[str, list[str], bool]:
     problem = notify.deliver(alerts, critical)  # never raises: it says what went wrong
     if problem:
         _once(("notify",), problem, alerts)
-    return status_line(list(states.values())), alerts, changed
+    line = status_line(list(states.values()))
+    return ("esperando red tras suspensión · " + line if net == "wait" else line), alerts, changed
 
 
 # ---- main ---------------------------------------------------------------------------------------
@@ -1826,6 +1855,8 @@ def _retry_due() -> bool:
     """What a cycle retries on its own clock, with nothing on disk to change the signature: a step that
     failed, a worktree still held, a wait that is over. Those count in cycles (ERROR_ALERT_AFTER) and
     in seconds (BACKOFF_FIRST), so they cannot wait for the tick."""
+    if _net_wait_until:
+        return True
     now = time.time()
     for a in approvals():
         try:
