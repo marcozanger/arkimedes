@@ -7,7 +7,7 @@ import math
 import os
 from datetime import date
 
-from . import paths, run
+from . import accounts, paths, run
 
 
 def today() -> str:
@@ -18,47 +18,98 @@ def _ledger():
     return paths.runs_dir() / "spend.jsonl"
 
 
-def record(run_key: str, name: str, usd: float) -> None:
-    if not usd > 0:
-        return
-    line = json.dumps({"day": today(), "at": run.now(), "run": run_key, "name": name, "usd": usd}) + "\n"
-    _ledger().parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(_ledger(), os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+def _raises():
+    return paths.runs_dir() / "raises.jsonl"
+
+
+def _repo_of(run_key) -> str:
+    return str(run_key).rpartition("/")[0]
+
+
+def _append(path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
-        os.write(fd, line.encode("utf-8"))
+        os.write(fd, (json.dumps(data) + "\n").encode("utf-8"))
     finally:
         os.close(fd)
 
 
-def spent_today() -> float:
-    try:
-        text = paths.read_regular(_ledger()).decode("utf-8", "replace")
-    except FileNotFoundError:
-        return 0.0
-    except OSError:
-        return float("inf")
-    day, total = today(), 0.0
-    for line in text.splitlines():
-        try:
-            d = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(d, dict) and d.get("day") == day and _money(d.get("usd")):
-            total += d["usd"]
-    return total
+def record(run_key: str, name: str, usd: float) -> None:
+    if not usd > 0:
+        return
+    _append(_ledger(), {"day": today(), "at": run.now(), "run": run_key, "name": name, "usd": usd,
+                        "account": accounts.account_of(_repo_of(run_key))})
 
 
 def _money(x) -> bool:
     return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
 
 
-def day_limit(limits: dict) -> float | None:
+def _today_lines(path):
+    """Today's dict lines with a usable usd. Raises OSError when the file cannot be read."""
+    try:
+        text = paths.read_regular(path).decode("utf-8", "replace")
+    except FileNotFoundError:
+        return []
+    out, day = [], today()
+    for line in text.splitlines():
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(d, dict) and d.get("day") == day and _money(d.get("usd")):
+            out.append(d)
+    return out
+
+
+def _account_of_line(d: dict) -> str:
+    a = d.get("account")
+    return a if isinstance(a, str) and a else accounts.account_of(_repo_of(d.get("run", "")))
+
+
+def spent_today(account: str | None = None) -> float:
+    """Today's spend of one account, or of all of them. An unreadable ledger is infinite."""
+    try:
+        lines = _today_lines(_ledger())
+    except OSError:
+        return float("inf")
+    return sum(d["usd"] for d in lines if account is None or _account_of_line(d) == account)
+
+
+def record_raise(account: str, usd: float) -> None:
+    _append(_raises(), {"day": today(), "at": run.now(), "account": account, "usd": usd})
+
+
+def raised_today(account: str) -> float:
+    """An unreadable raises ledger counts as no raise: unknown money must not start new spending."""
+    try:
+        lines = _today_lines(_raises())
+    except OSError:
+        return 0.0
+    return sum(d["usd"] for d in lines if d.get("account") == account)
+
+
+def day_limit(limits: dict, account: str = accounts.PERSONAL) -> float | None:
+    if account != accounts.PERSONAL:
+        return accounts.rule_of_account(account).get("usd_per_day")  # validated by accounts._rules
     limit = limits.get("usd_per_day")
     if limit is None:
         return None
     if not _money(limit) or limit <= 0:
         raise ValueError(f"limits.usd_per_day must be a positive number, not {limit!r}")
     return limit
+
+
+def check_limits(limits: dict) -> None:
+    """Every cap valid, or raise: the personal limit (ValueError) and every rule (AccountError)."""
+    day_limit(limits)
+    accounts._rules()
+
+
+def capped(account: str, limits: dict) -> bool:
+    limit = day_limit(limits, account)
+    return limit is not None and spent_today(account) >= limit + raised_today(account)
 
 
 def day_capped(limits: dict) -> bool:
