@@ -19,7 +19,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from . import beat, brief, caps, claude, euklides, forge as forge_mod, gitops, inbox, integrate, merge, notify, paths, proc, questions, reporting, run, usage
+from . import accounts, beat, brief, caps, claude, euklides, forge as forge_mod, gitops, inbox, integrate, merge, notify, paths, proc, questions, reporting, run, usage
 from .globs import areas_overlap, match_any
 from .plan import load_plan, sha256_file
 from .validate import validate
@@ -1109,13 +1109,17 @@ class Slots:
 
     def __init__(self, states, limits: dict):
         self.limits, self.writers, self.heavy = limits, {}, 0
-        self.capped = caps.day_capped(limits)
+        names = {accounts.account_of(st["repo"]) for st in states} | {accounts.PERSONAL}
+        self.capped_accounts = {a for a in names if caps.capped(a, limits)}
         for st in states:
             for j in st["jobs"].values():
                 if j["status"] == "working":
                     self.writers[st["repo"]] = self.writers.get(st["repo"], 0) + 1
                 if j.get("heavy") and j["status"] in ("gating", "integrating"):
                     self.heavy += 1
+
+    def capped(self, repo: str) -> bool:
+        return accounts.account_of(repo) in self.capped_accounts
 
     def writer(self, repo: str) -> bool:
         if self.writers.get(repo, 0) >= self.limits["writers_per_repo"] or \
@@ -1562,7 +1566,7 @@ def step(st: dict, states: list[dict], forge, slots: Slots, hold: bool = False) 
         inbox.drop_all(st["repo"], st["slug"])  # nobody will read them
         return
     if st["status"] == "waiting":
-        if slots.capped or hold:  # a run that has not started spends nothing by waiting
+        if slots.capped(st["repo"]) or hold:  # a run that has not started spends nothing by waiting
             return
         if not try_start(st, states, forge):
             return
@@ -1592,7 +1596,7 @@ def step(st: dict, states: list[dict], forge, slots: Slots, hold: bool = False) 
     _finish_attach(c)
     if consume_receipts(c):
         _check_run_cap(c)
-        if slots.capped or hold:  # closing pays for a tick too; after a wake, nothing starts before the network
+        if slots.capped(st["repo"]) or hold:  # closing pays for a tick too; after a wake, nothing starts before the network
             return
         if not st.get("cap_hold"):
             schedule(c, slots)
@@ -1755,16 +1759,16 @@ def _orphans(known, alerts: list[str]) -> None:
                                               f"{type(e).__name__}: {e}", alerts)
 
 
-def _nothing_to_advance(states: list[dict], capped: bool = False) -> bool:
+def _nothing_to_advance(states: list[dict], capped_accounts=frozenset()) -> bool:
     """Called after every run took its step: there are live runs, no process alive anywhere, and each run is
-    held or waits for Marco. A pending job beside a waiting one only waits for it: this pass started all it could."""
+    held or waits for Marco. A pending job beside a waiting one only waits for it: this pass started all it could.
+    A run on a capped account waits for Marco like a held one."""
+    capped_accounts = capped_accounts or frozenset()
     live = [st for st in states if st["status"] not in ("done", "blocked", "waiting")]
     if not live or any(proc.active(paths.run_dir(st["repo"], st["slug"])) for st in live):
         return False
-    if capped:
-        return True
     for st in live:
-        if st["status"] == "held" or st.get("cap_hold"):
+        if st["status"] == "held" or st.get("cap_hold") or accounts.account_of(st["repo"]) in capped_accounts:
             continue
         statuses = [j["status"] for j in st["jobs"].values() if j["status"] not in run.TERMINAL]
         if not any(s in WAITS_FOR_MARCO for s in statuses):
@@ -1774,9 +1778,9 @@ def _nothing_to_advance(states: list[dict], capped: bool = False) -> bool:
     return True
 
 
-def _flag_stuck(states: list[dict], capped: bool, alerts: list[str], critical: list[str]) -> None:
+def _flag_stuck(states: list[dict], capped_accounts, alerts: list[str], critical: list[str]) -> None:
     key = ("stuck",)
-    if not _nothing_to_advance(states, capped):
+    if not _nothing_to_advance(states, capped_accounts):
         _said.discard((str(paths.ark_home()), *key))
         return
     text = "nothing left to advance: every live run waits for you. See `ark ps` and `ark answer`."
@@ -1788,7 +1792,7 @@ def cycle(forge=None) -> tuple[str, list[str], bool]:
     """One pass. Returns (status line, alerts to show, whether any run state changed)."""
     forge = forge or forge_mod.get()
     limits = paths.load_workspace()["limits"]  # first: if it raises, no alert was consumed and lost
-    caps.day_limit(limits)  # a bad limit raises here too: before any alert is consumed
+    caps.check_limits(limits)  # a bad cap, personal or on a rule, raises here too: before any alert is consumed
     states, before, alerts, approved = {}, {}, [], {}
     for a in approvals():
         key = (a["repo"], a["slug"])
@@ -1822,9 +1826,11 @@ def cycle(forge=None) -> tuple[str, list[str], bool]:
         else:
             _guarded(st, "error", lambda st=st: step(st, list(states.values()), forge, slots, hold=net == "wait"))
     changed, critical, origins = False, [], {}
-    if slots.capped:
-        text = f"daily spending cap reached (${caps.spent_today():.2f}): nothing new starts until tomorrow, or until limits.usd_per_day is raised"
-        if _once(("day_cap", caps.today()), text, alerts):
+    for account in sorted(slots.capped_accounts):
+        limit = caps.day_limit(limits, account) + caps.raised_today(account)
+        text = (f"{account}: daily spending cap reached (${caps.spent_today(account):.2f} of ${limit:.2f}): nothing new "
+                "starts on its runs until tomorrow, or until its cap is raised")
+        if _once(("day_cap", caps.today(), account), text, alerts):
             critical.append(text)
     for key, st in states.items():
         run.stamp_times(st)
@@ -1843,7 +1849,7 @@ def cycle(forge=None) -> tuple[str, list[str], bool]:
                 text = f"{key[0]}/{key[1]}: the run state cannot be saved: {type(e).__name__}: {e}"
                 if _once(("unsaved", *key), text, alerts):
                     critical.append(text)
-    _flag_stuck(list(states.values()), slots.capped, alerts, critical)
+    _flag_stuck(list(states.values()), slots.capped_accounts, alerts, critical)
     try:
         questions.save_file(list(states.values()))
     except OSError as e:

@@ -112,11 +112,6 @@ def capped(account: str, limits: dict) -> bool:
     return limit is not None and spent_today(account) >= limit + raised_today(account)
 
 
-def day_capped(limits: dict) -> bool:
-    limit = day_limit(limits)
-    return limit is not None and spent_today() >= limit
-
-
 def run_spent(st: dict) -> float:
     return sum(j["usd"] for j in st["jobs"].values()) + st.get("other_usd", 0)
 

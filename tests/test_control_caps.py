@@ -34,7 +34,7 @@ def test_a_ledger_that_cannot_be_read_counts_as_over(ark_home):
     paths.runs_dir().mkdir(parents=True, exist_ok=True)
     ledger().mkdir()
     assert math.isinf(caps.spent_today())
-    assert caps.day_capped({"usd_per_day": 1})
+    assert caps.capped("personal", {"usd_per_day": 1})
 
 
 def test_day_limit():
@@ -44,14 +44,6 @@ def test_day_limit():
     for bad in (0, -1, True, "40", float("nan"), float("inf")):
         with pytest.raises(ValueError):
             caps.day_limit({"usd_per_day": bad})
-
-
-def test_day_capped(ark_home):
-    assert not caps.day_capped({})
-    assert not caps.day_capped({"usd_per_day": 1})
-    caps.record("r/s", "a.worker", 1)
-    assert caps.day_capped({"usd_per_day": 1})
-    assert not caps.day_capped({"usd_per_day": 2})
 
 
 def test_a_run_spends_its_jobs_and_its_other_processes():
@@ -64,24 +56,9 @@ def test_a_run_spends_its_jobs_and_its_other_processes():
 import os
 from pathlib import Path
 
-from control_helpers import SLUG, ark, drive, job_status, settled, state
+from control_helpers import SLUG, ark, drive, job_status, said, settled, state, workspace
 
 from ark import inbox, loop
-
-
-def workspace(ark_home, tmp_path, **limits):
-    """Limits as given, and a notifier that writes to a file. Returns that file."""
-    sent = tmp_path / "sent"
-    f = ark_home / "workspace.json"
-    ws = json.loads(f.read_text())      # its roots are what makes the demo repo valid
-    ws["limits"] = {**ws.get("limits", {}), **limits}
-    ws["notify"] = ["sh", "-c", f'printf "%s\\n" "$1" >> "{sent}"', "notify"]
-    f.write_text(json.dumps(ws))
-    return sent
-
-
-def said(sent):
-    return sent.read_text() if sent.exists() else ""
 
 
 def test_a_run_over_its_budgets_asks_and_starts_nothing(feature, ark_home, tmp_path, monkeypatch):
@@ -133,7 +110,7 @@ def test_the_daily_cap_starts_nothing_new_until_it_is_raised(feature, ark_home, 
     sent = workspace(ark_home, tmp_path, usd_per_day=1)
     monkeypatch.setenv("FAKE_USD", "1")
     feature()
-    drive(lambda: "daily spending cap" in said(sent))
+    drive(lambda: "personal: daily spending cap" in said(sent))
     for _ in range(20):
         loop.cycle()
     assert job_status("ui") == "pending"
