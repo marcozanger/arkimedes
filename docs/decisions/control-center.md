@@ -49,7 +49,7 @@ Jobs: 3 merged, 1 blocked · Decisions: 4 worker, 0 reviewer, 3 arkimedes
   See: https://github.com/marcozanger/arkimedes/pull/46 · report `runs/arkimedes/control-center/page.report.md`
   </details>
 
-- **D6** · `page` was blocked many times by the "changed files outside its area" check, and it ran up to about $44 of a $5 budget over 24 attempts. The check flagged docs fixes ('más' → 'more'), main's own commits, and the `sleep_retry` fix. Marco resolved it by landing the fixes on main (#48) and moving the run's base `ark/control-center` forward to main, and the branch was rebuilt as origin/main + b225ddb. The run budget was raised four times (+10, +10, +25, +10). · _arkimedes_
+- **D6** · `page` was blocked many times by the "changed files outside its area" check, and it ran up to about $44 of a $5 budget over 24 attempts. The check flagged docs fixes (a Spanish word in a summary label), main's own commits, and the `sleep_retry` fix. Marco resolved it by landing the fixes on main (#48) and moving the run's base `ark/control-center` forward to main, and the branch was rebuilt as origin/main + b225ddb. The run budget was raised four times (+10, +10, +25, +10). · _arkimedes_
   <details><summary>more</summary>
 
   Why: The failures were not in the page itself. The base had stale docs and tests, and the worker kept applying and reverting the same out-of-area fix after contradictory answers. Moving the base let the area check pass against it. The fixes were also needed in `main` itself, so Marco landed them there, and Marco's session opened the sleep-retry PR to main.
