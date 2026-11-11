@@ -77,9 +77,12 @@ def resolve(st: dict, qid: str, text: str) -> dict:
     return answer
 
 
-def render(states: list[dict]) -> str:
+def render(states: list[dict], cap_questions=()) -> str:
     lines = ["# Questions", "", "Answer with `ark answer`.", ""]
     found = False
+    for q in cap_questions:  # an account at its daily cap (daycap.py): first, it holds every run of that account
+        found = True
+        lines += [f"## account {q['account']} · {q['id']}", "", q["text"], ""]
     for st in states:
         for q in st.get("questions") or []:
             found = True
@@ -90,12 +93,12 @@ def render(states: list[dict]) -> str:
     return clean("\n".join(lines)).rstrip() + "\n"  # the plan comes from the approval, not from a state _load checked
 
 
-def save_file(states: list[dict]) -> None:
+def save_file(states: list[dict], cap_questions=()) -> None:
     """Only when it changed. A new file put in place, so a link planted at the name is replaced, not followed."""
     target = paths.ark_home() / "questions.md"
-    text = render(states)
+    text = render(states, cap_questions)
     exists = os.path.lexists(target)
-    if not exists and not any(st.get("questions") for st in states):
+    if not exists and not cap_questions and not any(st.get("questions") for st in states):
         return
     if exists and not target.is_symlink():
         try:

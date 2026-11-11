@@ -1877,7 +1877,7 @@ def cycle(forge=None) -> tuple[str, list[str], bool]:
                     critical.append(text)
     _flag_stuck(list(states.values()), slots.capped_accounts, alerts, critical)
     try:
-        questions.save_file(list(states.values()))
+        questions.save_file(list(states.values()), day["questions"])
     except OSError as e:
         _once(("questions_file",), f"cannot write questions.md: {e}", alerts)
     alerts, critical, origins = _clean(alerts), _clean(critical), _clean(origins)  # an approval's names reach them unchecked; notify catches only OSError
