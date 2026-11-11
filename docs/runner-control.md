@@ -13,7 +13,7 @@ them.
 | `ark stop <job>` | stops its processes, and the job ends blocked; with no process, it blocks on the next cycle |
 | `ark steer <job> "<instruction>"` | stops the worker and resumes its session with the instruction |
 | `ark attach <job>` | hands the worker to you in an interactive session; on a clean exit it goes on to the gate |
-| `ark answer [--list] [--run <repo>/<slug> <id> "<text>"]` | answers open questions, one by one |
+| `ark answer [--list] [--run <repo>/<slug> <id> "<text>"] [--cap <id> "<text>"]` | answers open questions, one by one (account questions first); `--cap` answers an account's daily cap question |
 
 `<job>` also takes the form `<repo>/<slug>:<job>`, needed when two live runs share a job name or the run has finished.
 
@@ -24,6 +24,7 @@ them.
 | worker | Euklides asks (see below) | `ok` takes its proposal; any other text is the answer; `:stop` blocks the job |
 | plan_changed | the plan changed after its approval and the run is held | `stop` ends the run; restoring or re-approving the plan closes it |
 | cap_run | the run spent more than the sum of its budgets | `raise <usd>`, or `stop` to end the run |
+| cap_day | an account reached its daily cap (one per account and day) | `raise <usd>` adds to today's cap; `stop` waits until tomorrow |
 
 `questions.md` at the Arkimedes root lists them. It is rewritten by the loop and never read back.
 
@@ -93,8 +94,11 @@ finished, the budget for what runs and what is left. Delay is forecast end minus
 ## Caps and anomalies
 
 - Per run: the sum of the plan's job budgets. Over it, running workers finish, nothing new starts, and a question asks.
-- Per day: `limits.usd_per_day`, against `runs/spend.jsonl`. Nothing new starts until the next day or a higher limit.
-  An unreadable ledger counts as over.
+- Per day, per account: `accounts[].usd_per_day` for a rule's account, `limits.usd_per_day` for the personal one,
+  against `runs/spend.jsonl` (each line carries its `account`). At the cap, only that account's runs wait: running work
+  finishes, nothing new starts, and one `cap_day` question per account and day asks (`runs/daycap.json`, ids `c1`, `c2`…;
+  `ark ps` shows it). A raise goes to `runs/raises.jsonl` and counts for today only. A new day, or a higher configured
+  cap, closes the question. An unreadable ledger counts as over.
 - A worker that is over its tier's minutes, silent for 20 minutes, or over its tier's tokens gets an intervene tick,
   which chooses wait (once), steer (twice per job), stop and escalate, or stop and block. The process's hard deadline
   is twice its tier's minutes.
