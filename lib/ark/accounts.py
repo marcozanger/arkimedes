@@ -1,24 +1,33 @@
 """Which Claude account and gh user a repo's runs use.
 
 workspace.json may hold `accounts`, a list of rules:
-    {"match": "globallogic/", "claude_config_dir": "~/.claude-work", "gh_user": "marcozanger-gl"}
-`match` is a repo-name prefix on folder boundaries; the other two keys are each optional. The first rule
+    {"match": "globallogic/", "claude_config_dir": "~/.claude-work", "gh_user": "marcozanger-gl",
+     "usd_per_day": 30}
+`match` is a repo-name prefix on folder boundaries; the other keys are each optional; `usd_per_day`
+(a positive number) is that account's daily spending cap. The first rule
 that matches wins. No rule means the personal setup: no CLAUDE_CONFIG_DIR, gh's active account. A rule
 that matches but cannot be used is an AccountError: never a fall back to the personal account."""
 from __future__ import annotations
 
+import math
 import os
 import subprocess
 from pathlib import Path
 
 from . import paths
 
-KEYS = ("match", "claude_config_dir", "gh_user")
+KEYS = ("match", "claude_config_dir", "gh_user", "usd_per_day")
+STRING_KEYS = ("match", "claude_config_dir", "gh_user")
+PERSONAL = "personal"  # repos no rule matches
 GH_TIMEOUT = 30  # seconds for `gh auth token`
 
 
 class AccountError(Exception):
     pass
+
+
+def _money(x) -> bool:
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) and x > 0
 
 
 def _rules() -> list[dict]:
@@ -28,8 +37,11 @@ def _rules() -> list[dict]:
     for i, r in enumerate(rules):
         if not isinstance(r, dict) or "match" not in r or set(r) - set(KEYS):
             raise AccountError(f"workspace.json: accounts[{i}] needs match and only {', '.join(KEYS)}")
-        if any(not isinstance(v, str) or not v.strip("/").strip() for v in r.values()):
-            raise AccountError(f"workspace.json: accounts[{i}] values must be non-empty strings")
+        for k, v in r.items():
+            if k in STRING_KEYS and (not isinstance(v, str) or not v.strip("/").strip()):
+                raise AccountError(f"workspace.json: accounts[{i}].{k} must be a non-empty string")
+            if k == "usd_per_day" and not _money(v):
+                raise AccountError(f"workspace.json: accounts[{i}].usd_per_day must be a positive number, not {v!r}")
     return rules
 
 
@@ -40,6 +52,19 @@ def rule_for(name: str) -> dict:
         if name == m or name.startswith(m + "/"):
             return r
     return {}
+
+
+def account_of(repo_name: str) -> str:
+    """The account a repo's runs spend on: its rule's match without slashes, or PERSONAL."""
+    r = rule_for(repo_name)
+    return r["match"].strip("/") if r else PERSONAL
+
+
+def rule_of_account(account: str) -> dict:
+    """The first rule named `account`; {} for PERSONAL or a name no rule has any more."""
+    if account == PERSONAL:
+        return {}
+    return next((r for r in _rules() if r["match"].strip("/") == account), {})
 
 
 def claude_env(name: str) -> dict:
