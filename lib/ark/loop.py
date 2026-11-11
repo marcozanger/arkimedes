@@ -19,7 +19,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from . import accounts, beat, brief, caps, claude, euklides, forge as forge_mod, gitops, inbox, integrate, merge, notify, paths, proc, questions, reporting, run, usage
+from . import accounts, beat, brief, caps, claude, daycap, euklides, forge as forge_mod, gitops, inbox, integrate, merge, notify, paths, proc, questions, reporting, run, usage
 from .globs import areas_overlap, match_any
 from .plan import load_plan, sha256_file
 from .validate import validate
@@ -1794,6 +1794,17 @@ def cycle(forge=None) -> tuple[str, list[str], bool]:
     limits = paths.load_workspace()["limits"]  # first: if it raises, no alert was consumed and lost
     caps.check_limits(limits)  # a bad cap, personal or on a rule, raises here too: before any alert is consumed
     states, before, alerts, approved = {}, {}, [], {}
+    changed, critical = False, []
+    # Account questions, in this order: apply an answer, mark its inbox item done, save runs/daycap.json at the end of
+    # the cycle's account block. If that save fails, a raise is already in raises.jsonl, so the account is no longer
+    # capped and drop_except closes the stale question next cycle; a `stop` is lost and the question stays open,
+    # which is the safe side (the account keeps waiting).
+    day = daycap.load()
+    for item in daycap.pending():
+        said = daycap.apply(day, item.get("id"), str(item.get("text", ""))) if item["kind"] == "answer" else None
+        inbox.done(item)  # right away: an answer applied twice would record its raise twice
+        if said:
+            alerts.append(said)
     for a in approvals():
         key = (a["repo"], a["slug"])
         approved[key] = a
@@ -1825,13 +1836,28 @@ def cycle(forge=None) -> tuple[str, list[str], bool]:
             _guarded(st, "error", lambda d=paths.run_dir(*key): proc.reap(d))
         else:
             _guarded(st, "error", lambda st=st: step(st, list(states.values()), forge, slots, hold=net == "wait"))
-    changed, critical, origins = False, [], {}
+    origins = {}
+    waiting = {}
+    for st in states.values():
+        if st["status"] not in ("done", "blocked"):
+            waiting.setdefault(accounts.account_of(st["repo"]), []).append(f"{st['repo']}/{st['slug']}")
     for account in sorted(slots.capped_accounts):
         limit = caps.day_limit(limits, account) + caps.raised_today(account)
-        text = (f"{account}: daily spending cap reached (${caps.spent_today(account):.2f} of ${limit:.2f}): nothing new "
-                "starts on its runs until tomorrow, or until its cap is raised")
-        if _once(("day_cap", caps.today(), account), text, alerts):
+        runs_ = ", ".join(waiting.get(account, [])) or "no live run"
+        q, new = daycap.ask(day, account, (
+            f"{account} spent ${caps.spent_today(account):.2f} today; its cap is ${limit:.2f}. Running work finishes; "
+            f"nothing new starts on {runs_}. Answer `raise <usd>` to add to today's cap, or `stop` to wait until tomorrow."))
+        if new:
+            text = f"{account}: daily spending cap reached · question {q['id']}: {q['text']} — `ark answer`"
+            alerts.append(text)
             critical.append(text)
+        elif q is None:
+            _once(("day_cap_stopped", caps.today(), account), f"{account}: at its daily cap; waits until tomorrow", alerts)
+    daycap.drop_except(day, slots.capped_accounts)
+    try:
+        daycap.save(day)
+    except OSError as e:
+        _once(("daycap_file",), f"cannot write runs/daycap.json: {e}", alerts)
     for key, st in states.items():
         run.stamp_times(st)
         for line in st["alerts"]:
