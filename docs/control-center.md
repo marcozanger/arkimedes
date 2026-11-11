@@ -34,3 +34,20 @@ Every plan in the snapshot has `cost`:
 | `closed` | true when the plan is `done` or `blocked` and `history/plans.jsonl` has its row |
 | `wall_min`, `working_min`, `waiting_min` | whole minutes from that row; `null` while open |
 | `estimated_min` | estimated end minus start, in minutes; `null` when either is unknown |
+
+## Trying it
+
+1. Start it: `ark ui --open`. The page opens in a browser tab and shows the plans within a poll.
+2. Click `Turn on notifications` in the sidebar and allow them. If the browser says no, the sidebar
+   reads `Notifications are off in this browser` and the rest of the page still works.
+3. Without a runner, feed the page by hand from the browser console:
+   `update(sampleJson, {stale: false, error: ""})` shows the contents of `ui/sample.json`.
+4. End-to-end check, on a real run in `ark-sandbox`:
+   - force one job to `blocked` and confirm a notification arrives for that plan;
+   - kill `ark-loop` and confirm `ark-loop is not running` arrives, once;
+   - click the first notification: the tab comes forward and opens that plan (the URL hash
+     becomes `#<repo>/<slug>/timeline`);
+   - look at the page in light and dark mode, in Safari and in one other browser.
+
+This check is Marco's, after the final integration. It needs a browser and a real run, so the
+test suite does not cover it.

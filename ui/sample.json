@@ -3,7 +3,8 @@
   "generated": "2026-11-07T10:05:00+00:00",
   "loop": {
     "alive": true,
-    "last_beat": "2026-11-07T10:04:00+00:00"
+    "last_beat": "2026-11-07T10:04:00+00:00",
+    "pid": 4242
   },
   "alerts": [
     {
@@ -12,7 +13,8 @@
       "job": "ui-edit",
       "at": "2026-11-07T09:53:00+00:00",
       "text": "ui-edit is past its budget",
-      "critical": false
+      "critical": false,
+      "id": 1
     },
     {
       "repo": "muscleapp",
@@ -20,7 +22,8 @@
       "job": "screens",
       "at": "2026-11-07T10:00:00+00:00",
       "text": "screens is blocked: gate red after 3 attempts",
-      "critical": true
+      "critical": true,
+      "id": 2
     }
   ],
   "plans": [
@@ -39,7 +42,8 @@
         "delay_min": 7,
         "left_min": 67,
         "estimated_end": "2026-11-07T11:12:00+00:00",
-        "forecast_end": "2026-11-07T11:12:00+00:00"
+        "forecast_end": "2026-11-07T11:12:00+00:00",
+        "started": "2026-11-07T05:05:00+00:00"
       },
       "approved_at": "2026-11-07T05:05:00+00:00",
       "created": "2026-11-06",
@@ -91,7 +95,12 @@
             "tests pass"
           ],
           "includes": "src/model",
-          "excludes": "ui"
+          "excludes": "ui",
+          "gate": "pytest -q",
+          "heavy": false,
+          "area": [
+            "src/**"
+          ]
         },
         {
           "id": "api",
@@ -126,7 +135,12 @@
           ],
           "done": [],
           "includes": "",
-          "excludes": ""
+          "excludes": "",
+          "gate": "pytest -q",
+          "heavy": false,
+          "area": [
+            "src/**"
+          ]
         },
         {
           "id": "ui-edit",
@@ -166,7 +180,12 @@
             "autosave works"
           ],
           "includes": "app/ui",
-          "excludes": "the api"
+          "excludes": "the api",
+          "gate": "pytest -q",
+          "heavy": false,
+          "area": [
+            "src/**"
+          ]
         },
         {
           "id": "review-ui",
@@ -201,7 +220,12 @@
             "lint clean"
           ],
           "includes": "",
-          "excludes": ""
+          "excludes": "",
+          "gate": "pytest -q",
+          "heavy": false,
+          "area": [
+            "src/**"
+          ]
         },
         {
           "id": "docs",
@@ -236,9 +260,28 @@
             "README updated"
           ],
           "includes": "",
-          "excludes": ""
+          "excludes": "",
+          "gate": "pytest -q",
+          "heavy": false,
+          "area": [
+            "src/**"
+          ]
         }
-      ]
+      ],
+      "cost": {
+        "usd": 4.2,
+        "budget_usd": 14,
+        "closed": false,
+        "wall_min": null,
+        "working_min": null,
+        "waiting_min": null,
+        "estimated_min": 140
+      },
+      "manifest": {
+        "setup": [],
+        "integration_gate": "",
+        "final_pr_title": ""
+      }
     },
     {
       "repo": "muscleapp",
@@ -255,7 +298,8 @@
         "delay_min": 35,
         "left_min": null,
         "estimated_end": null,
-        "forecast_end": null
+        "forecast_end": null,
+        "started": "2026-11-07T05:05:00+00:00"
       },
       "approved_at": "2026-11-07T05:05:00+00:00",
       "created": "2026-11-06",
@@ -303,7 +347,12 @@
           ],
           "done": [],
           "includes": "",
-          "excludes": ""
+          "excludes": "",
+          "gate": "pytest -q",
+          "heavy": false,
+          "area": [
+            "src/**"
+          ]
         },
         {
           "id": "screens",
@@ -338,7 +387,12 @@
             "snapshots green"
           ],
           "includes": "ios/Onboarding",
-          "excludes": ""
+          "excludes": "",
+          "gate": "pytest -q",
+          "heavy": false,
+          "area": [
+            "src/**"
+          ]
         },
         {
           "id": "polish",
@@ -371,9 +425,28 @@
           ],
           "done": [],
           "includes": "",
-          "excludes": ""
+          "excludes": "",
+          "gate": "pytest -q",
+          "heavy": false,
+          "area": [
+            "src/**"
+          ]
         }
-      ]
+      ],
+      "cost": {
+        "usd": 2.9,
+        "budget_usd": 6,
+        "closed": false,
+        "wall_min": null,
+        "working_min": null,
+        "waiting_min": null,
+        "estimated_min": 140
+      },
+      "manifest": {
+        "setup": [],
+        "integration_gate": "",
+        "final_pr_title": ""
+      }
     },
     {
       "repo": "socrates",
@@ -390,7 +463,8 @@
         "delay_min": 0,
         "left_min": 0,
         "estimated_end": "2026-11-07T03:55:00+00:00",
-        "forecast_end": "2026-11-07T03:55:00+00:00"
+        "forecast_end": "2026-11-07T03:55:00+00:00",
+        "started": "2026-11-07T02:45:00+00:00"
       },
       "approved_at": "2026-11-07T02:45:00+00:00",
       "created": "2026-11-06",
@@ -437,7 +511,12 @@
           "tasks": [],
           "done": [],
           "includes": "",
-          "excludes": ""
+          "excludes": "",
+          "gate": "pytest -q",
+          "heavy": false,
+          "area": [
+            "src/**"
+          ]
         },
         {
           "id": "tests",
@@ -470,9 +549,28 @@
           "tasks": [],
           "done": [],
           "includes": "",
-          "excludes": ""
+          "excludes": "",
+          "gate": "pytest -q",
+          "heavy": false,
+          "area": [
+            "src/**"
+          ]
         }
-      ]
+      ],
+      "cost": {
+        "usd": 7.5,
+        "budget_usd": 4,
+        "closed": true,
+        "wall_min": 558,
+        "working_min": 105,
+        "waiting_min": 450,
+        "estimated_min": 90
+      },
+      "manifest": {
+        "setup": [],
+        "integration_gate": "",
+        "final_pr_title": ""
+      }
     },
     {
       "repo": "cockpit",
@@ -489,7 +587,8 @@
         "delay_min": null,
         "left_min": null,
         "estimated_end": null,
-        "forecast_end": null
+        "forecast_end": null,
+        "started": "2026-11-07T00:05:00+00:00"
       },
       "approved_at": "2026-11-07T00:05:00+00:00",
       "created": "2026-11-06",
@@ -501,7 +600,21 @@
       "decisions": "",
       "events": [],
       "final_pr": null,
-      "jobs": []
+      "jobs": [],
+      "cost": {
+        "usd": 0,
+        "budget_usd": 0,
+        "closed": false,
+        "wall_min": null,
+        "working_min": null,
+        "waiting_min": null,
+        "estimated_min": null
+      },
+      "manifest": {
+        "setup": [],
+        "integration_gate": "",
+        "final_pr_title": ""
+      }
     }
   ]
 }
