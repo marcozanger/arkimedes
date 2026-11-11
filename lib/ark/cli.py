@@ -1,4 +1,4 @@
-"""`ark` subcommands that need no model: status, plans, validate, estimate, approve, report, stats, and the run control ones.
+"""`ark` subcommands that need no model: status, plans, validate, estimate, approve, report, stats, runs, and the run control ones.
 
 `ark` with no arguments is handled by bin/ark (it starts Claude); planning is the /ark-plan skill.
 """
@@ -11,7 +11,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import ctl, desk, estimate, paths, reporting, review, validate
+from . import ctl, desk, estimate, monitor, paths, reporting, review, validate
 from .plan import load_plan, set_status, sha256_file
 from .report import minutes, usd
 
@@ -165,6 +165,7 @@ def main(argv=None) -> int:
     s.add_argument("--json", action="store_true", help="the same data as JSON")
     s.set_defaults(fn=cmd_estimate)
     ctl.register(sub)
+    monitor.register(sub)
     reporting.register(sub)
     review.register(sub)
     args = ap.parse_args(argv)
