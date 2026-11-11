@@ -10,7 +10,7 @@ No key decisions. The worker followed the brief's code verbatim and reported no 
 ## writing-rules — merged
 
 - **D1** · The example decision in the plan template is written as a nested list under the bold chosen option, with the four labels as sub-items. · _worker (Sonnet 5.5)_
-  <details><summary>más</summary>
+  <details><summary>more</summary>
 
   Why: The brief asks for "a list item that starts with the chosen option in bold" with the four labels after it, and a nested list is the closest reading of that.
   Rejected: Four flat bullets.
