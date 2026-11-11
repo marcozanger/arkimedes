@@ -8,7 +8,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import beat, desk, paths, run, timing
+from . import beat, desk, history, paths, run, timing
 from .plan import load_plan, task_texts
 
 VERSION = 1
@@ -70,11 +70,45 @@ def _run_keys() -> set[tuple[str, str]]:
     return {(str(f.parent.relative_to(root).parent), f.parent.name) for f in root.glob("**/state.json")}
 
 
+def _cost_zero() -> dict:
+    return {"usd": 0, "budget_usd": 0, "closed": False, "wall_min": None, "working_min": None,
+            "waiting_min": None, "estimated_min": None}
+
+
+def _is_num(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _minutes(v) -> int | None:
+    return round(v) if _is_num(v) else None
+
+
+def _cost(p: dict, rows: list[dict]) -> dict:
+    c = _cost_zero()
+    try:
+        c["usd"] = sum(j["usd"] for j in p["jobs"])
+        c["budget_usd"] = sum(j["budget"]["usd"] for j in p["jobs"])
+        t = p["times"] or {}
+        if t.get("started") and t.get("estimated_end"):
+            c["estimated_min"] = round((datetime.fromisoformat(t["estimated_end"])
+                                        - datetime.fromisoformat(t["started"])).total_seconds() / 60)
+        row = next((r for r in reversed(rows) if r.get("repo") == p["repo"] and r.get("plan") == p["slug"]), None)
+        if row is not None and p["status"] in ("done", "blocked"):
+            c.update(closed=True, wall_min=_minutes(row.get("wall_minutes")),
+                     working_min=_minutes(row.get("working_minutes")), waiting_min=_minutes(row.get("waiting_minutes")))
+            for k in ("usd", "budget_usd"):
+                if _is_num(row.get(k)):
+                    c[k] = row[k]
+    except Exception:  # cost never breaks a plan
+        pass
+    return c
+
+
 def _empty(repo: str, slug: str) -> dict:
     return {"repo": repo, "slug": slug, "title": slug, "status": "waiting", "reason": "", "error": None,
             "approval": "-", "approved_at": None, "plan_path": "", "plan_sha": None, "spec": None, "created": None,
             "progress": {"merged": 0, "total": 0}, "times": None, "jobs": [], "events": [], "final_pr": None,
-            "plan_file": "", "decisions": "", "manifest": {"setup": [], "integration_gate": "", "final_pr_title": ""}}
+            "plan_file": "", "decisions": "", "cost": _cost_zero(), "manifest": {"setup": [], "integration_gate": "", "final_pr_title": ""}}
 
 
 def _job(jid: str, mj: dict, sj: dict, heads: dict) -> dict:
@@ -90,7 +124,7 @@ def _job(jid: str, mj: dict, sj: dict, heads: dict) -> dict:
             "gate": mj.get("gate", ""), "heavy": bool(mj.get("heavy", False)), "area": list(mj.get("area") or [])}
 
 
-def _plan(repo: str, slug: str, a: dict | None, now: datetime) -> dict:
+def _plan(repo: str, slug: str, a: dict | None, now: datetime, rows: list[dict] | None = None) -> dict:
     p = _empty(repo, slug)
     plan_path = Path(a["plan"]) if a and isinstance(a.get("plan"), str) else paths.desk_dir() / repo / slug / "plan.md"
     text = _text(plan_path)
@@ -123,12 +157,13 @@ def _plan(repo: str, slug: str, a: dict | None, now: datetime) -> dict:
     p["progress"] = {"merged": sum(j["status"] == "merged" for j in jobs), "total": len(jobs)}
     p["times"] = {"started": _iso(t["origin"]), "estimated_end": _iso(t["estimated_end"]),
                   "forecast_end": _iso(t["forecast_end"]), "delay_min": t["delay_min"], "left_min": t["left_min"]}
+    p["cost"] = _cost(p, rows or [])
     return p
 
 
-def _safe(repo: str, slug: str, a: dict | None, now: datetime) -> dict:
+def _safe(repo: str, slug: str, a: dict | None, now: datetime, rows: list[dict] | None = None) -> dict:
     try:
-        return _plan(repo, slug, a, now)
+        return _plan(repo, slug, a, now, rows)
     except Exception as e:  # one broken plan never hides the others
         p = _empty(repo, slug)
         p["error"] = str(e) if isinstance(e, run.StateCorrupt) else f"{type(e).__name__}: {e}"
@@ -139,8 +174,12 @@ def build(now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
     approvals = _approvals()
     keys = sorted(set(approvals) | _run_keys())
+    try:
+        rows = history._read("plans.jsonl")
+    except Exception:
+        rows = []
     return {"version": VERSION, "generated": _iso(now), "loop": beat.read(now.timestamp()), "alerts": _alerts(),
-            "plans": [_safe(r, s, approvals.get((r, s)), now) for r, s in keys]}
+            "plans": [_safe(r, s, approvals.get((r, s)), now, rows) for r, s in keys]}
 
 
 def cmd_runs(args) -> int:
@@ -156,3 +195,8 @@ def register(sub) -> None:
     s = sub.add_parser("runs", help="everything the control center shows, as JSON (read-only)")
     s.add_argument("--json", action="store_true", help="the output the app reads")
     s.set_defaults(fn=cmd_runs)
+    from . import ui
+    u = sub.add_parser("ui", help="the control center in a browser tab (127.0.0.1 only, read-only)")
+    u.add_argument("--port", type=int, default=ui.PORT, help=f"port to listen on (default {ui.PORT})")
+    u.add_argument("--open", action="store_true", help="open the page in the browser")
+    u.set_defaults(fn=ui.cmd_ui)
