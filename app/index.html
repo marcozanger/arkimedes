@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Arkimedes</title>
+<style>
+:root {
+  --bg: #f8fafc; --raised: #ffffff; --line: #d3dbe5; --fg: #17212e; --muted: #5a6979;
+  --accent: #1f55c4; --accent-soft: #dfe8fa; --attn: #b56d00; --attn-soft: #fbeed5; --attn-ink: #8a5200;
+  --bad: #b3261e; --bad-soft: #fae3e1; --ok: #17693f; --ok-soft: #dcf0e4; --wait: #5d6b7b; --wait-soft: #e6ebf1;
+  --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+  --mono: ui-monospace, Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) { :root {
+  --bg: #171e28; --raised: #1f2835; --line: #313d4d; --fg: #e7ecf2; --muted: #9aa8b8;
+  --accent: #86aaf5; --accent-soft: #24355a; --attn: #f0b95c; --attn-soft: #413016; --attn-ink: #f0b95c;
+  --bad: #f29b94; --bad-soft: #4a2220; --ok: #79d2a0; --ok-soft: #1c3b2a; --wait: #a3b0bf; --wait-soft: #2a3442;
+  color-scheme: dark;
+} }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 var(--sans); }
+button { font: inherit; color: inherit; cursor: pointer; }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+a { color: var(--accent); }
+.mono { font-family: var(--mono); font-size: .92em; }
+.muted { color: var(--muted); }
+.small { font-size: 12.5px; }
+.label { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+#banner { padding: 8px 14px; background: var(--attn-soft); color: var(--attn-ink); border-bottom: 1px solid var(--attn); font-size: 13px; }
+#banner.bad { background: var(--bad-soft); color: var(--bad); border-color: var(--bad); }
+.window { display: grid; grid-template-columns: 240px minmax(0, 1fr); min-height: 100vh; }
+.side { border-right: 1px solid var(--line); padding: 10px 8px; display: grid; gap: 14px; align-content: start; background: var(--raised); min-width: 0; }
+.side .label { margin: 0 7px 5px; display: block; }
+.prow { width: 100%; text-align: left; border: 0; background: transparent; border-radius: 6px; padding: 7px; display: grid; gap: 4px; min-width: 0; }
+.prow:hover { background: var(--wait-soft); }
+.prow[aria-current="true"] { background: var(--accent-soft); }
+.prow b { font-weight: 500; font-size: 13px; overflow-wrap: anywhere; }
+.prow small { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.segs { display: flex; gap: 2px; }
+.segs i { flex: 1; height: 4px; border-radius: 2px; background: var(--wait-soft); }
+.segs i.merged { background: var(--ok); } .segs i.active { background: var(--accent); }
+.segs i.stuck { background: var(--attn); } .segs i.blocked { background: var(--bad); }
+.main { padding: 16px 18px 18px; display: grid; gap: 14px; align-content: start; min-width: 0; }
+.phead { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; justify-content: space-between; }
+.phead h2 { margin: 0; font-size: 18px; font-weight: 600; }
+.pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font: 500 12px var(--mono); background: var(--wait-soft); color: var(--wait); white-space: nowrap; }
+.pill.active { background: var(--accent-soft); color: var(--accent); }
+.pill.stuck { background: var(--attn-soft); color: var(--attn-ink); }
+.pill.blocked { background: var(--bad-soft); color: var(--bad); }
+.pill.merged { background: var(--ok-soft); color: var(--ok); }
+.answers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.answer { background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; display: grid; gap: 3px; align-content: start; min-width: 0; }
+.answer strong { font-size: 22px; line-height: 1.2; font-weight: 600; font-variant-numeric: tabular-nums; }
+.problem { border: 1px solid var(--attn); background: var(--attn-soft); border-radius: 7px; padding: 8px 12px; display: grid; gap: 4px; }
+.problem.crit { border-color: var(--bad); background: var(--bad-soft); }
+.reason { font: 12.5px/1.45 var(--mono); overflow-wrap: anywhere; white-space: pre-wrap; }
+.tabs { display: flex; flex-wrap: wrap; gap: 2px; border-bottom: 1px solid var(--line); }
+.tab { border: 0; border-bottom: 2px solid transparent; background: transparent; padding: 6px 10px; margin-bottom: -1px; color: var(--muted); font-weight: 500; }
+.tab[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+.legend span { display: inline-flex; align-items: center; gap: 5px; }
+.swatch { display: inline-block; width: 16px; height: 8px; border-radius: 2px; }
+.hatch { background: repeating-linear-gradient(135deg, var(--accent) 0 2px, transparent 2px 6px); }
+.row, .axis { display: grid; grid-template-columns: 140px minmax(0, 1fr) 84px; gap: 10px; align-items: center; }
+.row { width: 100%; border: 0; background: transparent; padding: 4px; text-align: left; border-radius: 5px; }
+.row:hover { background: var(--wait-soft); }
+.row[aria-pressed="true"] { background: var(--accent-soft); }
+.job-cell { display: grid; min-width: 0; }
+.job-cell .mono { font-weight: 500; overflow-wrap: anywhere; }
+.job-cell small { font: 11.5px var(--mono); color: var(--muted); }
+.track { position: relative; height: 30px; border-left: 1px solid var(--line); }
+.bar { position: absolute; display: block; min-width: 3px; }
+.bar.plan { top: 22px; height: 4px; border-radius: 2px; background: var(--wait); opacity: .55; }
+.bar.real { top: 5px; height: 13px; border-radius: 3px; background: var(--accent); }
+.bar.real.merged { background: var(--ok); } .bar.real.stuck { background: var(--attn); } .bar.real.blocked { background: var(--bad); }
+.bar.fc { top: 5px; height: 13px; border-radius: 3px; }
+.now-line { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--fg); }
+.delta { text-align: right; font-size: 12.5px; font-variant-numeric: tabular-nums; color: var(--muted); }
+.delta.late { color: var(--fg); font-weight: 600; }
+.ticks { position: relative; height: 18px; font: 11px var(--mono); color: var(--muted); }
+.ticks span { position: absolute; top: 2px; white-space: nowrap; }
+.ticks .last { transform: translateX(-100%); }
+.detail { background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; display: grid; gap: 10px; min-width: 0; }
+.detail-top { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 10px; align-items: baseline; }
+.metrics { display: flex; flex-wrap: wrap; gap: 4px 16px; font: 12.5px var(--mono); color: var(--muted); }
+.facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 16px; font-size: 13px; }
+.facts ul { margin: 0; padding-left: 17px; }
+.hint { color: var(--muted); font-size: 12.5px; margin: 0; }
+.events { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; font: 12.5px/1.45 var(--mono); color: var(--muted); }
+.events li { overflow-wrap: anywhere; }
+.doc { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12.5px/1.5 var(--mono); background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+.plan-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px 16px; background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+.plan-facts div { display: grid; gap: 1px; align-content: start; min-width: 0; font-size: 13px; overflow-wrap: anywhere; }
+.stale { color: var(--attn-ink); font-weight: 600; }
+@media (max-width: 800px) {
+  .window { grid-template-columns: minmax(0, 1fr); }
+  .answers, .facts { grid-template-columns: minmax(0, 1fr); }
+}
+</style>
+</head>
+<body>
+<div id="banner" hidden></div>
+<div class="window">
+  <nav class="side" id="side" aria-label="Plans"></nav>
+  <main class="main" id="main"><p class="muted">Waiting for ark…</p></main>
+</div>
+<script>
+"use strict";
+const S = { data: null, meta: { stale: false, error: "" }, plan: null, tab: "timeline", job: null };
+const LIVE = ["waiting", "running", "held"];
+const TABS = ["timeline", "decisions", "events", "plan"];
+const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+const keyOf = p => `${p.repo}/${p.slug}`;
+const post = msg => { try { window.webkit.messageHandlers.ark.postMessage(msg); } catch (e) { /* plain browser */ } };
+const NOW = () => (S.meta && S.meta.now ? Date.parse(S.meta.now) : Date.now());
+const ms = iso => (iso ? Date.parse(iso) : null);
+const fmt = m => { m = Math.round(Math.abs(m)); return m >= 60 ? `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")}` : `${m} min`; };
+const clock = t => (t == null ? "–" : new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+const delayText = d => (d == null ? "–" : Math.abs(d) <= 2 ? "on time" : `${d > 0 ? "+" : "−"}${fmt(d)}`);
+function leftText(p) {
+  if (p.status === "done") return "Finished";
+  if (p.status === "held") return "Paused";
+  return p.times && p.times.left_min != null ? `≈ ${fmt(p.times.left_min)}` : "Not estimated";
+}
+function kind(j) {
+  if (j.status === "merged") return "merged";
+  if (j.status === "blocked") return "blocked";
+  if (j.status === "pending") return "";
+  if (j.status === "waiting_answer" || j.status === "attached") return "stuck";
+  return "active";
+}
+const pillKind = p => ({ done: "merged", blocked: "blocked", held: "stuck", running: "active" })[p.status] || "";
+const segs = p => `<span class="segs" aria-hidden="true">${p.jobs.map(j => `<i class="${kind(j)}"></i>`).join("")}</span>`;
+function plans() {
+  const ps = (S.data && S.data.plans) || [];
+  const recent = (a, b) => String(b.approved_at || "").localeCompare(String(a.approved_at || ""));
+  return [...ps.filter(p => LIVE.includes(p.status)).sort(recent), ...ps.filter(p => !LIVE.includes(p.status)).sort(recent)];
+}
+const current = () => plans().find(p => keyOf(p) === S.plan);
+
+function banner() {
+  if (S.meta.stale) return { cls: "bad", text: `Stale data: ${S.meta.error || "ark did not answer"}. Showing what ark returned at ${clock(ms(S.meta.updated))}.` };
+  if (S.data && !S.data.loop.alive) return { cls: "", text: `ark-loop is not running (last beat ${clock(ms(S.data.loop.last_beat))}). Nothing advances until it starts again.` };
+  return null;
+}
+
+function side() {
+  const ps = plans();
+  const group = (label, list) => (list.length ? `<div><span class="label">${label}</span>${list.map(row).join("")}</div>` : "");
+  return (group("Running", ps.filter(p => LIVE.includes(p.status))) + group("Finished", ps.filter(p => !LIVE.includes(p.status))))
+    || '<p class="muted small">No approved plans.</p>';
+}
+function row(p) {
+  const line = p.error ? "cannot be read"
+    : [`${p.progress.merged} of ${p.progress.total} jobs`, delayText(p.times && p.times.delay_min), p.status === "done" ? "" : leftText(p)].filter(Boolean).join(" · ");
+  return `<button class="prow" data-plan="${esc(keyOf(p))}" aria-current="${S.plan === keyOf(p)}" type="button"><b>${esc(p.title || p.slug)}</b>${segs(p)}<small class="mono">${esc(keyOf(p))}</small><small>${esc(p.status)} · ${esc(line)}</small></button>`;
+}
+
+function main() {
+  const p = current();
+  if (!S.data) return `<p class="muted">${S.meta.stale ? "ark did not answer yet: " + esc(S.meta.error) : "Waiting for ark…"}</p>`;
+  if (!p) return '<p class="muted">Pick a plan.</p>';
+  const head = `<div class="phead"><h2>${esc(p.title || p.slug)}</h2><span class="pill ${pillKind(p)}">${esc(p.status)}</span></div>
+    <div class="mono small muted">${esc(keyOf(p))}${p.final_pr && p.final_pr.url ? ` · <a href="#" data-link="${esc(p.final_pr.url)}">final PR</a>` : ""}${p.reason ? ` · ${esc(p.reason)}` : ""}</div>`;
+  if (p.error) return head + `<div class="problem crit"><strong>This plan cannot be read</strong><div class="reason">${esc(p.error)}</div></div>`;
+  const tabs = TABS.map(t => `<button class="tab" role="tab" data-tab="${t}" aria-selected="${S.tab === t}" type="button">${t[0].toUpperCase() + t.slice(1)}</button>`).join("");
+  const body = { timeline, decisions, events, plan: planTab }[S.tab](p);
+  return head + `<div class="tabs" role="tablist">${tabs}</div>` + body;
+}
+
+function notices(p) {
+  const day = NOW() - 864e5;
+  return ((S.data && S.data.alerts) || []).filter(a => a.repo === p.repo && a.slug === p.slug && ms(a.at) > day).slice(-3).reverse()
+    .map(a => `<div class="problem ${a.critical ? "crit" : ""}"><div class="small muted">${esc(clock(ms(a.at)))}${a.job ? " · " + esc(a.job) : ""}</div><div class="reason">${esc(a.text)}</div></div>`).join("");
+}
+function answers(p) {
+  const t = p.times || {};
+  const live = p.jobs.filter(j => ["active", "stuck"].includes(kind(j))).map(j => j.id);
+  const blocked = p.jobs.filter(j => j.status === "blocked").map(j => j.id);
+  const waiting = p.jobs.filter(j => j.status === "pending").length;
+  const sub1 = p.status === "done" ? "All jobs merged"
+    : [live.length ? `${live.join(", ")} active` : "", blocked.length ? `${blocked.join(", ")} blocked` : "", waiting ? `${waiting} pending` : ""].filter(Boolean).join(" · ");
+  const sub3 = p.status === "done" ? `Ended ${clock(ms(t.forecast_end))}`
+    : p.status === "held" ? "Nothing new is dispatched until it is approved again"
+    : blocked.length ? `${blocked[0]} is blocked` : `Ends ≈ ${clock(ms(t.forecast_end))}`;
+  return `<div class="answers">
+    <div class="answer"><span class="label">Progress</span><strong>${p.progress.merged} of ${p.progress.total} jobs</strong>${segs(p)}<span class="small muted">${esc(sub1)}</span></div>
+    <div class="answer"><span class="label">Delay</span><strong>${esc(delayText(t.delay_min))}</strong><span class="small muted">Estimated end ≈ ${esc(clock(ms(t.estimated_end)))}</span></div>
+    <div class="answer"><span class="label">Time left</span><strong>${esc(leftText(p))}</strong><span class="small muted">${esc(sub3)}</span></div>
+  </div>`;
+}
+const LEGEND = `<div class="legend"><span><i class="swatch" style="background:var(--ok)"></i>merged</span><span><i class="swatch" style="background:var(--accent)"></i>active</span><span><i class="swatch" style="background:var(--attn)"></i>waits for you</span><span><i class="swatch" style="background:var(--bad)"></i>blocked</span><span><i class="swatch" style="height:4px;background:var(--wait);opacity:.55"></i>budget</span><span><i class="swatch hatch"></i>≈ forecast</span><span><i class="swatch" style="width:2px;height:12px;background:var(--fg)"></i>now</span></div>`;
+function timeline(p) {
+  const now = NOW(), live = LIVE.includes(p.status);
+  const pts = p.jobs.flatMap(j => [j.plan_start, j.plan_end, j.fc_start, j.fc_end, j.started, j.finished].map(ms)).filter(x => x != null);
+  if (live) pts.push(now);
+  if (!pts.length) return notices(p) + answers(p) + '<p class="hint">No times yet.</p>';
+  const t0 = Math.min(...pts), T = Math.max(Math.max(...pts) - t0, 60e3);
+  const pct = v => `${((v - t0) / T * 100).toFixed(2)}%`;
+  const bar = (cls, a, b, tip) => (a == null || b == null ? "" : `<span class="bar ${cls}" style="left:${pct(a)};width:${(Math.max(b - a, 0) / T * 100).toFixed(2)}%" title="${esc(tip)}"></span>`);
+  const rows = p.jobs.map(j => {
+    const k = kind(j), ps = ms(j.plan_start), pe = ms(j.plan_end), s = ms(j.started), f = ms(j.finished), fe = ms(j.fc_end);
+    let bars = bar("plan", ps, pe, `Budget ${j.budget.minutes} min: ${clock(ps)}–${clock(pe)}`);
+    if (s != null) bars += bar(`real ${k}`, s, f ?? now, `${j.id}: ${j.status}`);
+    if (!["merged", "blocked"].includes(j.status) && fe != null) {
+      const from = s == null ? ms(j.fc_start) : now;
+      if (fe > from) bars += bar("fc hatch", from, fe, `≈ until ${clock(fe)}`);
+    }
+    const line = live ? `<span class="now-line" style="left:${pct(now)}"></span>` : "";
+    const d = fe != null && pe != null ? Math.round((fe - pe) / 60e3) : null;
+    return `<button class="row" data-job="${esc(j.id)}" aria-pressed="${S.job === j.id}" type="button"><span class="job-cell"><span class="mono">${esc(j.id)}</span><small>${esc(j.status)}</small></span><span class="track">${bars}${line}</span><span class="delta ${d > 2 ? "late" : ""}">${esc(delayText(d))}</span></button>`;
+  }).join("");
+  const axis = `<div class="axis"><span></span><div class="ticks"><span style="left:0">${esc(clock(t0))}</span><span class="last" style="left:100%">${esc(clock(t0 + T))}</span></div><span></span></div>`;
+  const job = p.jobs.find(j => j.id === S.job);
+  return notices(p) + answers(p) + `<div>${LEGEND}${rows}${axis}</div>`
+    + (job ? detail(job) : '<p class="hint">Click a job for its tasks, its PR and why it is late.</p>');
+}
+function detail(j) {
+  const list = (label, items) => `<div><div class="label">${label}</div>${Array.isArray(items) ? `<ul>${items.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : esc(items)}</div>`;
+  const pr = j.pr && j.pr.url ? `<a href="#" data-link="${esc(j.pr.url)}">PR</a>` : "no PR";
+  const spent = j.started ? `${Math.round(((ms(j.finished) ?? NOW()) - ms(j.started)) / 60e3)} of ${j.budget.minutes} min` : "not started";
+  return `<div class="detail"><div class="detail-top"><strong>${esc(j.pr_title || j.id)}</strong><span class="pill ${kind(j)}">${esc(j.status)}</span></div>
+    ${j.reason ? `<div class="reason">${esc(j.reason)}</div>` : ""}${j.question ? `<div class="reason">Question: ${esc(j.question)}</div>` : ""}
+    <div class="metrics"><span>${esc(spent)}</span><span>usd ${esc(Number(j.usd || 0).toFixed(2))} of ${esc(j.budget.usd)}</span><span>tier ${esc((j.tier_path || [j.tier]).join(" → "))}</span><span>${esc(j.attempts)} attempts</span><span>${pr}</span><span>after: ${esc((j.after || []).join(", ") || "none")}</span></div>
+    <div class="facts">${list("Tasks", j.tasks || [])}${list("Done", j.done || [])}${list("Includes", j.includes || "")}${list("Excludes", j.excludes || "")}</div></div>`;
+}
+const decisions = p => (p.decisions ? `<pre class="doc">${esc(p.decisions)}</pre>` : '<p class="hint">No decisions file yet: the runner writes it when the run closes.</p>');
+const events = p => (p.events.length ? `<ul class="events">${p.events.slice().reverse().map(e => `<li>${esc(e)}</li>`).join("")}</ul>` : '<p class="hint">No events yet.</p>');
+function planTab(p) {
+  const fact = (label, value, cls = "") => `<div><span class="label">${label}</span><span class="mono ${cls}">${esc(value || "–")}</span></div>`;
+  return `<div class="plan-facts">${fact("File", p.plan_path)}${fact("Spec", p.spec || "spec.md next to the plan")}${fact("Approval", p.approval === "stale" ? "stale: changed after approval" : p.approval, p.approval === "stale" ? "stale" : "")}${fact("Approved", p.approved_at)}${fact("Created", p.created)}${fact("sha256", (p.plan_sha || "").slice(0, 12))}</div>
+    <pre class="doc">${esc(p.plan_file)}</pre>`;
+}
+
+function render() {
+  const b = banner(), el = document.getElementById("banner");
+  el.hidden = !b;
+  el.className = b ? b.cls : "";
+  el.innerHTML = b ? esc(b.text) : "";
+  document.getElementById("side").innerHTML = side();
+  document.getElementById("main").innerHTML = main();
+}
+
+window.update = function (data, meta) {
+  S.meta = meta || { stale: false, error: "" };
+  if (data) S.data = data;
+  if (S.data && !current()) {
+    const first = plans()[0];
+    S.plan = first ? keyOf(first) : null;
+  }
+  render();
+  document.body.dataset.rendered = "1";
+};
+window.openPlan = function (key) {
+  S.plan = key;
+  S.tab = "timeline";
+  S.job = null;
+  render();
+  post({ type: "opened", plan: key });
+};
+document.addEventListener("click", e => {
+  const t = e.target.closest("[data-plan],[data-tab],[data-job],[data-link]");
+  if (!t) return;
+  if (t.dataset.link) { e.preventDefault(); post({ type: "link", url: t.dataset.link }); return; }
+  if (t.dataset.plan) { window.openPlan(t.dataset.plan); return; }
+  if (t.dataset.tab) S.tab = t.dataset.tab;
+  if (t.dataset.job) S.job = S.job === t.dataset.job ? null : t.dataset.job;
+  render();
+});
+</script>
+</body>
+</html>

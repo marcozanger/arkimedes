@@ -1,0 +1,507 @@
+{
+  "version": 1,
+  "generated": "2026-11-07T10:05:00+00:00",
+  "loop": {
+    "alive": true,
+    "last_beat": "2026-11-07T10:04:00+00:00"
+  },
+  "alerts": [
+    {
+      "repo": "humanharness",
+      "slug": "notes-edit",
+      "job": "ui-edit",
+      "at": "2026-11-07T09:53:00+00:00",
+      "text": "ui-edit is past its budget",
+      "critical": false
+    },
+    {
+      "repo": "muscleapp",
+      "slug": "mobile/onboarding-copy",
+      "job": "screens",
+      "at": "2026-11-07T10:00:00+00:00",
+      "text": "screens is blocked: gate red after 3 attempts",
+      "critical": true
+    }
+  ],
+  "plans": [
+    {
+      "repo": "humanharness",
+      "slug": "notes-edit",
+      "title": "Edit notes in place",
+      "status": "running",
+      "reason": "",
+      "error": "",
+      "progress": {
+        "merged": 2,
+        "total": 5
+      },
+      "times": {
+        "delay_min": 7,
+        "left_min": 67,
+        "estimated_end": "2026-11-07T11:12:00+00:00",
+        "forecast_end": "2026-11-07T11:12:00+00:00"
+      },
+      "approved_at": "2026-11-07T05:05:00+00:00",
+      "created": "2026-11-06",
+      "approval": "ok",
+      "plan_sha": "9f3a1c7d2b8e4a65c0d1",
+      "plan_path": "humanharness/notes-edit/plan.md",
+      "spec": "",
+      "plan_file": "---\ntitle: Edit notes in place\n---\n\n# Edit notes in place\n\n## Goal\n\nShort goal for Edit notes in place.\n\n## Tasks\n\n- model: do the work\n- api: do the work\n- ui-edit: do the work\n- review-ui: do the work\n- docs: do the work\n\n## Run manifest\n\n- job: model\n- job: api\n- job: ui-edit\n- job: review-ui\n- job: docs\n",
+      "decisions": "",
+      "events": [
+        "2026-11-07T06:05:00+00:00 job model started",
+        "2026-11-07T06:30:00+00:00 job model merged",
+        "2026-11-07T07:15:00+00:00 job api merged",
+        "2026-11-07T07:17:00+00:00 job ui-edit started",
+        "2026-11-07T09:45:00+00:00 job review-ui started"
+      ],
+      "final_pr": null,
+      "jobs": [
+        {
+          "id": "model",
+          "status": "merged",
+          "pr_title": "feat: note model",
+          "budget": {
+            "minutes": 20,
+            "usd": 3
+          },
+          "plan_start": "2026-11-07T06:05:00+00:00",
+          "plan_end": "2026-11-07T06:25:00+00:00",
+          "started": "2026-11-07T06:05:00+00:00",
+          "finished": "2026-11-07T06:30:00+00:00",
+          "fc_start": null,
+          "fc_end": null,
+          "usd": 0,
+          "tier": "sonnet",
+          "tier_path": [
+            "sonnet"
+          ],
+          "attempts": 1,
+          "pr": {
+            "url": "https://github.com/example/humanharness/pull/11"
+          },
+          "after": [],
+          "reason": "",
+          "question": "",
+          "tasks": [
+            "T1 model"
+          ],
+          "done": [
+            "tests pass"
+          ],
+          "includes": "src/model",
+          "excludes": "ui"
+        },
+        {
+          "id": "api",
+          "status": "merged",
+          "pr_title": "feat: notes api",
+          "budget": {
+            "minutes": 30,
+            "usd": 3
+          },
+          "plan_start": "2026-11-07T06:30:00+00:00",
+          "plan_end": "2026-11-07T07:00:00+00:00",
+          "started": "2026-11-07T06:33:00+00:00",
+          "finished": "2026-11-07T07:15:00+00:00",
+          "fc_start": null,
+          "fc_end": null,
+          "usd": 0,
+          "tier": "sonnet",
+          "tier_path": [
+            "sonnet"
+          ],
+          "attempts": 1,
+          "pr": {
+            "url": "https://github.com/example/humanharness/pull/12"
+          },
+          "after": [
+            "model"
+          ],
+          "reason": "",
+          "question": "",
+          "tasks": [
+            "T2 api"
+          ],
+          "done": [],
+          "includes": "",
+          "excludes": ""
+        },
+        {
+          "id": "ui-edit",
+          "status": "working",
+          "pr_title": "feat: edit view",
+          "budget": {
+            "minutes": 40,
+            "usd": 5
+          },
+          "plan_start": "2026-11-07T07:15:00+00:00",
+          "plan_end": "2026-11-07T07:55:00+00:00",
+          "started": "2026-11-07T07:17:00+00:00",
+          "finished": null,
+          "fc_start": "2026-11-07T10:05:00+00:00",
+          "fc_end": "2026-11-07T10:27:00+00:00",
+          "usd": 3.4,
+          "tier": "sonnet",
+          "tier_path": [
+            "sonnet",
+            "opus"
+          ],
+          "attempts": 2,
+          "pr": {
+            "url": "https://github.com/example/humanharness/pull/13"
+          },
+          "after": [
+            "api"
+          ],
+          "reason": "Past its budget: the review asked for a second pass.",
+          "question": "",
+          "tasks": [
+            "T3 edit view",
+            "T4 autosave"
+          ],
+          "done": [
+            "edit view renders",
+            "autosave works"
+          ],
+          "includes": "app/ui",
+          "excludes": "the api"
+        },
+        {
+          "id": "review-ui",
+          "status": "reviewing",
+          "pr_title": "feat: review fixes",
+          "budget": {
+            "minutes": 15,
+            "usd": 2
+          },
+          "plan_start": "2026-11-07T07:55:00+00:00",
+          "plan_end": "2026-11-07T08:10:00+00:00",
+          "started": "2026-11-07T09:45:00+00:00",
+          "finished": null,
+          "fc_start": "2026-11-07T10:05:00+00:00",
+          "fc_end": "2026-11-07T10:15:00+00:00",
+          "usd": 0.8,
+          "tier": "sonnet",
+          "tier_path": [
+            "sonnet"
+          ],
+          "attempts": 1,
+          "pr": null,
+          "after": [
+            "ui-edit"
+          ],
+          "reason": "",
+          "question": "",
+          "tasks": [
+            "T5 fixes"
+          ],
+          "done": [
+            "lint clean"
+          ],
+          "includes": "",
+          "excludes": ""
+        },
+        {
+          "id": "docs",
+          "status": "pending",
+          "pr_title": "docs: notes editing",
+          "budget": {
+            "minutes": 10,
+            "usd": 1
+          },
+          "plan_start": "2026-11-07T08:10:00+00:00",
+          "plan_end": "2026-11-07T08:20:00+00:00",
+          "started": null,
+          "finished": null,
+          "fc_start": "2026-11-07T10:27:00+00:00",
+          "fc_end": "2026-11-07T10:39:00+00:00",
+          "usd": 0,
+          "tier": "sonnet",
+          "tier_path": [
+            "sonnet"
+          ],
+          "attempts": 1,
+          "pr": null,
+          "after": [
+            "ui-edit"
+          ],
+          "reason": "",
+          "question": "",
+          "tasks": [
+            "T6 docs"
+          ],
+          "done": [
+            "README updated"
+          ],
+          "includes": "",
+          "excludes": ""
+        }
+      ]
+    },
+    {
+      "repo": "muscleapp",
+      "slug": "mobile/onboarding-copy",
+      "title": "Onboarding copy",
+      "status": "running",
+      "reason": "job screens is blocked",
+      "error": "",
+      "progress": {
+        "merged": 1,
+        "total": 3
+      },
+      "times": {
+        "delay_min": 35,
+        "left_min": null,
+        "estimated_end": null,
+        "forecast_end": null
+      },
+      "approved_at": "2026-11-07T05:05:00+00:00",
+      "created": "2026-11-06",
+      "approval": "ok",
+      "plan_sha": "9f3a1c7d2b8e4a65c0d1",
+      "plan_path": "muscleapp/mobile/onboarding-copy/plan.md",
+      "spec": "",
+      "plan_file": "---\ntitle: Onboarding copy\n---\n\n# Onboarding copy\n\n## Goal\n\nShort goal for Onboarding copy.\n\n## Tasks\n\n- copy: do the work\n- screens: do the work\n- polish: do the work\n\n## Run manifest\n\n- job: copy\n- job: screens\n- job: polish\n",
+      "decisions": "",
+      "events": [
+        "2026-11-07T08:35:00+00:00 job copy started",
+        "2026-11-07T09:05:00+00:00 job copy merged",
+        "2026-11-07T10:00:00+00:00 job screens blocked"
+      ],
+      "final_pr": null,
+      "jobs": [
+        {
+          "id": "copy",
+          "status": "merged",
+          "pr_title": "feat: new copy",
+          "budget": {
+            "minutes": 20,
+            "usd": 2
+          },
+          "plan_start": "2026-11-07T08:35:00+00:00",
+          "plan_end": "2026-11-07T08:55:00+00:00",
+          "started": "2026-11-07T08:35:00+00:00",
+          "finished": "2026-11-07T09:05:00+00:00",
+          "fc_start": null,
+          "fc_end": null,
+          "usd": 0,
+          "tier": "sonnet",
+          "tier_path": [
+            "sonnet"
+          ],
+          "attempts": 1,
+          "pr": {
+            "url": "https://github.com/example/muscleapp/pull/40"
+          },
+          "after": [],
+          "reason": "",
+          "question": "",
+          "tasks": [
+            "T1 copy"
+          ],
+          "done": [],
+          "includes": "",
+          "excludes": ""
+        },
+        {
+          "id": "screens",
+          "status": "blocked",
+          "pr_title": "feat: onboarding screens",
+          "budget": {
+            "minutes": 30,
+            "usd": 3
+          },
+          "plan_start": "2026-11-07T09:05:00+00:00",
+          "plan_end": "2026-11-07T09:35:00+00:00",
+          "started": "2026-11-07T09:07:00+00:00",
+          "finished": "2026-11-07T10:00:00+00:00",
+          "fc_start": null,
+          "fc_end": null,
+          "usd": 2.9,
+          "tier": "sonnet",
+          "tier_path": [
+            "sonnet"
+          ],
+          "attempts": 3,
+          "pr": null,
+          "after": [
+            "copy"
+          ],
+          "reason": "The gate stays red after 3 attempts: snapshot tests differ.",
+          "question": "Should the snapshots be regenerated?",
+          "tasks": [
+            "T2 screens"
+          ],
+          "done": [
+            "snapshots green"
+          ],
+          "includes": "ios/Onboarding",
+          "excludes": ""
+        },
+        {
+          "id": "polish",
+          "status": "pending",
+          "pr_title": "chore: polish",
+          "budget": {
+            "minutes": 10,
+            "usd": 1
+          },
+          "plan_start": "2026-11-07T09:35:00+00:00",
+          "plan_end": "2026-11-07T09:45:00+00:00",
+          "started": null,
+          "finished": null,
+          "fc_start": null,
+          "fc_end": null,
+          "usd": 0,
+          "tier": "sonnet",
+          "tier_path": [
+            "sonnet"
+          ],
+          "attempts": 1,
+          "pr": null,
+          "after": [
+            "screens"
+          ],
+          "reason": "",
+          "question": "",
+          "tasks": [
+            "T3 polish"
+          ],
+          "done": [],
+          "includes": "",
+          "excludes": ""
+        }
+      ]
+    },
+    {
+      "repo": "socrates",
+      "slug": "api-cleanup",
+      "title": "API cleanup",
+      "status": "done",
+      "reason": "",
+      "error": "",
+      "progress": {
+        "merged": 2,
+        "total": 2
+      },
+      "times": {
+        "delay_min": 0,
+        "left_min": 0,
+        "estimated_end": "2026-11-07T03:55:00+00:00",
+        "forecast_end": "2026-11-07T03:55:00+00:00"
+      },
+      "approved_at": "2026-11-07T02:45:00+00:00",
+      "created": "2026-11-06",
+      "approval": "ok",
+      "plan_sha": "9f3a1c7d2b8e4a65c0d1",
+      "plan_path": "socrates/api-cleanup/plan.md",
+      "spec": "",
+      "plan_file": "---\ntitle: API cleanup\n---\n\n# API cleanup\n\n## Goal\n\nShort goal for API cleanup.\n\n## Tasks\n\n- routes: do the work\n- tests: do the work\n\n## Run manifest\n\n- job: routes\n- job: tests\n",
+      "decisions": "- Kept the v1 route names.\n  Why: clients still call them.\n  Rejected: renaming now.\n",
+      "events": [
+        "2026-11-07T03:05:00+00:00 job routes started",
+        "2026-11-07T03:55:00+00:00 plan done"
+      ],
+      "final_pr": {
+        "url": "https://github.com/example/socrates/pull/72"
+      },
+      "jobs": [
+        {
+          "id": "routes",
+          "status": "merged",
+          "pr_title": "refactor: routes",
+          "budget": {
+            "minutes": 25,
+            "usd": 2
+          },
+          "plan_start": "2026-11-07T03:05:00+00:00",
+          "plan_end": "2026-11-07T03:30:00+00:00",
+          "started": "2026-11-07T03:05:00+00:00",
+          "finished": "2026-11-07T03:30:00+00:00",
+          "fc_start": null,
+          "fc_end": null,
+          "usd": 0,
+          "tier": "sonnet",
+          "tier_path": [
+            "sonnet"
+          ],
+          "attempts": 1,
+          "pr": {
+            "url": "https://github.com/example/socrates/pull/70"
+          },
+          "after": [],
+          "reason": "",
+          "question": "",
+          "tasks": [],
+          "done": [],
+          "includes": "",
+          "excludes": ""
+        },
+        {
+          "id": "tests",
+          "status": "merged",
+          "pr_title": "test: route tests",
+          "budget": {
+            "minutes": 20,
+            "usd": 2
+          },
+          "plan_start": "2026-11-07T03:30:00+00:00",
+          "plan_end": "2026-11-07T03:50:00+00:00",
+          "started": "2026-11-07T03:30:00+00:00",
+          "finished": "2026-11-07T03:55:00+00:00",
+          "fc_start": null,
+          "fc_end": null,
+          "usd": 0,
+          "tier": "sonnet",
+          "tier_path": [
+            "sonnet"
+          ],
+          "attempts": 1,
+          "pr": {
+            "url": "https://github.com/example/socrates/pull/71"
+          },
+          "after": [
+            "routes"
+          ],
+          "reason": "",
+          "question": "",
+          "tasks": [],
+          "done": [],
+          "includes": "",
+          "excludes": ""
+        }
+      ]
+    },
+    {
+      "repo": "cockpit",
+      "slug": "board-sync",
+      "title": "Board sync",
+      "status": "blocked",
+      "reason": "",
+      "error": "state.json is corrupt: Expecting value at line 1 column 1",
+      "progress": {
+        "merged": 0,
+        "total": 0
+      },
+      "times": {
+        "delay_min": null,
+        "left_min": null,
+        "estimated_end": null,
+        "forecast_end": null
+      },
+      "approved_at": "2026-11-07T00:05:00+00:00",
+      "created": "2026-11-06",
+      "approval": "ok",
+      "plan_sha": "9f3a1c7d2b8e4a65c0d1",
+      "plan_path": "cockpit/board-sync/plan.md",
+      "spec": "",
+      "plan_file": "",
+      "decisions": "",
+      "events": [],
+      "final_pr": null,
+      "jobs": []
+    }
+  ]
+}
