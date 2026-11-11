@@ -75,6 +75,21 @@ For the phone, for example:
 "notify": ["sh", "-c", "curl -fsS -m 8 -d \"$1\" https://ntfy.sh/<your-topic>", "notify"]
 ```
 
+## The control center feed
+
+`ark runs --json` prints, read-only, everything the control center app shows: the loop heartbeat,
+the last 200 alerts and every approved plan with its jobs, times, events, plan file and decisions.
+Its `version` field changes when the shape does. It reads:
+
+- `runs/loop.json`, written by `ark-loop` at every poll. The loop counts as alive while the beat is
+  younger than three polls, and at least a minute.
+- `runs/alerts.jsonl`, one line per alert, with `repo`, `slug` and `job` when the alert belongs to a
+  run. An alert's `id` is its line number.
+- `started` and `finished` on each job in `state.json`, stamped by the loop once per pass.
+
+Estimate: each job lasts its `budget.minutes` after its `after` jobs. Forecast: real times for what
+finished, the budget for what runs and what is left. Delay is forecast end minus estimated end.
+
 ## Caps and anomalies
 
 - Per run: the sum of the plan's job budgets. Over it, running workers finish, nothing new starts, and a question asks.
