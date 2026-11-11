@@ -145,7 +145,7 @@ def build(now: datetime | None = None) -> dict:
 
 def cmd_runs(args) -> int:
     if not args.json:
-        print("ark runs es para la app: usá `ark runs --json`. Para leer vos: ark ps, ark status.", file=sys.stderr)
+        print("ark runs is for the app: use `ark runs --json`. To read runs yourself: ark ps, ark status.", file=sys.stderr)
         return 2
     json.dump(build(), sys.stdout, ensure_ascii=False)
     sys.stdout.write("\n")
@@ -153,6 +153,6 @@ def cmd_runs(args) -> int:
 
 
 def register(sub) -> None:
-    s = sub.add_parser("runs", help="todo lo que muestra la app de control, en JSON (solo lectura)")
-    s.add_argument("--json", action="store_true", help="la salida para la app")
+    s = sub.add_parser("runs", help="everything the control center shows, as JSON (read-only)")
+    s.add_argument("--json", action="store_true", help="the output the app reads")
     s.set_defaults(fn=cmd_runs)
