@@ -15,6 +15,21 @@ from . import paths
 
 MAX_EVENTS = 200
 TERMINAL = {"merged", "blocked"}
+NOT_STARTED = {"pending", "needs_worker"}
+
+
+def stamp_times(st: dict) -> None:
+    """`started` the first pass a job is past NOT_STARTED, `finished` the pass it reached TERMINAL.
+    A job that leaves blocked loses `finished` and keeps `started`. The control center reads both."""
+    t = now()
+    for j in st["jobs"].values():
+        if j["status"] not in NOT_STARTED and not j.get("started"):
+            j["started"] = t
+        if j["status"] in TERMINAL:
+            if not j.get("finished"):
+                j["finished"] = t
+        else:
+            j.pop("finished", None)
 
 
 def now() -> str:
