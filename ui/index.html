@@ -94,6 +94,10 @@ a { color: var(--accent); }
 .plan-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px 16px; background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
 .plan-facts div { display: grid; gap: 1px; align-content: start; min-width: 0; font-size: 13px; overflow-wrap: anywhere; }
 .stale { color: var(--attn-ink); font-weight: 600; }
+.over { color: var(--attn-ink); font-weight: 600; }
+.cost { margin-top: -6px; }
+.notify { font-size: 12.5px; margin: 0 7px; padding: 4px 9px; border: 1px solid var(--line); border-radius: 6px; background: transparent; }
+.notify:hover { background: var(--wait-soft); }
 @media (max-width: 800px) {
   .window { grid-template-columns: minmax(0, 1fr); }
   .answers, .facts { grid-template-columns: minmax(0, 1fr); }
@@ -113,7 +117,62 @@ const LIVE = ["waiting", "running", "held"];
 const TABS = ["timeline", "decisions", "events", "plan"];
 const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const keyOf = p => `${p.repo}/${p.slug}`;
-const post = msg => { try { window.webkit.messageHandlers.ark.postMessage(msg); } catch (e) { /* plain browser */ } };
+const store = {
+  get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* memory only */ } },
+};
+const link = (url, label) => (/^https?:\/\//i.test(String(url)) ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(label)}</a>` : esc(url));
+
+// ---- logic: start ----
+// mem: {lastAlert: number|null, loopDown: bool, stale: bool, done: string[], unread: [{id, plan}]}
+// snap: the /api/runs data, or null when the request failed; meta: {stale, error}
+// returns {notes: [{title, body, plan: "repo/slug"|null, url: string|null}], mem}
+function decide(mem, snap, meta) {
+  const m = { lastAlert: mem.lastAlert, loopDown: !!mem.loopDown, stale: !!mem.stale, done: [...(mem.done || [])], unread: [...(mem.unread || [])] };
+  let notes = [];
+  const note = (title, body, plan, url) => { notes = notes.concat({ title, body, plan, url }); };
+  if (meta && meta.stale) {
+    if (!m.stale) note("Control center: stale data", String(meta.error || ""), null, null);
+    m.stale = true;
+    return { notes, mem: m };
+  }
+  if (!snap) return { notes, mem: m };
+  m.stale = false;
+  const plans = snap.plans || [], alerts = snap.alerts || [];
+  const top = alerts.reduce((a, x) => Math.max(a, x.id || 0), 0);
+  const alive = !!(snap.loop && snap.loop.alive);
+  const doneKeys = plans.filter(p => p.status === "done").map(p => `${p.repo}/${p.slug}`);
+  if (m.lastAlert === null) {
+    m.lastAlert = top;
+    m.done = doneKeys;
+    m.loopDown = !alive;
+    m.unread = [];
+    return { notes, mem: m };
+  }
+  const fresh = alerts.filter(a => (a.id || 0) > m.lastAlert);
+  const planOf = a => (a.repo && a.slug ? `${a.repo}/${a.slug}` : null);
+  if (fresh.length >= 3) note("Arkimedes", `${fresh.length} new alerts`, null, null);
+  else fresh.forEach(a => note(planOf(a) || "Arkimedes", String(a.text || "").slice(0, 200), planOf(a), null));
+  m.unread = m.unread.concat(fresh.map(a => ({ id: a.id, plan: planOf(a) })));
+  m.lastAlert = Math.max(m.lastAlert, top);
+  if (!alive && !m.loopDown) note("ark-loop is not running", "Nothing advances until it starts again.", null, null);
+  m.loopDown = !alive;
+  plans.filter(p => p.status === "done" && !m.done.includes(`${p.repo}/${p.slug}`)).forEach(p => {
+    const key = `${p.repo}/${p.slug}`;
+    note(`${key} is done`, "All jobs merged.", key, p.final_pr && p.final_pr.url ? p.final_pr.url : null);
+    m.done = m.done.concat(key);
+  });
+  return { notes, mem: m };
+}
+function titleFor(mem, snap, meta) {
+  const n = (mem.unread || []).length;
+  const down = mem.loopDown || (snap && snap.loop && !snap.loop.alive);
+  return (n > 0 ? `(${n}) ` : "") + (meta && meta.stale ? "Stale · " : down ? "Loop down · " : "") + "Arkimedes";
+}
+function readPlan(mem, key) {
+  return { ...mem, unread: (mem.unread || []).filter(u => u.plan !== key) };
+}
+// ---- logic: end ----
 const NOW = () => (S.meta && S.meta.now ? Date.parse(S.meta.now) : Date.now());
 const ms = iso => (iso ? Date.parse(iso) : null);
 const fmt = m => { m = Math.round(Math.abs(m)); return m >= 60 ? `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")}` : `${m} min`; };
@@ -138,6 +197,15 @@ function plans() {
   const recent = (a, b) => String(b.approved_at || "").localeCompare(String(a.approved_at || ""));
   return [...ps.filter(p => LIVE.includes(p.status)).sort(recent), ...ps.filter(p => !LIVE.includes(p.status)).sort(recent)];
 }
+const money = n => (Math.round(Number(n || 0) * 100) / 100).toString();
+const over = c => c.budget_usd > 0 && c.usd > c.budget_usd;
+function costLine(p) {
+  const c = p.cost;
+  if (!c) return "";
+  const head = `<span class="${over(c) ? "over" : ""}">${esc(`USD ${Number(c.usd).toFixed(2)} of ${money(c.budget_usd)}`)}</span>`;
+  if (!c.closed || c.working_min == null) return head;
+  return head + esc(` · worked ${fmt(c.working_min)}${c.estimated_min != null ? ` of ≈ ${fmt(c.estimated_min)}` : ""} · waited for you ${fmt(c.waiting_min || 0)} · wall ${fmt(c.wall_min || 0)}`);
+}
 const current = () => plans().find(p => keyOf(p) === S.plan);
 
 function banner() {
@@ -149,13 +217,18 @@ function banner() {
 function side() {
   const ps = plans();
   const group = (label, list) => (list.length ? `<div><span class="label">${label}</span>${list.map(row).join("")}</div>` : "");
-  return (group("Running", ps.filter(p => LIVE.includes(p.status))) + group("Finished", ps.filter(p => !LIVE.includes(p.status))))
-    || '<p class="muted small">No approved plans.</p>';
+  const perm = typeof Notification === "undefined" ? "denied" : Notification.permission;
+  const ask = perm === "default" ? '<button class="notify" data-notify="1" type="button">Turn on notifications</button>'
+    : perm === "denied" ? '<p class="muted small">Notifications are off in this browser</p>' : "";
+  return (group("Running", ps.filter(p => LIVE.includes(p.status))) + group("Finished", ps.filter(p => !LIVE.includes(p.status)))
+    || '<p class="muted small">No approved plans.</p>') + ask;
 }
 function row(p) {
   const line = p.error ? "cannot be read"
     : [`${p.progress.merged} of ${p.progress.total} jobs`, delayText(p.times && p.times.delay_min), p.status === "done" ? "" : leftText(p)].filter(Boolean).join(" · ");
-  return `<button class="prow" data-plan="${esc(keyOf(p))}" aria-current="${S.plan === keyOf(p)}" type="button"><b>${esc(p.title || p.slug)}</b>${segs(p)}<small class="mono">${esc(keyOf(p))}</small><small>${esc(p.status)} · ${esc(line)}</small></button>`;
+  const c = p.cost;
+  const cost = c && !LIVE.includes(p.status) ? ` · <span class="${over(c) ? "over" : ""}">$${esc(Number(c.usd).toFixed(2))} / $${esc(money(c.budget_usd))}</span>` : "";
+  return `<button class="prow" data-plan="${esc(keyOf(p))}" aria-current="${S.plan === keyOf(p)}" type="button"><b>${esc(p.title || p.slug)}</b>${segs(p)}<small class="mono">${esc(keyOf(p))}</small><small>${esc(p.status)} · ${esc(line)}${cost}</small></button>`;
 }
 
 function main() {
@@ -163,7 +236,8 @@ function main() {
   if (!S.data) return `<p class="muted">${S.meta.stale ? "ark did not answer yet: " + esc(S.meta.error) : "Waiting for ark…"}</p>`;
   if (!p) return '<p class="muted">Pick a plan.</p>';
   const head = `<div class="phead"><h2>${esc(p.title || p.slug)}</h2><span class="pill ${pillKind(p)}">${esc(p.status)}</span></div>
-    <div class="mono small muted">${esc(keyOf(p))}${p.final_pr && p.final_pr.url ? ` · <a href="#" data-link="${esc(p.final_pr.url)}">final PR</a>` : ""}${p.reason ? ` · ${esc(p.reason)}` : ""}</div>`;
+    <div class="mono small muted">${esc(keyOf(p))}${p.final_pr && p.final_pr.url ? ` · ${link(p.final_pr.url, "final PR")}` : ""}${p.reason ? ` · ${esc(p.reason)}` : ""}</div>
+    ${p.cost ? `<div class="mono small muted cost">${costLine(p)}</div>` : ""}`;
   if (p.error) return head + `<div class="problem crit"><strong>This plan cannot be read</strong><div class="reason">${esc(p.error)}</div></div>`;
   const tabs = TABS.map(t => `<button class="tab" role="tab" data-tab="${t}" aria-selected="${S.tab === t}" type="button">${t[0].toUpperCase() + t.slice(1)}</button>`).join("");
   const body = { timeline, decisions, events, plan: planTab }[S.tab](p);
@@ -219,7 +293,7 @@ function timeline(p) {
 }
 function detail(j) {
   const list = (label, items) => `<div><div class="label">${label}</div>${Array.isArray(items) ? `<ul>${items.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : esc(items)}</div>`;
-  const pr = j.pr && j.pr.url ? `<a href="#" data-link="${esc(j.pr.url)}">PR</a>` : "no PR";
+  const pr = j.pr && j.pr.url ? link(j.pr.url, "PR") : "no PR";
   const spent = j.started ? `${Math.round(((ms(j.finished) ?? NOW()) - ms(j.started)) / 60e3)} of ${j.budget.minutes} min` : "not started";
   return `<div class="detail"><div class="detail-top"><strong>${esc(j.pr_title || j.id)}</strong><span class="pill ${kind(j)}">${esc(j.status)}</span></div>
     ${j.reason ? `<div class="reason">${esc(j.reason)}</div>` : ""}${j.question ? `<div class="reason">Question: ${esc(j.question)}</div>` : ""}
@@ -243,32 +317,102 @@ function render() {
   document.getElementById("main").innerHTML = main();
 }
 
+let M = Object.assign({ lastAlert: null, loopDown: false, stale: false, done: [], unread: [] }, store.get("ark-ui") || {});
+const keep = () => store.set("ark-ui", M);
+const setTitle = () => { document.title = titleFor(M, S.data, S.meta); };
+function show(n) {
+  try {
+    const x = new Notification(n.title, { body: n.body, tag: `${n.title}|${n.body}` });
+    x.onclick = () => {
+      window.focus();
+      if (n.url) window.open(n.url, "_blank", "noopener"); else if (n.plan) window.openPlan(n.plan);
+      x.close();
+    };
+  } catch (e) { /* the browser refused: nothing else to do */ }
+}
+function notify(data, meta) {
+  const r = decide(M, data, meta);
+  M = r.mem;
+  keep();
+  if (typeof Notification !== "undefined" && Notification.permission === "granted") r.notes.forEach(show);
+  setTitle();
+}
+
+function parseHash() {
+  let h = "";
+  try { h = decodeURIComponent(location.hash.replace(/^#/, "")); } catch (e) { return null; }
+  const parts = h.split("/");
+  const tab = TABS.includes(parts[parts.length - 1]) ? parts.pop() : "timeline";
+  return h ? { key: parts.join("/"), tab } : null;
+}
+function setHash() {
+  if (S.plan) location.hash = `${S.plan}/${S.tab}`;
+}
+function readNow() {
+  if (S.plan) { M = readPlan(M, S.plan); keep(); setTitle(); }
+}
+
 window.update = function (data, meta) {
   S.meta = meta || { stale: false, error: "" };
   if (data) S.data = data;
   if (S.data && !current()) {
     const first = plans()[0];
     S.plan = first ? keyOf(first) : null;
+    S.tab = "timeline";
   }
   render();
   document.body.dataset.rendered = "1";
+  notify(data, S.meta);
 };
-window.openPlan = function (key) {
+window.openPlan = function (key, tab) {
   S.plan = key;
-  S.tab = "timeline";
+  S.tab = TABS.includes(tab) ? tab : "timeline";
   S.job = null;
+  setHash();
   render();
-  post({ type: "opened", plan: key });
+  readNow();
 };
+window.addEventListener("hashchange", () => {
+  const h = parseHash();
+  if (!h || (h.key === S.plan && h.tab === S.tab)) return;
+  if (plans().some(p => keyOf(p) === h.key)) { S.plan = h.key; S.tab = h.tab; S.job = null; render(); readNow(); }
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") { M = { ...M, unread: M.unread.filter(u => u.plan) }; keep(); setTitle(); }
+});
 document.addEventListener("click", e => {
-  const t = e.target.closest("[data-plan],[data-tab],[data-job],[data-link]");
+  const t = e.target.closest("[data-plan],[data-tab],[data-job],[data-notify]");
   if (!t) return;
-  if (t.dataset.link) { e.preventDefault(); post({ type: "link", url: t.dataset.link }); return; }
+  if (t.dataset.notify) {
+    try { Promise.resolve(Notification.requestPermission()).then(render, render); } catch (err) { render(); }
+    return;
+  }
   if (t.dataset.plan) { window.openPlan(t.dataset.plan); return; }
-  if (t.dataset.tab) S.tab = t.dataset.tab;
+  if (t.dataset.tab) { S.tab = t.dataset.tab; setHash(); }
   if (t.dataset.job) S.job = S.job === t.dataset.job ? null : t.dataset.job;
   render();
 });
+
+let lastGood = "";
+function failed(reason) { window.update(null, { stale: true, error: reason, updated: lastGood }); }
+async function poll() {
+  let data;
+  try {
+    const r = await fetch("/api/runs", { cache: "no-store" });
+    if (!r.ok) { failed(`ark ui answered ${r.status}`); return; }
+    data = await r.json();
+  } catch (e) { failed(e instanceof SyntaxError ? "ark ui sent something unreadable" : "cannot reach ark ui"); return; }
+  if (!data || data.version !== 1) { failed("the page and ark ui run different versions: restart ark ui"); return; }
+  lastGood = new Date().toISOString();
+  window.update(data, { stale: false, error: "", updated: lastGood });
+}
+{
+  const h = parseHash();
+  if (h) { S.plan = h.key; S.tab = h.tab; }
+}
+setTitle();
+poll();
+setInterval(poll, 10000);
 </script>
 </body>
 </html>
