@@ -604,8 +604,8 @@ def _clean_success(kind: str, r: dict) -> bool:
         return False
     if kind == "review":
         return _review_answer(r) is not None
-    if kind in ("judge", "intervene"):
-        return _judge_answer(r)[0] is not None
+    if kind in ("euklides", "intervene"):
+        return isinstance(_answer(r), dict)
     if kind == "integrate":
         out = _answer(r)
         return isinstance(out, dict) and "ok" in out
