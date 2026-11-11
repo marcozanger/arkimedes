@@ -31,14 +31,13 @@ def test_the_second_failure_is_charged(tmp_path, monkeypatch):
     j = c.st["jobs"]["shell"]
     j.update(status="working", attempts=2)
     consume_one(monkeypatch, c, "shell.worker", receipt(exit=1))
-    assert j["status"] == "needs_judge" and j["tier_attempts"] == 1
+    assert j["status"] == "needs_euklides" and j["tier_attempts"] == 1
 
 
 @pytest.mark.parametrize("status,kind,r", [
     ("gating", "gate", receipt(exit=1)),
     ("reviewing", "review", receipt("no json")),
     ("integrating", "integrate", receipt(reason="timeout: over its time limit", exit=-15)),
-    ("judging", "judge", receipt("garbage")),
 ])
 def test_other_kinds_go_back_to_waiting_with_no_counter(tmp_path, monkeypatch, status, kind, r):
     c = marked(tmp_path, status, kind, failure="red", tier_path=["T1"])
