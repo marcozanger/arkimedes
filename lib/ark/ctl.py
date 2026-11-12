@@ -8,7 +8,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from . import accounts, claude, desk, gitops, inbox, paths, proc, questions, run, usage
+from . import accounts, claude, daycap, desk, gitops, inbox, paths, proc, questions, run, usage
 
 FOLLOW_POLL = 1.0   # seconds between looks at a log being followed
 ATTACH_WAIT = 60  # seconds for ark-loop to hand a job over
@@ -101,8 +101,12 @@ def cmd_ps(args) -> int:
     runs = [(st, [_ps_row(st, job, j) for job, j in st["jobs"].items() if j["status"] not in run.TERMINAL])
             for st in states]
     runs = [(st, rows) for st, rows in runs if rows]
+    capq = _open_cap_questions()
+    for q in capq:
+        print(f"💸 account {q['account']} at its daily cap · {q['id']}: ark answer")
     if not runs:
-        print("nothing running")
+        if not capq:
+            print("nothing running")
         return 0
     head = ["RUN", "JOB", "STATUS", "TIER", "TIME", "TOKENS", "USD", "LAST MESSAGE"]
     widths = [max(len(r[i]) for r in [head, *(r for _, rows in runs for r in rows)]) for i in range(len(head) - 1)]
@@ -111,7 +115,7 @@ def cmd_ps(args) -> int:
         print(_ps_header(st, now))
         for r in [head, *rows]:
             print("  ".join(c.ljust(w) for c, w in zip(r, widths)) + "  " + r[-1])
-    waiting = sum(len(st.get("questions") or []) for st in states)
+    waiting = sum(len(st.get("questions") or []) for st in states) + len(capq)
     if waiting:
         print(f"❓ {waiting}: ark answer")
     return 0
@@ -198,6 +202,32 @@ def _post_answer(st: dict, q: dict, text: str) -> None:
     print(f"{q['id']} noted: ark-loop applies it on the next cycle")
 
 
+def _open_cap_questions() -> list[dict]:
+    """Account questions (daycap.py) not answered yet in the inbox."""
+    posted = {i.get("id") for i in daycap.pending()}
+    return [q for q in daycap.load()["questions"] if q["id"] not in posted]
+
+
+def _show_cap(q: dict) -> None:
+    print(f"account {q['account']} · {q['id']}\n\n{q['text']}\n")
+
+
+def _post_cap(q: dict, text: str) -> None:
+    problem = daycap.check_answer(text)
+    if problem:
+        raise CtlError(f"answer rejected: {problem}")
+    daycap.post(q["id"], text)
+    print(f"{q['id']} noted: ark-loop applies it on the next cycle")
+
+
+def _answer_cap(qid: str, text: str) -> int:
+    q = next((q for q in _open_cap_questions() if q["id"] == qid), None)
+    if q is None:
+        raise CtlError(f"no open account question {qid}")
+    _post_cap(q, text)
+    return 0
+
+
 def _answer_by_id(key: str, qid: str, text: str) -> int:
     st = next((s for s in _states() if f"{s['repo']}/{s['slug']}" == key and _live(s)), None)
     if st is None:
@@ -212,18 +242,34 @@ def _answer_by_id(key: str, qid: str, text: str) -> int:
 @_cmd
 def cmd_answer(args) -> int:
     if args.list:
-        found = _open_questions()
+        capq, found = _open_cap_questions(), _open_questions()
+        for q in capq:
+            _show_cap(q)
         for st, q in found:
             _show(st, q)
-        if not found:
+        if not capq and not found:
             print("no open questions")
         return 0
     _writer()
+    if args.cap:
+        return _answer_cap(*args.cap)
     if args.run:
         return _answer_by_id(*args.run)
-    found = _open_questions()
-    if not found:
+    capq, found = _open_cap_questions(), _open_questions()
+    if not capq and not found:
         print("no open questions")
+    for q in capq:  # first: each one holds every run of its account
+        _show_cap(q)
+        try:
+            text = input("> ").strip()
+        except EOFError:
+            return 0
+        if not text:  # skipped: it stays open
+            continue
+        try:
+            _post_cap(q, text)
+        except CtlError as e:
+            print(e)
     for st, q in found:
         _show(st, q)
         try:
@@ -307,7 +353,9 @@ def register(sub) -> None:
     s.set_defaults(fn=cmd_stop)
     s = sub.add_parser("answer", help="answer the open questions, one by one")
     s.add_argument("--list", action="store_true", help="show them without answering")
-    s.add_argument("--run", nargs=3, metavar=("REPO/SLUG", "ID", "TEXT"), help="answer just one")
+    which = s.add_mutually_exclusive_group()
+    which.add_argument("--run", nargs=3, metavar=("REPO/SLUG", "ID", "TEXT"), help="answer just one")
+    which.add_argument("--cap", nargs=2, metavar=("ID", "TEXT"), help="answer an account's daily cap question")
     s.set_defaults(fn=cmd_answer)
     s = sub.add_parser("steer", help="stop a worker and resume its session with an instruction")
     s.add_argument("job", help="<job> or <repo>/<slug>:<job>")

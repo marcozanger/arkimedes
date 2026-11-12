@@ -22,3 +22,11 @@ Jobs: 2 merged, 0 blocked · Decisions: 0 worker, 0 reviewer, 2 arkimedes
   Rejected: Blocking or escalating the job once the alert fired. The events do not show why the run kept retrying instead, so a reviewer may want to check whether the outage was on GitHub's side or in this change's token handling.
   See: https://github.com/marcozanger/arkimedes/pull/22 · report `runs/arkimedes/repo-accounts/accounts.report.md`
   </details>
+
+## Daily cap per account
+
+An account rule may carry an optional `usd_per_day`, a positive number: that account's own daily cap. A bad value is an
+`AccountError`. The personal account (repos no rule matches) keeps `limits.usd_per_day`. Every spend line names its
+account; an older line without one counts for its run's repo.
+A rule's `usd_per_day` is its daily cap; Marco extends it for the day by answering the account's question
+(`ark answer --cap <id> "raise <usd>"`).

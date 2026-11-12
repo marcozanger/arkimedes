@@ -45,3 +45,19 @@ def ark(capsys, *argv):
     code = cli.main(list(argv))
     out = capsys.readouterr()
     return code, out.out + out.err
+
+
+def workspace(ark_home, tmp_path, **limits):
+    """Limits as given, and a notifier that writes to a file. Returns that file."""
+    import json
+    sent = tmp_path / "sent"
+    f = ark_home / "workspace.json"
+    ws = json.loads(f.read_text())      # its roots are what makes the demo repo valid
+    ws["limits"] = {**ws.get("limits", {}), **limits}
+    ws["notify"] = ["sh", "-c", f'printf "%s\\n" "$1" >> "{sent}"', "notify"]
+    f.write_text(json.dumps(ws))
+    return sent
+
+
+def said(sent):
+    return sent.read_text() if sent.exists() else ""
