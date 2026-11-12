@@ -136,6 +136,15 @@ finished, the budget for what runs and what is left. Delay is forecast end minus
   which chooses wait (once), steer (twice per job), stop and escalate, or stop and block. The process's hard deadline
   is twice its tier's minutes.
 
+## New code
+
+Between polls the loop hashes `lib/ark/*.py` and `bin/ark-loop`. When the hash differs from the one it started with,
+it runs `python -m ark.loop --self-check` on the code on disk (imports it, reads the workspace and every run, takes
+no lock, starts nothing). If that passes, it prints `ark-loop: restarting on new code <old> → <new>`, sends the
+notice and re-execs itself in the same process; the cycle already saved every state, workers keep running, and the
+new loop adopts them from the state and the `.proc` files with no second attempt. If the self-check fails, the old
+loop keeps running and sends one alert for that code version; it tries again only when the code changes again.
+
 ## Sleep
 
 At each poll the loop compares the wall clock with `CLOCK_UPTIME_RAW`; a gap over 60 s is a sleep.
