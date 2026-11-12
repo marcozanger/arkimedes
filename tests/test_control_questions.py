@@ -117,7 +117,7 @@ def test_a_blocked_worker_asks_marco_and_resumes_with_the_answer(feature, monkey
     assert (q["kind"], q["job"]) == ("worker", "shell") and q["text"].startswith("which store?")
     assert "Proposal: :stop" in q["text"]                # what Euklides would do, for Marco to take with ok
     assert st["jobs"]["shell"]["tier_attempts"] == 0     # a question is not a failure
-    assert job_status("ui") == "pending"
+    assert job_status("ui") == "waiting_dep"
 
     inbox.post("demo", SLUG, "answer", id="q1", text="SQLite")
     drive(settled)
