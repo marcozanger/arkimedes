@@ -105,6 +105,7 @@ def test_outside_area_blocks_the_job_and_its_dependents(feature, monkeypatch):
     drive(jobs_settled)
     st = state()
     assert st["jobs"]["shell"]["status"] == "blocked" and st["jobs"]["ui"]["status"] == "blocked"
+    assert "depends on is blocked: shell" in st["jobs"]["ui"]["reason"] and st["jobs"]["ui"]["waiting_on"] == "shell"
     assert gitops.remote_sha(repo, f"ark/{SLUG}-shell") is None                 # never pushed
 
 
@@ -255,21 +256,24 @@ def test_a_retry_waits_for_what_is_still_in_the_worktree(feature, monkeypatch):
     feature()
     holders = [4242]
     monkeypatch.setattr(proc, "cwd_holders", lambda p: holders if Path(p).exists() else [])
-    drive(lambda: "holders_since" in state()["jobs"]["shell"])
+    drive(lambda: "holder_tries" in state()["jobs"]["shell"])
     for _ in range(3):
         loop.cycle()
     st = state()
     j = st["jobs"]["shell"]
-    assert j["status"] == "needs_worker" and j["attempts"] == 1
-    assert len([e for e in st["events"] if "ALERT" in e and "4242" in e]) == 1
+    assert j["status"] == "needs_worker" and j["attempts"] == 1 and j["holder_tries"] == 1
+    assert not [e for e in st["events"] if "ALERT" in e]                        # it heals by waiting: Marco hears nothing
+    assert len([e for e in st["events"] if "4242" in e]) == 1
     holders.clear()
+    st["jobs"]["shell"].pop("not_before")
+    run.save(st)
     drive(jobs_settled)
     j = state()["jobs"]["shell"]
-    assert j["status"] == "merged" and j["attempts"] == 2 and "holders_since" not in j
+    assert j["status"] == "merged" and j["attempts"] == 2 and "holder_tries" not in j
 
 
 @pytest.mark.parametrize("holders", [lambda p: [4242], "error"])
-def test_holders_that_persist_block_the_job_and_not_knowing_counts_as_holders(feature, monkeypatch, holders):
+def test_holders_that_persist_go_to_euklides_and_not_knowing_counts_as_holders(feature, monkeypatch, holders):
     feature()
     def fails(p):
         raise proc.CwdHoldersError("lsof failed")
@@ -277,12 +281,17 @@ def test_holders_that_persist_block_the_job_and_not_knowing_counts_as_holders(fe
     alerts = loop.cycle()[1] + loop.cycle()[1]
     assert state()["jobs"]["shell"]["status"] == "pending"
     assert not proc.active(paths.run_dir("demo", SLUG))
-    assert len([a for a in alerts if "shell waits" in a]) == 1
-    monkeypatch.setattr(loop, "HOLDERS_PATIENCE", 0)
-    time.sleep(0.01)
-    loop.cycle()
-    st = state()
-    assert st["jobs"]["shell"]["status"] == "blocked" and "worktree" in st["jobs"]["shell"]["reason"]
+    assert not [a for a in alerts if "shell waits" in a]
+    for _ in range(10):
+        st = state()
+        st["jobs"]["shell"].pop("not_before", None)
+        run.save(st)
+        loop.cycle()
+        if state()["jobs"]["shell"]["status"] == "needs_euklides":
+            break
+    j = state()["jobs"]["shell"]
+    assert j["status"] == "needs_euklides" and "worktree" in j["euklides"]["situation"]
+    assert j["euklides"]["back"] == "pending"
 
 
 def test_a_held_job_gives_its_writer_slot_to_the_next(feature, monkeypatch, ark_home):
@@ -293,6 +302,8 @@ def test_a_held_job_gives_its_writer_slot_to_the_next(feature, monkeypatch, ark_
     st = state()
     assert st["jobs"]["shell"]["status"] == "pending" and st["jobs"]["ui"]["status"] == "working"
     monkeypatch.setattr(proc, "cwd_holders", lambda p: [])
+    st["jobs"]["shell"].pop("not_before", None)
+    run.save(st)
     drive(jobs_settled)
 
 
@@ -429,8 +440,14 @@ def test_a_check_with_no_result_is_not_a_red_gate(tmp_path, r):
     j = c.st["jobs"]["shell"]
     assert j["status"] == "needs_integrate" and j["integrate_fails"] == 0 and not j["resume_msg"]
     assert merge.read_record(tmp_path, "shell", "integrate") is None
+    for _ in range(4):
+        j.pop("not_before", None)
+        j["status"] = "integrating"
+        loop.on_integrate(c, "shell", r)
+        assert j["status"] == "needs_integrate"
+    j["status"] = "integrating"
     loop.on_integrate(c, "shell", r)
-    assert j["status"] == "blocked" and "twice without a result" in j["reason"]
+    assert j["status"] == "needs_euklides" and j["euklides"]["back"] == "needs_integrate" and not c.st["alerts"]
 
 
 SKIPPED = json.dumps({"ok": False, "base": None, "head": "abc", "reason": "the plan changed after its approval", "tail": ""})
@@ -438,12 +455,12 @@ SKIPPED = json.dumps({"ok": False, "base": None, "head": "abc", "reason": "the p
 
 def test_a_check_that_could_not_run_is_not_charged_to_the_worker(tmp_path):
     c = bare(tmp_path, status="integrating")
-    for _ in range(loop.SKIP_ALERT_AFTER + 5):
+    for _ in range(5):
         loop.on_integrate(c, "shell", receipt(SKIPPED, exit=1))
     j = c.st["jobs"]["shell"]
     assert j["status"] == "needs_integrate" and j["integrate_fails"] == 0 and j["attempts"] == 0
     assert merge.read_record(tmp_path, "shell", "integrate") is None
-    assert len(c.st["alerts"]) == 1
+    assert c.st["alerts"] == []
 
 
 def test_a_check_that_could_not_run_gives_its_heavy_slot_to_the_next_job(tmp_path):
@@ -455,21 +472,21 @@ def test_a_check_that_could_not_run_gives_its_heavy_slot_to_the_next_job(tmp_pat
     assert loop._next_step(c, "shell", j, slots) is None and slots.heavy == 0
 
 
-def test_a_check_that_never_runs_finally_blocks(tmp_path, monkeypatch):
-    monkeypatch.setattr(loop, "INFRA_LIMIT", 3)
+def test_a_check_that_never_runs_goes_to_euklides(tmp_path):
     c = bare(tmp_path, status="integrating")
-    for _ in range(2):
+    for _ in range(5):
         loop.on_integrate(c, "shell", receipt(SKIPPED, exit=1))
     assert c.st["jobs"]["shell"]["status"] == "needs_integrate"
     loop.on_integrate(c, "shell", receipt(SKIPPED, exit=1))
     j = c.st["jobs"]["shell"]
-    assert j["status"] == "blocked" and "could not run" in j["reason"]
+    assert j["status"] == "needs_euklides" and "could not run" in j["euklides"]["situation"]
+    assert j["euklides"]["back"] == "needs_integrate"
 
 
 def test_a_check_that_ran_ends_the_waiting(tmp_path):
     c = bare(tmp_path, status="integrating", integrate_skips=3, not_before=time.time() + 60)
     loop.on_integrate(c, "shell", receipt(json.dumps({"ok": True, "base": "b" * 40, "head": "abc", "reason": "", "tail": ""})))
-    assert "not_before" not in c.st["jobs"]["shell"] and c.st["jobs"]["shell"]["integrate_skips"] == 0
+    assert "not_before" not in c.st["jobs"]["shell"] and "integrate_skips" not in c.st["jobs"]["shell"]
 
 
 @pytest.mark.parametrize("ok", [False, 1, "true"])
@@ -485,7 +502,7 @@ def test_a_red_result_clears_the_counts_of_lost_checks(tmp_path):
     c = bare(tmp_path, status="integrating", integrate_lost=1, integrate_skips=3)
     loop.on_integrate(c, "shell", receipt(json.dumps({"ok": True, "base": "b" * 40, "head": "abc", "reason": "", "tail": ""})))
     j = c.st["jobs"]["shell"]
-    assert j["status"] == "needs_merge" and j["integrate_lost"] == 0 and j["integrate_skips"] == 0
+    assert j["status"] == "needs_merge" and "integrate_lost" not in j and "integrate_skips" not in j
 
 
 def test_a_red_gate_full_of_non_ascii_still_reaches_the_loop_as_red(feature):
@@ -564,24 +581,24 @@ def test_a_worktree_that_will_not_go_does_not_unmerge_a_job(feature, monkeypatch
 
 # -- errors while moving a job
 
-@pytest.mark.parametrize("e", [gitops.GitError("offline"), forge.ForgeError("offline")])
-def test_a_git_or_forge_error_keeps_retrying_and_alerts_once(tmp_path, e):
+@pytest.mark.parametrize("e", [gitops.GitError("offline"), forge.ForgeError("offline"),
+                               ValueError("embedded null byte"), OSError("is a directory")])
+def test_an_error_on_a_waiting_job_retries_then_goes_to_euklides_without_an_alert(tmp_path, e):
     c = bare(tmp_path, status="needs_merge")
-    for _ in range(loop.ERROR_ALERT_AFTER * 2):
+    for _ in range(6):
+        c.st["jobs"]["shell"].pop("not_before", None)
         loop._error(c, "shell", e)
-    assert c.st["jobs"]["shell"]["status"] == "needs_merge"
-    assert len(c.st["alerts"]) == 1 and "offline" in c.st["alerts"][0]
-
-
-@pytest.mark.parametrize("e", [ValueError("embedded null byte"), OSError("is a directory")])
-def test_any_other_error_blocks_after_the_limit_because_it_will_not_heal(tmp_path, e):
-    c = bare(tmp_path, status="needs_worker")
-    for _ in range(loop.ERROR_ALERT_AFTER - 1):
-        loop._error(c, "shell", e)
-    assert c.st["jobs"]["shell"]["status"] == "needs_worker" and not c.st["alerts"]
-    loop._error(c, "shell", e)
     j = c.st["jobs"]["shell"]
-    assert j["status"] == "blocked" and str(e) in j["reason"] and len(c.st["alerts"]) == 1
+    assert j["status"] == "needs_euklides" and str(e) in j["euklides"]["situation"]
+    assert j["euklides"]["back"] == "needs_merge" and c.st["alerts"] == []
+
+
+def test_a_running_job_keeps_its_errors_and_alerts_once(tmp_path):
+    c = bare(tmp_path, status="working")
+    for _ in range(loop.ERROR_ALERT_AFTER * 2):
+        loop._error(c, "shell", gitops.GitError("offline"))
+    assert c.st["jobs"]["shell"]["status"] == "working" and c.st["jobs"]["shell"]["errors"] == loop.ERROR_ALERT_AFTER * 2
+    assert len(c.st["alerts"]) == 1 and "offline" in c.st["alerts"][0]
 
 
 def test_a_step_that_works_clears_the_error_and_one_job_does_not_stop_the_next(tmp_path, monkeypatch):
@@ -596,9 +613,10 @@ def test_a_step_that_works_clears_the_error_and_one_job_does_not_stop_the_next(t
     monkeypatch.setattr(loop, "do_merge", merge_it)
     slots = loop.Slots([c.st], {"writers_per_repo": 1, "writers_total": 1, "heavy_gates": 1})
     loop.schedule(c, slots)
-    assert seen == ["shell", "ui"] and c.st["jobs"]["shell"]["errors"] == 1
+    assert seen == ["shell", "ui"] and c.st["jobs"]["shell"]["step_tries"] == 1
+    c.st["jobs"]["shell"].pop("not_before")
     loop.schedule(c, slots)
-    assert "errors" not in c.st["jobs"]["shell"] and "error" not in c.st["jobs"]["shell"]
+    assert "step_tries" not in c.st["jobs"]["shell"] and "error" not in c.st["jobs"]["shell"]
 
 
 # -- crashes between a process and the saved state
@@ -742,7 +760,10 @@ def test_a_process_that_learned_nothing_charges_nothing(tmp_path, monkeypatch, r
     assert not c.st["alerts"]                                                   # one try may be a lost session: it heals alone
     j["status"] = status
     consume_one(monkeypatch, c, f"shell.{kind}", r)
-    assert len(c.st["alerts"]) == 1 and "unreachable" in c.st["alerts"][0]
+    if kind == "euklides":                                                      # nobody else to send it to: Marco hears at the second
+        assert len(c.st["alerts"]) == 1 and "unreachable" in c.st["alerts"][0]
+    else:                                                                       # a passing fault: it heals by waiting
+        assert c.st["alerts"] == [] and j["infra_tries"] == 2 and j["status"] == back
 
 
 @pytest.mark.parametrize("r", [down(is_error=True, usd=0.5), down(start=time.time() - 1000), down(start=None), down(spoke=True),
@@ -771,27 +792,28 @@ def test_a_job_waiting_out_a_backoff_takes_no_slot(tmp_path):
     assert loop._next_step(c, "shell", c.st["jobs"]["shell"], slots) is not None
 
 
-def test_the_backoff_grows_and_has_a_ceiling(tmp_path, monkeypatch):
-    c = bare(tmp_path, status="working")
+def test_the_backoff_of_euklides_grows_and_has_a_ceiling(tmp_path, monkeypatch):
+    c = bare(tmp_path, status="euklides")
     j = c.st["jobs"]["shell"]
     waits = []
     for _ in range(9):
-        j["status"] = "working"
-        consume_one(monkeypatch, c, "shell.worker", down())
+        j["status"] = "euklides"
+        consume_one(monkeypatch, c, "shell.euklides", down())
         waits.append(round(j["not_before"] - time.time()))
     assert waits == [15, 30, 60, 120, 240, 480, 900, 900, 900]
     assert len(c.st["alerts"]) == 1
 
 
-def test_a_model_down_for_too_long_finally_blocks(tmp_path, monkeypatch):
-    monkeypatch.setattr(loop, "INFRA_LIMIT", 3)
+def test_a_model_down_for_too_long_goes_to_euklides(tmp_path, monkeypatch):
     c = bare(tmp_path, status="working")
     j = c.st["jobs"]["shell"]
-    for _ in range(3):
-        assert j["status"] != "blocked"
+    for _ in range(6):
+        assert j["status"] != "needs_euklides"
         j["status"] = "working"
+        j.pop("not_before", None)
         consume_one(monkeypatch, c, "shell.worker", down())
-    assert j["status"] == "blocked" and "unreachable" in j["reason"] and j["tier_attempts"] == 0
+    assert j["status"] == "needs_euklides" and "no answer from the model" in j["euklides"]["situation"]
+    assert j["euklides"]["back"] == "needs_worker" and j["tier_attempts"] == 0 and c.st["alerts"] == []
 
 
 def test_a_real_answer_ends_the_waiting(tmp_path, monkeypatch):
@@ -802,7 +824,7 @@ def test_a_real_answer_ends_the_waiting(tmp_path, monkeypatch):
 
 
 def test_model_down_blocks_nothing_and_the_run_goes_on_when_it_returns(feature, monkeypatch, tmp_path):
-    monkeypatch.setattr(loop, "BACKOFF_FIRST", 0)
+    monkeypatch.setattr(loop, "PASSING_WAITS", (0,) * 20)
     monkeypatch.setenv("FAKE_DOWN", "1")
     feature()
     count = tmp_path / "fake" / "down.count"
@@ -817,7 +839,7 @@ def test_model_down_blocks_nothing_and_the_run_goes_on_when_it_returns(feature, 
     j = st["jobs"]["shell"]
     assert j["tier_attempts"] == 0 and j["tier_path"] == ["T1"] and j["status"] in ("needs_worker", "working")
     assert st["jobs"]["ui"]["status"] == "pending"
-    assert len([a for a in alerts if "unreachable" in a]) == 1
+    assert not [a for a in alerts if "unreachable" in a]
     monkeypatch.delenv("FAKE_DOWN")
     drive(jobs_settled)
     st = state()
@@ -826,7 +848,7 @@ def test_model_down_blocks_nothing_and_the_run_goes_on_when_it_returns(feature, 
 
 
 def test_a_retry_after_the_model_was_down_keeps_the_feedback(feature, monkeypatch):
-    monkeypatch.setattr(loop, "BACKOFF_FIRST", 0)
+    monkeypatch.setattr(loop, "PASSING_WAITS", (0,) * 5)
     monkeypatch.setenv("FAKE_FIX", "shell")
     feature()
     started, real = [], proc.start
@@ -854,6 +876,7 @@ def leftover(repo, branch):
 
 
 def test_a_push_that_fails_for_a_moment_costs_no_worker(feature, monkeypatch, tmp_path):
+    monkeypatch.setattr(loop, "PASSING_WAITS", (0,) * 5)
     feature()
     real, failures = gitops.push_ref, [1, 2]
     def flaky(repo, sha, branch):
@@ -864,20 +887,31 @@ def test_a_push_that_fails_for_a_moment_costs_no_worker(feature, monkeypatch, tm
     monkeypatch.setattr(gitops, "push_ref", flaky)
     drive(jobs_settled)
     j = state()["jobs"]["shell"]
-    assert not failures and j["status"] == "merged" and "errors" not in j
+    assert not failures and j["status"] == "merged" and "step_tries" not in j
     assert (tmp_path / "fake" / "shell.worker.count").read_text() == "1"
     assert j["tier_attempts"] == 0 and j["attempts"] == 1
 
 
-def test_a_leftover_job_branch_blocks_at_once_without_spending(feature, tmp_path):
+def test_a_leftover_job_branch_retries_then_goes_to_euklides_without_spending(feature, tmp_path):
     repo, _ = feature()
     loop.cycle()
     sha = leftover(repo, f"ark/{SLUG}-shell")
-    drive(jobs_settled)
+    drive(lambda: "push_tries" in state()["jobs"]["shell"])
     j = state()["jobs"]["shell"]
-    assert j["status"] == "blocked" and f"ark/{SLUG}-shell" in j["reason"] and "fast-forward" in j["reason"]
+    assert j["status"] == "needs_push" and j["not_before"] > time.time()
+    for _ in range(10):
+        st = state()
+        st["jobs"]["shell"].pop("not_before", None)
+        run.save(st)
+        loop.cycle()
+        if state()["jobs"]["shell"]["status"] == "needs_euklides":
+            break
+    j = state()["jobs"]["shell"]
+    e = j["euklides"]
+    assert j["status"] == "needs_euklides" and e["back"] == "needs_push"
+    assert f"ark/{SLUG}-shell" in e["situation"] and "fast-forward" in e["situation"]
     assert (tmp_path / "fake" / "shell.worker.count").read_text() == "1" and j["tier_path"] == ["T1"]
-    assert gitops.remote_sha(repo, f"ark/{SLUG}-shell") == sha                  # left for Marco, not overwritten
+    assert gitops.remote_sha(repo, f"ark/{SLUG}-shell") == sha                  # left for Euklides and Marco, not overwritten
 
 
 def test_the_exact_commit_the_checks_saw_is_what_gets_pushed(feature, monkeypatch):
@@ -901,7 +935,7 @@ def test_a_push_error_that_is_not_a_leftover_retries(tmp_path, monkeypatch, remo
     monkeypatch.setattr(gitops, "is_ancestor", lambda *a: ancestor)
     loop.schedule(c, loop.Slots([c.st], {"writers_per_repo": 1, "writers_total": 1, "heavy_gates": 1}))
     j = c.st["jobs"]["shell"]
-    assert j["status"] == "needs_push" and j["errors"] == 1 and "network down" in j["error"]
+    assert j["status"] == "needs_push" and j["step_tries"] == 1 and j["not_before"] > time.time()
 
 
 def test_a_job_that_was_pushed_before_a_crash_moves_on(tmp_path, monkeypatch):
@@ -1662,7 +1696,8 @@ def test_a_worktree_left_on_another_branch_gets_no_worker(feature, monkeypatch, 
     gitops.add_worktree(repo, wt, "somebody-elses", "HEAD")
     loop.cycle()
     j = state()["jobs"]["shell"]
-    assert j["status"] == "pending" and j["attempts"] == 0 and "not a worktree" in j["error"]
+    assert j["status"] == "pending" and j["attempts"] == 0 and j["step_tries"] == 1
+    assert any("not a worktree" in e for e in state()["events"])
     assert not (tmp_path / "fake" / "shell.worker.count").exists()
 
 
@@ -1873,17 +1908,14 @@ def test_a_new_edge_makes_a_job_at_its_merge_wait_for_it(at_merge):
     assert [j["status"] for j in state()["jobs"].values()] == ["merged", "merged"]
 
 
-@pytest.mark.parametrize("dep,moves", [("pending", False), ("blocked", True)])
+@pytest.mark.parametrize("dep,moves", [("pending", False), ("blocked", False)])
 def test_a_job_at_its_merge_follows_its_dependency(tmp_path, dep, moves):
     c = bare(tmp_path, status="needs_merge")
     c.mjobs["shell"]["after"] = ["ui"]
     c.st["jobs"]["ui"] = {"status": dep}
     slots = loop.Slots([], {"writers_per_repo": 1, "writers_total": 1, "heavy_gates": 1})
     move = loop._next_step(c, "shell", c.st["jobs"]["shell"], slots)
-    assert bool(move) is moves
-    if moves:
-        move()
-        assert c.st["jobs"]["shell"]["status"] == "blocked"
+    assert bool(move) is moves and c.st["jobs"]["shell"]["status"] == "needs_merge"  # it waits, never blocks
 
 
 def test_a_new_approval_brings_the_fields_the_job_copied_from_the_plan(feature, monkeypatch):
@@ -1942,7 +1974,7 @@ exec "$REAL_FAKE" "$@"
 
 
 def test_a_session_that_cannot_be_resumed_is_dropped_after_one_quick_failure(feature, monkeypatch, tmp_path):
-    monkeypatch.setattr(loop, "BACKOFF_FIRST", 0)
+    monkeypatch.setattr(loop, "PASSING_WAITS", (0,) * 5)
     monkeypatch.setenv("FAKE_FIX", "shell")
     shim(tmp_path, monkeypatch, '''
 case " $* " in *" --resume "*) n=$(cat "$FAKE_STATE/r" 2>/dev/null || echo 0); echo $((n+1)) > "$FAKE_STATE/r"; exit 1;; esac
@@ -2027,13 +2059,16 @@ def test_a_plan_waiting_on_a_run_that_gets_held_alerts_once(feature, make_featur
 
 # -- errors, saves, rework
 
-def test_a_non_git_error_after_many_git_errors_still_blocks(tmp_path):
+def test_the_last_error_before_euklides_is_the_one_he_sees(tmp_path):
     c = bare(tmp_path, status="needs_pr")
-    for _ in range(loop.ERROR_ALERT_AFTER + 5):
+    for _ in range(5):
+        c.st["jobs"]["shell"].pop("not_before", None)
         loop._error(c, "shell", gitops.GitError("offline"))
-    assert c.st["jobs"]["shell"]["status"] == "needs_pr" and len(c.st["alerts"]) == 1
+    assert c.st["jobs"]["shell"]["status"] == "needs_pr" and c.st["alerts"] == []
+    c.st["jobs"]["shell"].pop("not_before", None)
     loop._error(c, "shell", ValueError("will not heal"))
-    assert c.st["jobs"]["shell"]["status"] == "blocked" and "will not heal" in c.st["jobs"]["shell"]["reason"]
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "needs_euklides" and "will not heal" in j["euklides"]["situation"]
 
 
 def test_a_save_that_fails_after_a_receipt_starts_nothing_in_that_cycle(feature, monkeypatch):
@@ -2067,7 +2102,8 @@ def test_a_rewritten_branch_says_what_probably_happened(tmp_path, monkeypatch):
     monkeypatch.setattr(gitops, "is_ancestor", lambda *a: False)
     loop.push_job(c, "shell")
     j = c.st["jobs"]["shell"]
-    assert j["status"] == "blocked" and "amend" in j["reason"]
+    assert j["status"] == "needs_push" and j["not_before"] > time.time()
+    assert any("amend" in e for e in c.st["events"])
 
 
 def test_workers_are_told_not_to_rewrite_their_history():
@@ -2585,7 +2621,7 @@ def test_the_tick_runs_a_cycle_with_nothing_changed(polling, ark_home):
     assert polling.cycles == 4
 
 
-@pytest.mark.parametrize("fields", [{"errors": 1}, {"holders_since": 1.0}, {"not_before": 1.0}])
+@pytest.mark.parametrize("fields", [{"errors": 1}, {"not_before": 1.0}])
 def test_what_a_cycle_retries_gets_a_cycle_every_poll_and_one_pass(polling, ark_home, fields):
     """_error says "retried next cycle" and its alert comes after 20 of them, about 5 minutes: not 5 hours,
     and not 20 passes in a second, though each one changes the state."""
@@ -2595,7 +2631,7 @@ def test_what_a_cycle_retries_gets_a_cycle_every_poll_and_one_pass(polling, ark_
 
 
 @pytest.mark.parametrize("fields", [
-    {"errors": 1, "status": "merged"}, {"holders_since": 1.0, "status": "blocked"},
+    {"errors": 1, "status": "merged"}, {"not_before": 1.0, "status": "blocked"},
     {"not_before": 1.0, "status": "working"}, {"not_before": 9e12}, {}])
 def test_nothing_to_retry_leaves_the_loop_quiet(polling, ark_home, fields):
     running_run(ark_home, **fields)
@@ -3067,19 +3103,19 @@ def test_a_receipt_written_during_an_idle_cycle_wakes_the_next_poll(ark_home, mo
 
 # -- what is planted where a receipt must be archived stalls nothing for ever
 
-def test_a_file_at_done_blocks_the_job_and_finishes_the_run(feature, make_feature, monkeypatch):
+def test_a_file_at_done_goes_to_euklides_and_finishes_the_run(feature, make_feature, monkeypatch):
     monkeypatch.setattr(loop, "ERROR_ALERT_AFTER", 3)
     feature(manifest(jobs=[job("shell", ["T1"], ["src/shell/**"])]), tasks=("T1",))
     d = paths.run_dir("demo", SLUG)
     d.mkdir(parents=True)
     (d / "done").write_text("planted")
-    drive(lambda: state()["status"] in ("done", "blocked"))
+    drive(stopping(lambda: state()["status"] in ("done", "blocked")))
     st = state()
     alerts = [e for e in st["events"] if "ALERT" in e]
     assert st["status"] == "blocked" and st["jobs"]["shell"]["status"] == "blocked"
-    assert str(d / "done") in st["jobs"]["shell"]["reason"]
+    assert "stopped by Marco" in st["jobs"]["shell"]["reason"]
+    assert any(str(d / "done") in e for e in st["events"])                      # Euklides was told what could not be archived
     assert not [a for a in alerts if "runner error" in a]
-    assert sum("shell blocked" in a for a in alerts) == 1
     assert not (d / "shell.worker.proc").exists()
 
 
@@ -3114,7 +3150,7 @@ def test_removing_what_was_planted_heals_the_job(feature, monkeypatch):
     assert "errors" not in state()["jobs"]["shell"] and "error" not in state()["jobs"]["shell"]
 
 
-def test_a_directory_at_a_proc_blocks_the_job_and_finishes_the_run(feature, monkeypatch, held):
+def test_a_directory_at_a_proc_goes_to_euklides_and_finishes_the_run(feature, monkeypatch, held):
     monkeypatch.setattr(loop, "ERROR_ALERT_AFTER", 3)
     feature(manifest(jobs=[job("shell", ["T1"], ["src/shell/**"])]), tasks=("T1",))
     drive(lambda: state()["jobs"]["shell"]["status"] == "working")
@@ -3123,9 +3159,10 @@ def test_a_directory_at_a_proc_blocks_the_job_and_finishes_the_run(feature, monk
     (d / "shell.worker.proc").mkdir()
     (d / "shell.worker.proc" / "inside").write_text("planted")
     held.touch()
-    drive(lambda: state()["status"] in ("done", "blocked"))
+    drive(stopping(lambda: state()["status"] in ("done", "blocked")))
     st = state()
     assert st["status"] == "blocked" and st["jobs"]["shell"]["status"] == "blocked"
+    assert "stopped by Marco" in st["jobs"]["shell"]["reason"]
     assert not os.path.lexists(d / "shell.worker.proc") and not proc.active(d)
 
 
@@ -3182,10 +3219,11 @@ def test_a_reviewer_without_verdict_twice_goes_to_euklides(tmp_path):
     assert j["euklides"]["kind"] == "review" and "no verdict twice" in j["euklides"]["situation"]
 
 
-def test_blocks_euklides_never_sees_stay_blocks(tmp_path):
-    c = bare(tmp_path, status="integrating", integrate_lost=1)
+def test_a_check_lost_again_and_again_goes_to_euklides_not_to_a_block(tmp_path):
+    c = bare(tmp_path, status="integrating", integrate_lost=5)
     loop.on_integrate(c, "shell", receipt(reason="timeout"))
-    assert c.st["jobs"]["shell"]["status"] == "blocked"
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "needs_euklides" and j["euklides"]["back"] == "needs_integrate"
 
 
 def test_start_euklides_runs_read_only_in_the_worktree(tmp_path, monkeypatch):

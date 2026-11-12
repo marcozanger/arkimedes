@@ -2,6 +2,7 @@ import os
 import time
 
 from control_helpers import SLUG, change_state, drive, job_status, settled, state
+from test_loop import stopping
 
 from ark import claude, loop, paths, proc
 
@@ -121,12 +122,16 @@ def test_an_unusable_answer_is_a_wait_the_first_time(feature, monkeypatch, tmp_p
     drive(settled)
 
 
-def test_stop_block_ends_the_job_with_the_ticks_reason(feature, monkeypatch, tmp_path):
-    go = holding(feature, monkeypatch, tmp_path, FAKE_INTERVENE=answer("stop_block", "it loops on the same test"))
+def test_stop_block_goes_to_euklides_with_the_ticks_reason(feature, monkeypatch, tmp_path):
+    go = holding(feature, monkeypatch, tmp_path, FAKE_INTERVENE=answer("stop_block", "it loops on the same test"),
+                 FAKE_EUKLIDES='{"action": "ask", "note": "what now?", "proposal": null}')
     over_time()
-    drive(settled)
+    drive(lambda: any("it loops on the same test" in q["text"] for q in state().get("questions") or []))
     j = state()["jobs"]["shell"]
-    assert j["status"] == "blocked" and j["reason"] == "it loops on the same test" and "stop_then" not in j
+    assert j["status"] == "waiting_answer" and "stop_then" not in j
+    drive(stopping(settled))
+    j = state()["jobs"]["shell"]
+    assert j["status"] == "blocked" and "stopped by Marco" in j["reason"]
     go.touch()
 
 
@@ -223,7 +228,7 @@ def gone(**fields):
 def test_after_a_crash_what_was_decided_still_happens(ark_home):
     st, j = gone(stop_then={"action": "stop_block", "note": "loops"})
     loop.reconcile(st)
-    assert j["status"] == "blocked" and j["reason"] == "loops"
+    assert j["status"] == "needs_euklides" and "loops" in j["euklides"]["situation"]
     st, j = gone(stop_then={"action": "stop_escalate", "note": "hard"})
     loop.reconcile(st)
     assert (j["status"], j["tier"], j["note"]) == ("needs_worker", "T2", "hard")
