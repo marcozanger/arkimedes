@@ -12,6 +12,7 @@ import math
 import os
 import signal
 import socket
+import subprocess
 import sys
 import tempfile
 import time
@@ -2084,7 +2085,50 @@ def _beat(poll: float, said: str | None) -> str | None:
     return problem
 
 
-def _polling(once: bool) -> int:
+def code_version(code=None) -> str:
+    """What a new process would load: the runner's Python files and its launcher."""
+    code = Path(code or paths.code_dir())
+    h = hashlib.sha256()
+    for f in sorted([*(code / "lib" / "ark").glob("*.py"), code / "bin" / "ark-loop"]):
+        if f.is_file():
+            h.update(f.relative_to(code).as_posix().encode() + b"\0" + f.read_bytes() + b"\0")
+    return h.hexdigest()[:12]
+
+
+def _self_check(code=None) -> str | None:
+    """None when the code on disk imports, reads the workspace and every run; otherwise why not."""
+    code = Path(code or paths.code_dir())
+    env = {**os.environ, "PYTHONPATH": str(code / "lib")}
+    try:
+        r = subprocess.run([sys.executable, "-m", "ark.loop", "--self-check"], cwd=code, env=env,
+                           capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return f"{type(e).__name__}: {e}"
+    if r.returncode == 0:
+        return None
+    return _clean((r.stderr or r.stdout).strip()[-600:] or f"exit {r.returncode}")
+
+
+def _maybe_restart(started: dict, argv) -> None:
+    """New code on disk takes over between cycles; code that fails its self-check never does."""
+    now = code_version()
+    if now == started["version"] or now == started.get("bad"):
+        return
+    why = _self_check()
+    if why:
+        started["bad"] = now
+        text = f"ark-loop: the new code ({now}) failed its self-check and was not loaded; still running {started['version']}: {why}"
+        print(f"⚠ {text}", flush=True)
+        notify.deliver([text], [text])
+        return
+    text = f"ark-loop: restarting on new code {started['version']} → {now}"
+    print(text, flush=True)
+    notify.deliver([text], [])
+    os.execv(sys.executable, [sys.executable, "-m", "ark.loop", *argv])
+
+
+def _polling(once: bool, argv=()) -> int:
+    started = {"version": code_version(), "bad": None}
     poll_default = paths.DEFAULTS["poll_seconds"]
     last_line, last_sig, last_full, last_error, last_clocks = None, None, 0.0, None, None
     beat_poll, beat_said = poll_default, None
@@ -2129,6 +2173,7 @@ def _polling(once: bool) -> int:
                 return 1
         if once:
             return 0
+        _maybe_restart(started, argv)
         time.sleep(poll)
 
 
@@ -2137,9 +2182,16 @@ def main(argv=None) -> int:
     # for it. It must stop on Ctrl-C however it was launched; what it starts gets the default back at exec.
     signal.signal(signal.SIGINT, signal.default_int_handler)
     argv = sys.argv[1:] if argv is None else argv
-    if set(argv) - {"--once"}:  # a typo must not start something that spends money
+    if set(argv) - {"--once", "--self-check"}:  # a typo must not start something that spends money
         print("usage: ark-loop [--once]", file=sys.stderr)
         return 2
+    if "--self-check" in argv:  # run by a live loop on new code: never takes the lock, never starts anything
+        paths.load_workspace()
+        for a in approvals():
+            run.load(a["repo"], a["slug"])
+        signature()
+        print("ok")
+        return 0
     if os.environ.get("ANTHROPIC_API_KEY"):
         print("ark-loop does not run with ANTHROPIC_API_KEY: the workers would bill per token instead of using "
               "your subscription. Run `unset ANTHROPIC_API_KEY` and start it again.", file=sys.stderr)
@@ -2166,7 +2218,7 @@ def main(argv=None) -> int:
         print("ark-loop is already running.", file=sys.stderr)
         return 1
     try:
-        return _polling("--once" in argv)
+        return _polling("--once" in argv, argv)
     except KeyboardInterrupt:  # Ctrl-C is how it stops; workers live in their own sessions and go on
         return 130
     finally:
