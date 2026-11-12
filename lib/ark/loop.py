@@ -1633,7 +1633,8 @@ def _adopt_reapproval(st: dict, a: dict, states: list[dict], forge) -> None:
         merged = [job for job, j in st["jobs"].items() if j["status"] == "merged"]
         if {j["id"] for j in jobs} != set(st["jobs"]):
             why = "it changes the run's jobs"
-        elif merged:
+        elif merged and not set(st.get("area") or []) <= set(area):
+            # an edit that only widens the area cannot undo what a merged job passed; any other edit might
             why = f"{', '.join(merged)} already merged under the old plan and cannot pass the new one's checks"
         for o in states:
             if not why and o is not st and o["repo"] == st["repo"] and o["status"] in ("running", "held") \
@@ -1653,6 +1654,8 @@ def _adopt_reapproval(st: dict, a: dict, states: list[dict], forge) -> None:
     consume_receipts(Ctx(st, forge))  # a stop from Marco or a block still counts; a green no longer does
     for mj in jobs:
         j = st["jobs"][mj["id"]]
+        if j["status"] == "merged":
+            continue  # its checks passed and it is in the branch: a plan that only widened the area keeps it
         if j["status"] == "pending":
             st["jobs"][mj["id"]] = run.new_job(mj)  # nothing done yet: all it copied comes from the new plan
             continue

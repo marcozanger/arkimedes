@@ -1818,7 +1818,8 @@ def test_a_merged_job_cannot_pass_new_gates_so_the_approval_is_refused(feature, 
     _, p = feature()
     drive(lambda: state() and state()["jobs"].get("shell", {}).get("status") == "merged")
     old, sha = p.read_text(), state()["plan_sha"]
-    _hold_and_edit(p)
+    p.write_text(plan_text(manifest(jobs=[job("shell", ["T1", "T2"], ["src/narrower/**"]),
+                                          job("ui", ["T3"], ["src/ui/**"], after=["shell"])])))  # the area moves, not only grows
     alerts = turn(1)
     approve(p, "demo", SLUG)
     alerts += turn(3)
@@ -3331,3 +3332,20 @@ def test_a_journal_that_cannot_be_written_does_not_stop_the_decision(tmp_path, a
     loop.on_euklides(c, "shell", euk_answer(action="retry", note="again"))
     assert c.st["jobs"]["shell"]["status"] == "needs_worker"
     assert any("journal" in e for e in c.st["events"])
+
+
+def test_a_new_approval_that_only_widens_the_area_keeps_the_merged_jobs(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_SLEEP", "1")
+    _, p = feature()
+    drive(lambda: state()["jobs"]["shell"]["status"] == "merged")
+    shell_area = [g for g in state()["area"] if "shell" in g]
+    _hold_and_edit(p)
+    loop.cycle()
+    assert state()["status"] == "held"
+    _reapproved_with(p, manifest(jobs=[job("shell", ["T1", "T2"], shell_area),
+                                       job("ui", ["T3"], ["src/ui/**", "extra/**"], after=["shell"])]))
+    alerts = turn(3)
+    st = state()
+    assert not [a for a in alerts if "cannot take the new approval" in a]
+    assert st["status"] == "running" and st["plan_sha"] == sha256_file(p) and "extra/**" in st["area"]
+    assert st["jobs"]["shell"]["status"] == "merged"
