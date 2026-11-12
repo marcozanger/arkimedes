@@ -1,4 +1,4 @@
-"""Guard: every text in the repo is English (the review pages, desk/ and the run decision logs are the exception)."""
+"""Guard: every text in the repo is English (the review pages and desk/ are the exception)."""
 import re
 import subprocess
 from pathlib import Path
@@ -11,9 +11,7 @@ SPANISH = re.compile(
     re.IGNORECASE,
 )
 
-# docs/decisions/ holds run decision logs: they quote the Spanish that tripped a gate, so
-# each fix of a quote wrote a new quote (D6 in control-center.md, account-caps.md, ...).
-SKIP_PREFIXES = ("desk/", "docs/decisions/")
+SKIP_PREFIXES = ("desk/",)
 SKIP_SUFFIXES = (".review.html", ".review.json")
 
 # (path, substring): a hit line containing the substring is allowed. Each has a reason.
@@ -48,6 +46,10 @@ ALLOWLIST = [
     # the report test checks the Spanish headings are gone and `más` still reads
     ("tests/test_report_render.py", "Resumen"),
     ("tests/test_report_render.py", "más"),
+    # run decision logs quote the Spanish words the allowlist above covers
+    ("docs/decisions/english-only-texts.md", '"sí"'),
+    ("docs/decisions/english-only-texts.md", "diseño"),
+    ("docs/decisions/wait-final-pr-2.md", "`más`"),
     # this file lists the Spanish markers it looks for
     ("tests/test_english_only.py", ""),
 ]
