@@ -1583,9 +1583,65 @@ def _finish_attach(c: Ctx) -> None:
                 fail(c, job, f"runner error after attach: {type(e).__name__}: {e}")
 
 
+RETRY_STEP = {"working": "needs_worker", "euklides": "needs_worker", "waiting_answer": "needs_worker",
+              "attached": "needs_worker", "needs_euklides": "needs_worker", "gating": "needs_gate",
+              "reviewing": "needs_review", "integrating": "needs_integrate", "needs_merge": "needs_integrate",
+              "waiting_dep": "pending"}
+RETRY_CLEARS = ("reason", "not_before", "step_tries", "infra_tries", "holder_tries", "push_tries", "integrate_lost",
+                "integrate_skips", "errors", "error", "euklides_count", "blocked_from", "waiting_on", "euklides",
+                "euklides_ask", "question")
+
+
+def _retry_status(j: dict) -> str:
+    was = j.get("blocked_from")
+    if was in RETRY_STEP:
+        return RETRY_STEP[was]
+    if was and (was == "pending" or was.startswith("needs_")):
+        return was
+    return "needs_push" if j.get("head") else "needs_worker"  # blocked by code older than blocked_from
+
+
+def _apply_retry(st: dict, item: dict) -> None:
+    """`ark retry`: the job goes back to the step it was blocked from, with that step's counters cleared, and every
+    job blocked only because it waited on it goes back to pending."""
+    job = item.get("job")
+    j = st["jobs"].get(job)
+    if j is None or j["status"] != "blocked":
+        return run.event(st, f"a retry for {_clean(str(job))} found nothing blocked")
+    status = _retry_status(j)
+    for k in RETRY_CLEARS:
+        j.pop(k, None)
+    j.update(status=status, integrate_fails=0, review_errors=0)
+    questions.drop_kind(st, "worker", job=job)
+    run.event(st, f"{job}: retried by Marco, back to {status}")
+    moved = True
+    while moved:
+        moved = False
+        for name, d in st["jobs"].items():
+            dep = d.get("waiting_on")
+            if d["status"] == "blocked" and dep and st["jobs"][dep]["status"] != "blocked":
+                d.update(status="pending")
+                for k in ("reason", "blocked_from", "waiting_on"):
+                    d.pop(k, None)
+                run.event(st, f"{name}: back to pending, {dep} is no longer blocked")
+                moved = True
+
+
+def _reopen(st: dict) -> None:
+    """A closed blocked run with a retry for one of its blocked jobs runs again; its final PR stays and its
+    decisions doc is written again when it closes."""
+    items = [i for i in inbox.pending(st["repo"], st["slug"]) if i["kind"] == "retry"]
+    if not any((st["jobs"].get(i.get("job")) or {}).get("status") == "blocked" for i in items):
+        return
+    st.update(status="running", closing=None)
+    for k in ("decisions_sha", "closing_wait", "closing_errors", "decisions_ticks"):
+        st.pop(k, None)
+    run.event(st, "reopened by ark retry")
+
+
 ANSWERS = {"worker": _answered_worker, "plan_changed": _answered_plan_changed, "cap_run": _answered_cap_run}
 INBOX = {"answer": _apply_answer, "stop": _apply_stop, "steer": _apply_steer,
-         "attach": _apply_attach, "attach_done": _apply_attach_done}
+         "attach": _apply_attach, "attach_done": _apply_attach_done, "retry": _apply_retry}
 
 
 def apply_inbox(st: dict) -> None:
@@ -1608,6 +1664,8 @@ def apply_inbox(st: dict) -> None:
 
 
 def step(st: dict, states: list[dict], forge, slots: Slots, hold: bool = False) -> None:
+    if st["status"] == "blocked":
+        _reopen(st)
     if st["status"] in ("done", "blocked"):
         inbox.drop_all(st["repo"], st["slug"])  # nobody will read them
         return

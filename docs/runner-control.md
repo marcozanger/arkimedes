@@ -11,11 +11,32 @@ them.
 | `ark ps` | per live run a header line (status, elapsed, eta, as in `ark status`), then its open jobs: status, tier, time, tokens, cost, last message; and the open questions |
 | `ark logs <job> [-f] [--kind worker]` | a process's log, readable; the archived one after it ends |
 | `ark stop <job>` | stops its processes, and the job ends blocked; with no process, it blocks on the next cycle |
+| `ark retry <job>` | puts a blocked job back on the step where it stopped (see `ark retry` below) |
 | `ark steer <job> "<instruction>"` | stops the worker and resumes its session with the instruction |
 | `ark attach <job>` | hands the worker to you in an interactive session; on a clean exit it goes on to the gate |
 | `ark answer [--list] [--run <repo>/<slug> <id> "<text>"] [--cap <id> "<text>"]` | answers open questions, one by one (account questions first); `--cap` answers an account's daily cap question |
 
 `<job>` also takes the form `<repo>/<slug>:<job>`, needed when two live runs share a job name or the run has finished.
+
+## ark retry
+
+`ark retry <job>` lifts a block by hand. It refuses a job that is not blocked and any runner process
+(`ARK_ROLE` set). It posts a `retry` inbox item; on the next cycle the job returns to the step it was blocked
+from, with that step's counters cleared:
+
+| Blocked from | Goes back to |
+|---|---|
+| working, euklides, waiting_answer, attached | needs_worker |
+| gating | needs_gate |
+| reviewing | needs_review |
+| integrating, needs_merge | needs_integrate |
+| waiting_dep | pending |
+| another `needs_*` step | that step |
+| unknown (older code) | needs_push with a head, else needs_worker |
+
+Jobs blocked only because they waited on it go back to pending. A run that closed blocked reopens when a retry
+for one of its blocked jobs arrives: it keeps its final PR and closes again normally. A closed run needs the long
+form `<repo>/<slug>:<job>`.
 
 ## Questions
 

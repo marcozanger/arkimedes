@@ -178,6 +178,18 @@ def cmd_stop(args) -> int:
     return 0
 
 
+@_cmd
+def cmd_retry(args) -> int:
+    _writer()
+    repo, slug, job = _resolve(args.job)
+    j = run.load(repo, slug)["jobs"][job]
+    if j["status"] != "blocked":
+        raise CtlError(f"{job} is not blocked: {j['status']}")
+    inbox.post(repo, slug, "retry", job=job)
+    print(f"{job} goes back to its step on the next cycle")
+    return 0
+
+
 def _posted_answers(st: dict) -> set:
     return {i.get("id") for i in inbox.pending(st["repo"], st["slug"]) if i["kind"] == "answer"}
 
@@ -353,6 +365,9 @@ def register(sub) -> None:
     s = sub.add_parser("stop", help="stop a job: it ends blocked")
     s.add_argument("job", help="<job> or <repo>/<slug>:<job>")
     s.set_defaults(fn=cmd_stop)
+    s = sub.add_parser("retry", help="put a blocked job back on the step where it stopped")
+    s.add_argument("job", help="<job> or <repo>/<slug>:<job> (a closed run needs the long form)")
+    s.set_defaults(fn=cmd_retry)
     s = sub.add_parser("answer", help="answer the open questions, one by one")
     s.add_argument("--list", action="store_true", help="show them without answering")
     which = s.add_mutually_exclusive_group()
