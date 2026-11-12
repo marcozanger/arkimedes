@@ -176,9 +176,23 @@ TRIGGER_TEXT = {
 }
 
 
+RUN_NOTE = (
+    "How a run works: each job may only change its area, plus any files granted to it during the run (its "
+    "grants). Every job branches from the integration branch `ark/<slug>`, which was made from main once when the "
+    "run started and is never synced with main again: a fix merged to main never reaches this run. A fix the run "
+    "needs has to land on the job's branch (inside its area or a grant) or on the integration branch itself.")
+
+
+def _earlier(st: dict, job_id: str, earlier: list[dict]) -> str:
+    lines = [f"- Marco, {a['id']}: {a['question']} → {a['answer']}"
+             for a in st.get("answers") or [] if a.get("job") == job_id]
+    lines += [f"- Euklides, {d['id']}: {d['action']} — {d.get('note', '')}" for d in earlier]
+    return "\n".join(lines) or "(none)"
+
+
 def euklides_prompt(st: dict, job_id: str, j: dict, mj: dict, plan: Plan, *, trigger: str, situation: str,
                     allowed: list[str], report: str | None, dependents: list[str], worktree, log,
-                    lessons: str) -> str:
+                    lessons: str, earlier=(), base_check: str | None = None) -> str:
     return "\n\n".join([
         f"{TRIGGER_TEXT[trigger]} Decide how the job goes on. Read the worktree and the log if it helps.",
         f"Trigger: {trigger}",
@@ -191,6 +205,10 @@ def euklides_prompt(st: dict, job_id: str, j: dict, mj: dict, plan: Plan, *, tri
         "## The job",
         *_job_block(mj, plan),
         _untrusted("The situation", situation or "(none)"),
+        _untrusted("Earlier questions and decisions on this job", _earlier(st, job_id, list(earlier))),
+        _untrusted("The run's last events", "\n".join(st.get("events", [])[-15:]) or "(none)"),
+        "Base check: " + (base_check or "not run"),
+        RUN_NOTE,
         _untrusted("Worker report (may be missing or from an earlier attempt)", (report or "")[-4000:] or "(none)"),
         "## Lessons from Marco's reviews",
         "Lessons: " + (("\n" + lessons) if lessons else "(none yet)"),

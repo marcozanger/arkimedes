@@ -51,6 +51,24 @@ def _step(cmd: str, cwd, timeout: float, alive_fd: int) -> tuple[subprocess.Pope
         return p, os.pread(out.fileno(), n, max(size - n, 0)).decode("utf-8", "replace")[-TAIL:], timed_out
 
 
+def base_check(repo, base: str, scratch: Path, setup: list[str], gate: str, deadline: float, alive_r) -> bool | None:
+    """Whether the integration gate is red on the base without the job: True, False, or None when it could not
+    tell (a setup step red, a timeout, no checkout)."""
+    try:
+        if gitops.squash_keep(repo, base, base, "base check", scratch) is None:
+            return None
+        for cmd in setup:
+            p, _, timed_out = _step(cmd, scratch, deadline - time.monotonic(), alive_r)
+            if timed_out or p.returncode != 0:
+                return None
+        p, _, timed_out = _step(gate, scratch, deadline - time.monotonic(), alive_r)
+        return None if timed_out else p.returncode != 0
+    except gitops.GitError:
+        return None
+    finally:
+        gitops._cleanup(repo, scratch)
+
+
 def integrate(repo_name: str, slug: str, job: str, head: str) -> dict:
     st = run.load(repo_name, slug)  # raises run.StateCorrupt on a damaged state; main() reports it
     repo = paths.find_repo(repo_name)
@@ -84,7 +102,12 @@ def integrate(repo_name: str, slug: str, job: str, head: str) -> dict:
             if timed_out:
                 return {**out, "reason": f"{what} timed out after {GATE_TIMEOUT}s", "tail": tail}
             if p.returncode:
-                return {**out, "reason": f"{what} failed (exit {p.returncode})", "tail": tail}
+                res = {**out, "reason": f"{what} failed (exit {p.returncode})", "tail": tail}
+                if i >= len(setup):  # the gate itself: is it red without the job too?
+                    scratch_base = paths.worktrees_dir() / repo_name / slug / f"_integrate-{job}-base"
+                    res["base_red"] = base_check(repo, base, scratch_base, setup, m["integration_gate"],
+                                                 time.monotonic() + GATE_TIMEOUT, alive_r)
+                return res
         return {**out, "ok": True}
     finally:
         for p in started:  # what setup started stayed up for the gate; nothing outlives the check
