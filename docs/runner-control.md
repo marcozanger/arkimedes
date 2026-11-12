@@ -39,8 +39,20 @@ Euklides (Opus, read-only: Read, Grep, Glob, in the job's worktree) decides how 
 | question | a worker ended BLOCKED; its question goes to Euklides before Marco |
 | blocked | changed files outside the area, a reviewer without verdict twice, an integration gate failed twice |
 
-Every other block still blocks at once: stopped by Marco, ark-merge refused, an unreachable model, a dependency
-blocked, an error that does not heal.
+Only two blocks skip Euklides: Marco's stop (`ark stop`, `:stop`) and ark-merge refusing. Every other block goes
+to Euklides first, including the intervene tick's `stop_block`.
+
+A passing fault (an error in a step, an unreachable worker or review model, processes left in the worktree, a
+push that is not a fast-forward, an integration check with no result, a result that cannot be archived) heals by
+itself: the job returns to the step that failed after 60, 120, 240, 480 and 900 seconds, with no alert. If it still
+fails, Euklides decides with the last error (trigger `blocked`); when he lets it go on, the job returns to that
+same step and the worker's work stands. An unreachable Euklides keeps backing off and alerts at the second try.
+
+A job whose dependency is blocked, or waits for Marco (`waiting_answer`, `attached`), is `waiting_dep`
+(`ark ps` shows "waiting on <job>") and starts again when the dependency moves. When every live job waits on a
+blocked one, the run closes and blocks them with the reason.
+
+A run with an open question stays open, and the question is alerted again once a day until it is answered.
 
 The runner, not the model, decides which actions are open: `retry` (same tier, same session) and `escalate` (a fresh
 worker one tier up) after a failure, `answer` to a question, `unblock` after a fixable block, and always `ask`. A job

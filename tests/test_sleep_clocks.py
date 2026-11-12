@@ -46,7 +46,7 @@ def test_slept_between_ignores_short_and_negative_jumps():
 
 
 def test_shift_run_moves_every_clock_marks_live_processes_and_says_so(tmp_path, ark_home):
-    c = bare(tmp_path, soft_deadline=1000, watch_from=500, not_before=0, holders_since=900, attempts=1)
+    c = bare(tmp_path, soft_deadline=1000, watch_from=500, not_before=0, attempts=1)
     st = c.st
     st.update(status="running", closing_wait=2000)
     d = paths.run_dir("demo", SLUG)
@@ -55,7 +55,7 @@ def test_shift_run_moves_every_clock_marks_live_processes_and_says_so(tmp_path, 
     write_proc(d, loop.DECISIONS, 3000)
     loop.shift_run(st, 7200, woke_at=9999)
     j = st["jobs"]["shell"]
-    assert (j["soft_deadline"], j["watch_from"], j["holders_since"]) == (8200, 7700, 8100)
+    assert (j["soft_deadline"], j["watch_from"]) == (8200, 7700)
     assert j["not_before"] == 0                                   # absent or 0 stays as it is
     assert st["closing_wait"] == 9200
     assert j["woke_at"] == 9999

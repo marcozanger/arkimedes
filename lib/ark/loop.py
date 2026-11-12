@@ -25,7 +25,6 @@ from .plan import load_plan, sha256_file
 from .validate import validate
 
 ERROR_ALERT_AFTER = 20    # cycles (about 5 minutes) a step keeps failing before Marco hears about it
-HOLDERS_PATIENCE = 900    # seconds a job waits for leftovers in its worktree before it blocks
 INFRA_QUICK = 120         # seconds: a model process that dies sooner, with no answer, never got to work
 INFRA_LIMIT = 200         # tries before a job stops waiting for the model; about 50 hours at the ceiling
 BACKOFF_FIRST = 15        # seconds before the first retry; it doubles each time
@@ -35,8 +34,10 @@ DECISIONS_TICKS = 2       # paid ticks a run's close may start before the runner
 SLEEP_MIN = 60            # seconds the wall clock must run ahead of the uptime clock to count as a sleep
 NET_WAIT_MAX = 600        # seconds the loop waits for the network after waking before it goes on
 NET_HOSTS = (("api.github.com", 443), ("api.anthropic.com", 443))
-CLOCK_KEYS = ("soft_deadline", "watch_from", "not_before", "holders_since")  # absolute times that limit a job
-SKIP_ALERT_AFTER = 3      # integration checks that could not run before Marco hears about it
+CLOCK_KEYS = ("soft_deadline", "watch_from", "not_before")  # absolute times that limit a job
+PASSING_WAITS = (60, 120, 240, 480, 900)  # about half an hour in all, then Euklides
+REMIND_EVERY = 86400  # an open question is repeated to Marco once a day
+WAITS_ON = ("blocked", "waiting_dep", "waiting_answer", "attached")  # a dependency in one of these holds its dependents
 
 # What a job's status says is running, and where the job goes back to if that process is not there.
 RUNNING = {"working": "worker", "gating": "gate", "reviewing": "review", "integrating": "integrate",
@@ -264,7 +265,8 @@ def fail(c: Ctx, job: str, why: str) -> None:
 
 def _block(st: dict, job: str, why: str, critical: bool = False) -> None:
     why = _clean(why)
-    st["jobs"][job].update(status="blocked", reason=why)
+    j = st["jobs"][job]
+    j.update(status="blocked", reason=why, blocked_from=j["status"])
     run.alert(st, f"{job} blocked: {why}", critical=critical)
 
 
@@ -272,25 +274,45 @@ def block(c: Ctx, job: str, why: str, critical: bool = False) -> None:
     _block(c.st, job, why, critical=critical)
 
 
-def to_euklides(c: Ctx, job: str, trigger: str, situation: str, kind: str | None = None) -> None:
-    """Euklides decides how the job goes on. `kind` names a block a new attempt may fix:
-    area, review or integrate (what `unblock` has to reset)."""
-    c.st["jobs"][job].update(status="needs_euklides", euklides={
-        "trigger": trigger, "situation": _clean(situation)[:questions.MAX_TEXT], "kind": kind})
+def _to_euklides(st: dict, job: str, trigger: str, situation: str, kind: str | None = None, **extra) -> None:
+    st["jobs"][job].update(status="needs_euklides", euklides={
+        "trigger": trigger, "situation": _clean(situation)[:questions.MAX_TEXT], "kind": kind, **extra})
+
+
+def to_euklides(c: Ctx, job: str, trigger: str, situation: str, kind: str | None = None, **extra) -> None:
+    """Euklides decides how the job goes on. `kind` names a block a new attempt may fix: area, review,
+    integrate, or step (a passing fault; `back` is the status it returns to)."""
+    _to_euklides(c.st, job, trigger, situation, kind, **extra)
+
+
+def _passing(c: Ctx, job: str, counter: str, why: str, back: str) -> None:
+    """A fault that heals by waiting: the job returns to `back` after 1, 2, 4, 8 and 15 minutes. Still failing,
+    Euklides decides, with the last error; when he lets it go on, it returns to `back`."""
+    j = c.st["jobs"][job]
+    n = j[counter] = j.get(counter, 0) + 1
+    if n <= len(PASSING_WAITS):
+        j["status"] = back
+        j["not_before"] = time.time() + PASSING_WAITS[n - 1]
+        if n == 1:
+            run.event(c.st, f"{job}: {_clean(why)} (retrying in a minute)")
+        return
+    j.pop(counter, None)
+    j.pop("not_before", None)
+    to_euklides(c, job, "blocked", f"{why} (still failing after {len(PASSING_WAITS)} retries over about "
+                                   "30 minutes)", "step", back=back)
 
 
 def _error(c: Ctx, job: str, e: Exception) -> None:
-    """A git / gh error while moving a job: it stays where it is and is retried next cycle, since a laptop
-    offline must not block anything. Marco hears about it once, if it does not go away. Any other error
-    is not known to heal, and a job retrying it for ever is a job nobody looks at, so that one blocks."""
+    """An error while moving a job. Between processes it is a passing fault: the step runs again on the
+    PASSING_WAITS schedule, then Euklides decides. A running job's error is an archive failure, counted per cycle."""
     text = _clean(f"{type(e).__name__}: {e}")
     j = c.st["jobs"][job]
+    if j["status"] not in RUNNING:
+        return _passing(c, job, "step_tries", f"the step failed: {text}", j["status"])
     j["errors"] = j.get("errors", 0) + 1
     if j.get("error") != text:
         j["error"] = text
         run.event(c.st, f"{job}: {text} (retrying)")
-    if j["errors"] >= ERROR_ALERT_AFTER and not isinstance(e, (gitops.GitError, forge_mod.ForgeError)):
-        return block(c, job, f"the same step failed for {ERROR_ALERT_AFTER} cycles: {text}")
     if j["errors"] == ERROR_ALERT_AFTER:
         run.alert(c.st, f"{job} has been failing for {ERROR_ALERT_AFTER} cycles, still retrying: {text}")
 
@@ -317,7 +339,7 @@ def _after_stop(st: dict, job: str, then: dict) -> None:
         _escalate(j)
         j.update(note=then["note"], status="needs_worker")
     else:
-        _block(st, job, then["note"])
+        _to_euklides(st, job, "blocked", f"the intervene tick stopped it: {then['note']}", None)
 
 
 def on_worker(c: Ctx, job: str, r: dict) -> None:
@@ -417,35 +439,19 @@ def on_review(c: Ctx, job: str, r: dict) -> None:
     j["status"] = "needs_worker"
 
 
-def _integrate_again(c: Ctx, job: str, counter: str) -> int:
-    j = c.st["jobs"][job]
-    j[counter] = j.get(counter, 0) + 1
-    j["status"] = "needs_integrate"
-    return j[counter]
-
-
 def on_integrate(c: Ctx, job: str, r: dict) -> None:
     j = c.st["jobs"][job]
     out = None if r["reason"] else _answer(r)
     if not isinstance(out, dict) or "ok" not in out:  # a stop or a death: nothing was learned about the job
         why = r["reason"] or "ark-integrate gave no result"
-        if _integrate_again(c, job, "integrate_lost") >= 2:
-            return block(c, job, f"ark-integrate ended twice without a result: {why}")
-        run.event(c.st, f"{job}: ark-integrate ended without a result ({why}); checking again")
-        return
+        return _passing(c, job, "integrate_lost", f"ark-integrate ended without a result ({why})", "needs_integrate")
     ok = out["ok"] is True and isinstance(out.get("base"), str)
     reason = out.get("reason", "")
     if not ok and out.get("base") is None:  # the check never ran: not the worker's doing
-        j["status"] = "needs_integrate"
-        n = _wait_longer(j, "integrate_skips")  # no slot while it waits: the next heavy job is not starved
-        if n >= INFRA_LIMIT:
-            return block(c, job, f"the integration check could not run, {n} times: {reason}")
-        if n == 1:
-            run.event(c.st, f"{job}: the integration check could not run: {reason}")
-        if n == SKIP_ALERT_AFTER:
-            run.alert(c.st, f"{job}: the integration check could not run, {n} times: {reason}")
-        return
-    j["integrate_lost"] = j["integrate_skips"] = 0
+        return _passing(c, job, "integrate_skips", f"the integration check could not run: {reason}",
+                        "needs_integrate")
+    j.pop("integrate_lost", None)
+    j.pop("integrate_skips", None)
     j.pop("not_before", None)
     merge.record(c.dir, job, "integrate", {"ok": ok, "base": out.get("base"),
                                            "head": out.get("head") or r["meta"].get("head"),
@@ -494,6 +500,9 @@ def _go_on(st: dict, job: str, e: dict, text: str) -> None:
     """Back to work after a decision (Euklides' or Marco's): what blocked the job starts over, and the
     worker is told what to do. A review that never gave a verdict is simply run again."""
     j = st["jobs"][job]
+    if e.get("back"):  # a passing fault: the step runs again, the worker's work stands
+        j["status"] = e["back"]
+        return
     if e.get("kind") == "review":
         j.update(review_errors=0, status="needs_review")
         return
@@ -581,13 +590,14 @@ def _model_unreachable(c: Ctx, job: str, kind: str) -> None:
         j["setup_done"] = True  # no reason on the receipt: setup got through
         j["attempts"] = max(0, j["attempts"] - 1)
         j["session"] = None  # the same death as a session that cannot be resumed: the next try starts fresh
-    n = _wait_longer(j, "infra_tries")
-    if n >= INFRA_LIMIT:
-        return block(c, job, f"the model stayed unreachable for {n} tries")
-    if n == 2:  # the first may have been a lost session, which the fresh start above heals
-        run.alert(c.st, f"{job}: the model is unreachable (offline or auth expired?): nothing is charged, "
-                        "it keeps retrying with a growing wait", critical=True)
-    run.event(c.st, f"{job}: its {kind} got no answer from the model; try {n}")
+    if kind == "euklides":  # nobody else to send it to: back off without end, and tell Marco early
+        n = _wait_longer(j, "infra_tries")
+        if n == 2:
+            run.alert(c.st, f"{job}: Euklides' model is unreachable (offline or auth expired?): nothing is charged, "
+                            "it keeps retrying with a growing wait", critical=True)
+        return run.event(c.st, f"{job}: its euklides got no answer from the model; try {n}")
+    _passing(c, job, "infra_tries", f"its {kind} got no answer from the model (offline or auth expired?)",
+             WAITING[kind])
 
 
 def _slept_through(j: dict, kind: str) -> bool:
@@ -671,6 +681,16 @@ def _cannot_archive(c: Ctx, name: str, e: OSError) -> None:
     j = c.st["jobs"].get(job)
     if j is not None and j["status"] not in run.TERMINAL:
         _error(c, job, e)
+        if j.get("errors", 0) > ERROR_ALERT_AFTER and proc.discard(c.dir, name):
+            kind = name.rpartition(".")[2]
+            why = f"its {kind}'s result could not be archived for {ERROR_ALERT_AFTER} cycles: {_clean(str(e))}"
+            j.pop("errors", None)
+            j.pop("error", None)
+            if kind == "euklides":  # never send Euklides' own trouble back to him
+                e_ = j.pop("euklides", None) or {"trigger": "blocked", "situation": why, "kind": None}
+                return _euklides_ask(c.st, job, {**e_, "situation": why},
+                                     {"note": why, "proposal": ":stop"}, None)
+            to_euklides(c, job, "blocked", why, "step", back=WAITING.get(kind, "needs_worker"))
     if (j is None or j["status"] in run.TERMINAL) and proc.discard(c.dir, name):
         run.event(c.st, f"forgot {_clean(name)}, its result could not be archived; if it was still running, "
                         "it was not signalled")
@@ -798,13 +818,10 @@ def _worktree_free(c: Ctx, job: str) -> bool:
     except Exception as e:
         pids, what = None, f"cannot tell who is in its worktree {wt}: {e}"
     if pids == []:
-        j.pop("holders_since", None)
+        j.pop("holder_tries", None)
         return True
-    if "holders_since" not in j:
-        j["holders_since"] = time.time()
-        run.alert(c.st, f"{job} waits: {what}")
-    elif time.time() - j["holders_since"] > HOLDERS_PATIENCE:
-        block(c, job, f"{what} (waited {HOLDERS_PATIENCE // 60} minutes)")
+    if j.get("not_before", 0) <= time.time():
+        _passing(c, job, "holder_tries", what, j["status"])
     return False
 
 
@@ -856,10 +873,12 @@ def push_job(c: Ctx, job: str) -> None:
     except gitops.GitError:
         remote = gitops.remote_sha(c.repo, branch)
         if remote and remote != j["head"] and not gitops.is_ancestor(c.repo, remote, j["head"]):
-            return block(c, job, f"non-fast-forward: {branch} on origin holds {remote[:8]}, which this head does "
-                                 "not descend from: the worker amended or rebased, or someone else pushed there. "
-                                 "Delete that branch or look at it")
+            return _passing(c, job, "push_tries",
+                            f"non-fast-forward: {branch} on origin holds {remote[:8]}, which this head does "
+                            "not descend from: the worker amended or rebased, or someone else pushed there. "
+                            "Delete that branch or look at it", "needs_push")
         raise
+    j.pop("push_tries", None)
     j["status"] = "needs_gate"
     run.event(c.st, f"{job}: head {j['head'][:8]} pushed")
 
@@ -960,6 +979,12 @@ def _reports(c: Ctx) -> dict[str, str]:
 
 def maybe_close(c: Ctx) -> None:
     st = c.st
+    live = [j for j in st["jobs"].values() if j["status"] not in run.TERMINAL]
+    if live and all(j["status"] == "waiting_dep" for j in live) and not proc.active(c.dir) \
+            and not any(st["jobs"][j["waiting_on"]]["status"] in ("waiting_answer", "attached") for j in live):
+        for job, j in st["jobs"].items():  # nothing can move them now: the run ends
+            if j["status"] == "waiting_dep":
+                _block(st, job, f"a job it depends on is blocked: {j['waiting_on']}")
     if any(j["status"] not in run.TERMINAL for j in st["jobs"].values()) or proc.active(c.dir):
         return
     if st["closing"] is None:
@@ -1156,8 +1181,6 @@ def _next_step(c: Ctx, job: str, j: dict, slots: Slots):
         return None
     if s in ("pending", "needs_merge"):  # needs_merge: a new approval may have added the dependency
         deps = [c.st["jobs"][d]["status"] for d in c.mjobs[job].get("after") or []]
-        if "blocked" in deps:
-            return lambda: block(c, job, "a job it depends on is blocked")
         if not all(d == "merged" for d in deps):
             return None
     if s in ("pending", "needs_worker"):
@@ -1219,7 +1242,29 @@ def watch(c: Ctx) -> None:
                 run.event(c.st, f"{job}: the intervene tick did not start: {type(e).__name__}: {_clean(str(e))}")
 
 
+def _stuck_dep(c: Ctx, job: str) -> str | None:
+    return next((d for d in c.mjobs[job].get("after") or [] if c.st["jobs"][d]["status"] in WAITS_ON), None)
+
+
+def _hold_dependents(c: Ctx) -> None:
+    """A job whose dependency is blocked or waits for Marco waits too, and starts again when it moves."""
+    for job, j in c.st["jobs"].items():
+        if j["status"] not in ("pending", "waiting_dep"):
+            continue
+        dep = _stuck_dep(c, job)
+        if dep and j["status"] == "pending":
+            j.update(status="waiting_dep", waiting_on=dep)
+            run.event(c.st, f"{job} waits: {dep} is {c.st['jobs'][dep]['status']}")
+        elif dep:
+            j["waiting_on"] = dep
+        elif j["status"] == "waiting_dep":
+            j["status"] = "pending"
+            j.pop("waiting_on", None)
+            run.event(c.st, f"{job}: nothing it depends on is stuck any more")
+
+
 def schedule(c: Ctx, slots: Slots) -> None:
+    _hold_dependents(c)
     for job, j in c.st["jobs"].items():
         move = _next_step(c, job, j, slots)
         if move is None:
@@ -1231,6 +1276,7 @@ def schedule(c: Ctx, slots: Slots) -> None:
         else:
             j.pop("error", None)
             j.pop("errors", None)
+            j.pop("step_tries", None)
 
 
 def _gone_worker(st: dict, job: str, j: dict) -> bool:
@@ -1574,6 +1620,7 @@ def step(st: dict, states: list[dict], forge, slots: Slots, hold: bool = False) 
             return
     proc.reap(paths.run_dir(st["repo"], st["slug"]))  # first: nothing below can excuse a process from its deadline
     apply_inbox(st)
+    _remind_questions(st)
     _retry_stops(st)
     if st.get("ending"):
         return _finish_ending(st)
@@ -1759,6 +1806,18 @@ def _orphans(known, alerts: list[str]) -> None:
                                               f"{type(e).__name__}: {e}", alerts)
 
 
+def _remind_questions(st: dict) -> None:
+    """A run waiting for Marco never closes by itself: he hears about each open question once a day."""
+    now = time.time()
+    for q in st.get("questions") or []:
+        at = q.setdefault("remind_at", now + REMIND_EVERY)
+        if at <= now:
+            q["remind_at"] = now + REMIND_EVERY
+            who = f" from {q['job']}" if q.get("job") else ""
+            run.alert(st, f"still waiting for your answer to {q['id']}{who}: {q['text'][:200]} — `ark answer`",
+                      critical=True)
+
+
 def _nothing_to_advance(states: list[dict], capped_accounts=frozenset()) -> bool:
     """Called after every run took its step: there are live runs, no process alive anywhere, and each run is
     held or waits for Marco. A pending job beside a waiting one only waits for it: this pass started all it could.
@@ -1773,7 +1832,7 @@ def _nothing_to_advance(states: list[dict], capped_accounts=frozenset()) -> bool
         statuses = [j["status"] for j in st["jobs"].values() if j["status"] not in run.TERMINAL]
         if not any(s in WAITS_FOR_MARCO for s in statuses):
             return False
-        if any(s not in WAITS_FOR_MARCO and s != "pending" for s in statuses):
+        if any(s not in WAITS_FOR_MARCO and s not in ("pending", "waiting_dep") for s in statuses):
             return False
     return True
 
@@ -1946,7 +2005,7 @@ def _retry_due() -> bool:
                 return True
             if j.get("errors"):  # a running job has them only while its result cannot be archived
                 return True
-            if j["status"] not in RUNNING and ("holders_since" in j or 0 < j.get("not_before", 0) <= now):
+            if j["status"] not in RUNNING and 0 < j.get("not_before", 0) <= now:
                 return True
     return False
 
