@@ -3471,6 +3471,16 @@ def test_a_fixed_that_fails_a_check_asks_marco_and_pushes_nothing(feature, monke
     assert j["attempts"] == 1 and "rewrite_ok" not in j
 
 
+def test_a_fixed_without_a_worktree_asks_marco(tmp_path, ark_home):
+    c = at_euklides(tmp_path, allowed=("retry", "escalate", "fixed", "ask"))  # tmp_path/shell does not exist
+    loop.on_euklides(c, "shell", euk_answer(action="fixed", note="repaired"))
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "waiting_answer" and "rewrite_ok" not in j
+    [q] = [q for q in c.st["questions"] if q["job"] == "shell"]
+    assert "it replied fixed, but the job has no worktree" in q["text"]
+    assert f"Proposal: {loop.FIXED_PROPOSAL}" in q["text"]
+
+
 def _g(cwd, *args):
     subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True)
 

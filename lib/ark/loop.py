@@ -586,7 +586,7 @@ def _fixed(c: Ctx, job: str, e: dict, d: dict, decision) -> None:
     """Euklides repaired the branch himself. Checked like a worker's DONE; then pushed (a rewrite with a backup
     and a lease) and gated, with no new worker attempt. A failed check asks Marco and pushes nothing."""
     j = c.st["jobs"][job]
-    bad = done_check(c, job)
+    bad = done_check(c, job) if c.wt(job).is_dir() else ("worktree", "the job has no worktree")
     if bad:
         return _euklides_ask(c.st, job, e, {**d, "note": f"it replied fixed, but {bad[1]}",
                                             "proposal": FIXED_PROPOSAL}, decision)
