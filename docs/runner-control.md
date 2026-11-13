@@ -163,6 +163,9 @@ Over the rule, or when the fix fails (its worker, its gate, or a step failing fi
 becomes a question to Marco with Euklides' proposal and the reason. For a widen over the rule, `ok` grants the
 files. The fix never syncs `main` into the run, never edits the plan and opens no PR of its own.
 
+The decisions file written at close (`runs/<repo>/<slug>/decisions.md`) is reviewed by Marco in the `ark ui` Decisions tab
+or with `ark review <repo>/<slug>`; see `docs/review.md`.
+
 Every widen and fix_base is journaled in `history/euklides/decisions.jsonl` (with its `files`), so `ark review`
 shows them; each sends a notice, and a landed fix shows in the final PR's commit list.
 

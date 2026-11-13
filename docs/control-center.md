@@ -12,21 +12,25 @@ ark ui --port 8800     # another port (default 8737)
 ```
 
 It listens on `127.0.0.1` only and rejects a foreign `Host` header. `GET` reads; the only `POST`s
-are the four writes below. If the port is busy it exits 2 and names `--port`. Ctrl-C stops it.
+are the five writes below. If the port is busy it exits 2 and names `--port`. Ctrl-C stops it.
 
 The page polls `/api/runs` every 10 seconds. The page file is read on every request, so a
 `git pull` shows up on reload.
 
 ## Screens
 
-Home (every plan on one line), a plan screen (Timeline, Questions, Events, Spec, Plan), a draft
+Home (every plan on one line), a plan screen (Timeline, Questions, Events, Decisions, Spec, Plan), a draft
 screen (spec and plan reviewed per section and approved), History and Euklides.
+
+The Decisions tab of a plan shows its `runs/<repo>/<slug>/decisions.md` (written when the run closes) one
+decision at a time with OK / Change (a Change needs a comment) and a closing question, "does this run need a
+fix or more work?". Verdicts are the same rows `ark review` writes; see `docs/review.md`.
 
 ## Endpoints
 
-Reads (`GET`): `/api/runs`, `/api/drafts`, `/api/draft`, `/api/history`, `/api/euklides`, `/api/image`.
+Reads (`GET`): `/api/runs`, `/api/drafts`, `/api/draft`, `/api/history`, `/api/euklides`, `/api/image`, `/api/decision-review?repo=&slug=`.
 
-The four writes (`POST`, JSON body), each through the same code the terminal commands use:
+The five writes (`POST`, JSON body), each through the same code the terminal commands use:
 
 | Endpoint | Write |
 |---|---|
@@ -34,6 +38,7 @@ The four writes (`POST`, JSON body), each through the same code the terminal com
 | `/api/approve-spec` | the spec's `status: approved` (every section must be `ok`) |
 | `/api/approve-plan` | the plan's approval, like the terminal command (valid plan, spec approved, every section `ok`, sha unchanged) |
 | `/api/answer` | an answer to an open question, like `ark answer` |
+| `/api/decision-review` | OK / Change on one decision of a closed run's `decisions.md`, or the run's follow-up (`none`, `fix`, `more`), into `history/euklides/reviews.jsonl`; refused from a runner process (`ARK_ROLE`) |
 
 ## Token and Origin rule
 

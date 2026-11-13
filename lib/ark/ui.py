@@ -1,7 +1,8 @@
-"""`ark ui`: the control center page, the runs snapshot and the page's four writes, on 127.0.0.1 only.
+"""`ark ui`: the control center page, the runs snapshot and the page's five writes, on 127.0.0.1 only.
 
 GET serves the page (with the session token), the JSON endpoints, draft images and the vendored renderer.
-POST writes only a feature's review.json, its spec status, a plan approval and a run answer, through the same
+POST writes only a feature's review.json, its spec status, a plan approval, a run answer and a verdict on a
+run's decisions (reviews.jsonl), through the same
 code the terminal commands use; each needs the Host, the Origin and the `X-Ark-Token` header to match."""
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from . import answers, approve, drafts, monitor, paths, plan as plan_mod, reviews, uidata, validate
+from . import answers, approve, drafts, monitor, paths, plan as plan_mod, reviews, runreview, uidata, validate
 
 PORT = 8737
 MAX_BODY = 65536
@@ -158,8 +159,22 @@ def _post_answer(body: dict) -> dict:
         raise HttpError(ANSWER_STATUS.get(e.kind, 400), str(e), kind=e.kind, **extra)
 
 
+def _post_decision_review(body: dict) -> dict:
+    if "ARK_ROLE" in os.environ:
+        raise HttpError(403, "a runner process (ARK_ROLE) cannot review decisions", kind="role")
+    repo, slug = _slugs(body)
+    key, verdict, comment = body.get("key"), body.get("verdict"), body.get("comment") or ""
+    if not isinstance(key, str) or not isinstance(verdict, str):
+        raise HttpError(400, "key and verdict must be strings")
+    try:
+        return runreview.save(repo, slug, key, verdict, comment)
+    except runreview.RunReviewError as e:
+        raise HttpError(404 if e.kind == "unknown" else 400, str(e), kind=e.kind)
+
+
 POSTS = {"/api/review": _post_review, "/api/approve-spec": _post_approve_spec,
-         "/api/approve-plan": _post_approve_plan, "/api/answer": _post_answer}
+         "/api/approve-plan": _post_approve_plan, "/api/answer": _post_answer,
+         "/api/decision-review": _post_decision_review}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -212,6 +227,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, drafts.detail(_q(query, "repo"), _q(query, "slug")))
             except drafts.DraftError as e:
                 raise HttpError(404, str(e))
+        if path == "/api/decision-review":
+            repo, slug = _slugs({"repo": _q(query, "repo"), "slug": _q(query, "slug")})
+            return self._json(200, runreview.load(repo, slug))
         if path == "/api/history":
             return self._json(200, uidata.history())
         if path == "/api/euklides":

@@ -23,7 +23,13 @@ def _reviewed() -> list[dict]:
     """Decisions with a verdict or a Marco answer, newest first, at most MAX_DECISIONS. The journal is
     append-only, so its order is the time order; the last verdict on a decision wins."""
     verdicts = {r.get("id"): r for r in euklides.reviews()}
+    mine = {d.get("id") for d in euklides.decisions()}
     out = []
+    # verdicts on a run's decisions file (the Decisions tab) have no row in decisions.jsonl: their text is the data
+    for i, v in reversed(list(verdicts.items())):
+        if i not in mine:
+            out.append({"id": i, "trigger": "run decision", "situation": v.get("text"),
+                        "verdict": v.get("verdict"), "comment": v.get("comment", "")})
     for d in reversed(euklides.decisions()):
         v = verdicts.get(d.get("id"))
         if v or d.get("marco") is not None:
@@ -38,7 +44,9 @@ def prompt() -> str:
     rows = _reviewed()
     return "\n\n".join([
         "You keep the lessons of Euklides, the decision maker of a coding-agent runner. Marco reviewed its "
-        "decisions: `verdict` ok or wrong with his comment, or `marco` when he answered its question himself.",
+        "decisions: `verdict` ok or wrong with his comment, or `marco` when he answered its question himself. "
+        "Rows whose trigger is `run decision` are decisions from a closed run's decisions file (`situation` is "
+        "the text); an id ending in `/followup` says whether the run needed a `fix` or `more` work.",
         RULES,
         "## The current lessons file",
         euklides.lessons() or "(empty)",
