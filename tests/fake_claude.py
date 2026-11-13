@@ -22,6 +22,8 @@ leaves <job>.worker.<n>.argv and .prompt in FAKE_STATE.
 FAKE_USD=<n> is what every process says it cost.
 FAKE_BLOCKED=job:n,... makes attempt n end BLOCKED with the question "which store?".
 FAKE_INTERVENE is the raw answer of an intervene tick.
+FAKE_FIXBASE=file makes a base-fix worker (job `_fix-<n>`) delete that file and commit; without it, it
+changes nothing. Either way it ends STATUS: DONE.
 """
 import fcntl
 import json
@@ -79,7 +81,14 @@ if os.environ.get("FAKE_DOWN"):
     print("Could not reach the model")
     sys.exit(1)
 
-if ROLE == "worker":
+if ROLE == "worker" and os.environ["ARK_JOB"].startswith("_fix-"):
+    wt, target = Path(os.environ["ARK_WORKTREE"]), os.environ.get("FAKE_FIXBASE")
+    bump(os.environ["ARK_JOB"])
+    if target and (wt / target).exists():
+        (wt / target).unlink()
+        subprocess.run(["git", "commit", "-q", "-am", "fix(base)"], cwd=wt, check=True)
+    emit("fixed\nSTATUS: DONE")
+elif ROLE == "worker":
     job, wt = os.environ["ARK_JOB"], Path(os.environ["ARK_WORKTREE"])
     track(1)
     try:

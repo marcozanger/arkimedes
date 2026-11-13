@@ -90,6 +90,29 @@ every call. A journal that cannot be written is an event; the decision still app
 
 A run saved before Euklides, with a job in `needs_judge` or `judging`, loads as `needs_euklides`.
 
+### What Euklides can fix
+
+Two more actions let Euklides fix small things himself, inside the **small-fix rule** the runner checks: at most 3
+files and 30 changed lines, no binary file, and no file inside another job's area.
+
+- `widen` opens after an area block (files changed outside the area), under budget. It names the files; when the
+  job changed exactly those outside its area and the change is within the rule, they become **grants**: the run
+  state keeps them under `grants.<job>`, and every later area check (the worker's, the reviewer's, ark-merge's)
+  counts them as part of the area. Briefs show them as "Granted in this run".
+- `fix_base` opens after the integration gate failed twice and is red on the base too, at most 3 times per run. A
+  small worker (job name `_fix-<n>`, branch `ark/<slug>-_fix-<n>`, never pushed) fixes `ark/<slug>`; its change must
+  be within the rule (files of merged jobs do not count) and the integration gate must pass on it. Then one
+  `fix(base): … (Euklides fix <n>)` commit lands on `ark/<slug>` under the run's merge lock, and every job waiting
+  on it (`waiting_fix`, `ark ps` shows "waiting for base fix <n>") integrates again. Only one fix runs at a time;
+  a job that hits a red base meanwhile waits on the same fix.
+
+Over the rule, or when the fix fails (its worker, its gate, or a step failing five times), every job concerned
+becomes a question to Marco with Euklides' proposal and the reason. For a widen over the rule, `ok` grants the
+files. The fix never syncs `main` into the run, never edits the plan and opens no PR of its own.
+
+Every widen and fix_base is journaled in `history/euklides/decisions.jsonl` (with its `files`), so `ark review`
+shows them; each sends a notice, and a landed fix shows in the final PR's commit list.
+
 Ending a run stops every process and blocks every open job. No final PR is opened; what merged stays on `ark/<slug>`
 and the worktrees stay.
 

@@ -38,7 +38,9 @@ NET_HOSTS = (("api.github.com", 443), ("api.anthropic.com", 443))
 CLOCK_KEYS = ("soft_deadline", "watch_from", "not_before")  # absolute times that limit a job
 PASSING_WAITS = (60, 120, 240, 480, 900)  # about half an hour in all, then Euklides
 REMIND_EVERY = 86400  # an open question is repeated to Marco once a day
-WAITS_ON = ("blocked", "waiting_dep", "waiting_answer", "attached")  # a dependency in one of these holds its dependents
+WAITS_ON = ("blocked", "waiting_dep", "waiting_answer", "attached", "waiting_fix")
+SMALL_FILES, SMALL_LINES = 3, 30  # the small-fix rule: what Euklides may widen or fix without Marco
+FIX_BASE_USD = 2  # the budget of one base-fix worker  # a dependency in one of these holds its dependents
 
 # What a job's status says is running, and where the job goes back to if that process is not there.
 RUNNING = {"working": "worker", "gating": "gate", "reviewing": "review", "integrating": "integrate",
@@ -98,6 +100,10 @@ def ticks_dir() -> Path:
     return d
 
 
+def _wt(st: dict, job: str) -> Path:
+    return paths.worktrees_dir() / st["repo"] / st["slug"] / job
+
+
 class Ctx:
     def __init__(self, st: dict, forge):
         self.st, self.forge = st, forge
@@ -110,7 +116,7 @@ class Ctx:
         self.base = f"ark/{st['slug']}"
 
     def wt(self, job: str) -> Path:
-        return paths.worktrees_dir() / self.st["repo"] / self.st["slug"] / job
+        return _wt(self.st, job)
 
     def branch(self, job: str) -> str:
         return f"{self.base}-{job}"
@@ -384,7 +390,7 @@ def on_worker(c: Ctx, job: str, r: dict) -> None:
     files = gitops.changed_files(wt, f"origin/{c.base}", "HEAD")
     if not files:
         return fail(c, job, "the worker ended DONE without any change")
-    outside = [_printable(f) for f in files if not match_any(f, c.mjobs[job]["area"])]
+    outside = [_printable(f) for f in files if not match_any(f, run.area(c.st, job, c.mjobs[job]))]
     if outside:
         return to_euklides(c, job, "blocked", "changed files outside its area: " + ", ".join(outside[:5]), "area")
     j.update(status="needs_push", head=gitops.rev(wt, "HEAD"))
@@ -544,10 +550,231 @@ def on_euklides(c: Ctx, job: str, r: dict) -> None:
     run.event(c.st, f"{job} euklides: {d['action']} — {_clean(d['note'])[:300]}")
     if d["action"] == "ask":
         return _euklides_ask(c.st, job, e, d, decision)
+    if d["action"] == "widen":
+        return _widen(c, job, e, d, decision)
+    if d["action"] == "fix_base":
+        return _fix_base(c, job, e, d, decision)
     j["euklides_count"] = j.get("euklides_count", 0) + 1
     if d["action"] == "escalate":
         _escalate(j)
     _go_on(c.st, job, e, d["note"])
+
+
+# ---- what Euklides can fix: widen a job's area, fix the base ----------------------------------
+
+FIX_PREFIX = "_fix-"  # a job id never starts with "_": these names are the run's, not a job's
+FIX_DONE = ("landed", "failed")
+FIX_RUNNING = {"working": "worker", "gating": "gate"}
+FIX_WAITING_FOR = {"worker": "needs_worker", "gate": "needs_gate"}
+FIX_WAITING = ("needs_worker", "needs_gate", "needs_land")
+
+
+def _small_fix(c: Ctx, files: list[str], lines: int | None, skip: tuple = ()) -> str | None:
+    """None when the change is small; otherwise why not, in words Marco reads."""
+    if len(files) > SMALL_FILES:
+        return f"{len(files)} files, the small-fix rule allows {SMALL_FILES}"
+    if lines is None or lines > SMALL_LINES:
+        what = "a binary file" if lines is None else f"{lines} changed lines"
+        return f"{what}, the small-fix rule allows {SMALL_LINES}"
+    for other, mj in c.mjobs.items():
+        if other in skip:
+            continue
+        hit = [f for f in files if match_any(f, run.area(c.st, other, mj))]
+        if hit:
+            return f"{', '.join(hit)} belong to {other}'s area"
+    return None
+
+
+def _outside(c: Ctx, job: str) -> list[str]:
+    """What the job changed outside its area and its grants."""
+    return [_printable(f) for f in gitops.changed_files(c.wt(job), f"origin/{c.base}", "HEAD")
+            if not match_any(f, run.area(c.st, job, c.mjobs[job]))]
+
+
+def _widen(c: Ctx, job: str, e: dict, d: dict, decision) -> None:
+    """Grant the files the job changed outside its area, when the widen names them all and the change is small;
+    otherwise Marco decides, and his `ok` grants them."""
+    files, outside = d["files"], _outside(c, job)
+    if not outside:
+        why = "the job changes nothing outside its area now"
+    elif not set(outside) <= set(files):
+        why = f"the job also changed {', '.join(sorted(set(outside) - set(files)))}, which the widen did not name"
+    else:
+        why = _small_fix(c, outside, gitops.changed_lines(c.wt(job), f"origin/{c.base}", "HEAD", outside),
+                         skip=(job,))
+    if why:
+        grant = outside or files
+        d = {**d, "proposal": d["proposal"] or f"widen {job}'s area to {', '.join(grant)} (answer ok)"}
+        _euklides_ask(c.st, job, {**e, "situation": f"{e['situation']}\n\nOver the small-fix rule: {why}. "
+                                                    f"Files: {', '.join(grant)}"}, d, decision)
+        c.st["jobs"][job]["euklides_ask"]["grant"] = grant
+        return
+    c.st["jobs"][job]["euklides_count"] = c.st["jobs"][job].get("euklides_count", 0) + 1
+    _grant(c.st, job, outside, decision)
+
+
+def _grant(st: dict, job: str, files: list[str], decision, by: str = "Euklides") -> None:
+    """The files join the job's area for this run; the worker's head goes on as if it had stayed inside."""
+    grants = st.setdefault("grants", {}).setdefault(job, [])
+    grants += [f for f in files if f not in grants]
+    j = st["jobs"][job]
+    j.update(status="needs_push", head=gitops.rev(_wt(st, job), "HEAD"))
+    run.alert(st, f"{job}: {by} widened its area to {', '.join(files)} ({decision or 'not journaled'})")
+
+
+def _fix_base(c: Ctx, job: str, e: dict, d: dict, decision) -> None:
+    """One small worker fixes the integration branch; every job that finds the base red meanwhile waits on it."""
+    fixes = c.st.setdefault("fixes", [])
+    live = next((f for f in fixes if f["status"] not in FIX_DONE), None)
+    if live is None:
+        c.st["fix_base_count"] = c.st.get("fix_base_count", 0) + 1
+        live = {"n": len(fixes) + 1, "job": job, "note": _clean(d["note"]), "situation": e["situation"],
+                "decision": decision, "status": "needs_worker", "waiting": {}, "lost": 0}
+        fixes.append(live)
+        run.alert(c.st, f"Euklides is fixing the base (fix {live['n']}, for {job}): {_clean(d['note'])[:200]}")
+    live["waiting"][job] = {**e, "decision": decision, "proposal": d["proposal"] or d["note"]}
+    c.st["jobs"][job].update(status="waiting_fix", fix=live["n"])
+    c.st["jobs"][job]["euklides_count"] = c.st["jobs"][job].get("euklides_count", 0) + 1
+
+
+def _fix_of(st: dict, name: str) -> dict | None:
+    try:
+        n = int(name.split(".")[0].removeprefix(FIX_PREFIX))
+    except ValueError:
+        return None
+    return next((f for f in st.get("fixes") or [] if f["n"] == n), None)
+
+
+def _start_fix_worker(c: Ctx, f: dict) -> None:
+    name = f"{FIX_PREFIX}{f['n']}"
+    wt, m = c.wt(name), c.plan.manifest
+    gitops.fetch(c.repo)
+    gitops.add_worktree(c.repo, wt, c.branch(name), f"origin/{c.base}")  # ark/<slug>-_fix-<n>: no job's name
+    prompt = brief.fix_base_brief(c.st, f, c.plan, SMALL_FILES, SMALL_LINES)
+    env = claude.runner_env("worker", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo), worktree=wt,
+                            area=json.dumps(["**"]), report=c.report(name), gate=m["integration_gate"],
+                            run_dir=c.dir, job=name)
+    sid = str(uuid.uuid4())
+    cmd = claude.agent_cmd("worker", claude.MODELS["T1"], prompt, session=sid, resume=False, usd=FIX_BASE_USD)
+    proc.start(c.dir, f"{name}.worker", cmd, cwd=wt, env=env, minutes=30, pre=list(m.get("setup") or []),
+               meta={"session": sid})
+    f["status"] = "working"
+    run.event(c.st, f"base fix {f['n']}: worker started")
+
+
+def _start_fix_gate(c: Ctx, f: dict) -> None:
+    name = f"{FIX_PREFIX}{f['n']}"
+    env = claude.runner_env("gate", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo))  # it runs tests a worker wrote
+    proc.start(c.dir, f"{name}.gate", ["sh", "-c", c.plan.manifest["integration_gate"]], cwd=c.wt(name), env=env,
+               minutes=integrate.GATE_TIMEOUT / 60, meta={"head": f.get("head")})
+    f["status"] = "gating"
+
+
+def _move_fixes(c: Ctx, slots: Slots) -> None:
+    """The live base fix one step on. A step that raises is a passing fault: it waits and tries again on the
+    PASSING_WAITS schedule, then the fix fails and its jobs ask Marco."""
+    for f in c.st.get("fixes") or []:
+        if f["status"] not in FIX_WAITING or f.get("not_before", 0) > time.time():
+            continue
+        try:
+            if f["status"] == "needs_worker":
+                if not slots.writer(c.st["repo"]):
+                    continue
+                try:
+                    _start_fix_worker(c, f)
+                finally:
+                    if f["status"] != "working":
+                        slots.release_writer(c.st["repo"])
+            elif f["status"] == "needs_gate":
+                _start_fix_gate(c, f)
+            else:
+                _land_fix(c, f)
+        except Exception as e:
+            _fix_retry(c, f, f"{type(e).__name__}: {_clean(str(e))}")
+        else:
+            f.pop("tries", None)
+            f.pop("not_before", None)
+
+
+def _fix_retry(c: Ctx, f: dict, why: str) -> None:
+    n = f["tries"] = f.get("tries", 0) + 1
+    if n > len(PASSING_WAITS):
+        return _fix_failed(c, f, f"its step kept failing: {why}")
+    f["not_before"] = time.time() + PASSING_WAITS[n - 1]
+    if n == 1:
+        run.event(c.st, f"base fix {f['n']}: {why} (retrying in a minute)")
+
+
+def on_fix(c: Ctx, name: str, r: dict) -> None:
+    f = _fix_of(c.st, name)
+    kind = name.rpartition(".")[2]
+    if f is None or FIX_RUNNING.get(f["status"]) != kind:
+        return run.event(c.st, f"ignored the result of {_clean(name)}: nothing was waiting for it")
+    wt = c.wt(f"{FIX_PREFIX}{f['n']}")
+    if kind == "worker":
+        if not _clean_exit(r):
+            return _fix_failed(c, f, f"the fix worker ended without finishing: {r['reason'] or 'exit ' + str(r['exit'])}")
+        if not gitops.is_clean(wt):
+            return _fix_failed(c, f, "the fix worker left uncommitted changes")
+        files = [_printable(x) for x in gitops.changed_files(wt, f"origin/{c.base}", "HEAD")]
+        if not files:
+            return _fix_failed(c, f, "the fix worker changed nothing")
+        skip = tuple(j for j, s in c.st["jobs"].items() if s["status"] == "merged")
+        why = _small_fix(c, files, gitops.changed_lines(wt, f"origin/{c.base}", "HEAD", files), skip=skip)
+        if why:
+            return _fix_failed(c, f, f"over the small-fix rule: {why}")
+        f.update(status="needs_gate", head=gitops.rev(wt, "HEAD"), files=files)
+        run.event(c.st, f"base fix {f['n']}: worker done ({', '.join(files)})")
+        return
+    if r["exit"] != 0 or r["reason"]:
+        tail = _clean(r.get("result") or "")[-800:]
+        return _fix_failed(c, f, f"the integration gate is still red after the fix "
+                                 f"(exit {r['exit']}{', ' + r['reason'] if r['reason'] else ''}):\n{tail}")
+    f["status"] = "needs_land"
+    run.event(c.st, f"base fix {f['n']}: integration gate green")
+
+
+def _land_fix(c: Ctx, f: dict) -> None:
+    """One fix(base) commit on ark/<slug>, under the run's merge lock; then its jobs integrate again."""
+    scratch = c.wt(f"{FIX_PREFIX}{f['n']}-land")
+    try:
+        with merge.run_lock(c.dir):
+            gitops.fetch(c.repo)
+            base = gitops.rev(c.repo, f"origin/{c.base}")
+            sha = gitops.squash_keep(c.repo, base, f["head"],
+                                     f"fix(base): {_clean(f['note'])[:72]} (Euklides fix {f['n']})", scratch)
+            if sha is None:
+                return _fix_failed(c, f, "the fix does not apply on the integration branch any more")
+            if sha != base:
+                gitops.push_ref(c.repo, sha, c.base)
+    finally:
+        gitops._cleanup(c.repo, scratch)
+    f["status"] = "landed"
+    run.alert(c.st, f"base fix {f['n']} landed on {c.base}: {', '.join(f['files'])} "
+                    f"({f['decision'] or 'not journaled'})")
+    for job in f["waiting"]:
+        j = c.st["jobs"][job]
+        if j["status"] == "waiting_fix" and j.get("fix") == f["n"]:
+            j.update(status="needs_integrate", integrate_fails=0)
+            j.pop("fix", None)
+    gitops._cleanup(c.repo, c.wt(f"{FIX_PREFIX}{f['n']}"))
+
+
+def _fix_failed(c, f: dict, why: str, st: dict | None = None) -> None:
+    """Every job still waiting on the fix asks Marco, with Euklides' proposal and the reason."""
+    st = st if st is not None else c.st
+    f["status"], f["why"] = "failed", _clean(why)[:1000]
+    f.pop("not_before", None)
+    run.alert(st, f"base fix {f['n']} failed: {f['why'][:300]}")
+    for job, e in f["waiting"].items():
+        j = st["jobs"][job]
+        if j["status"] != "waiting_fix" or j.get("fix") != f["n"]:
+            continue
+        j.pop("fix", None)
+        _euklides_ask(st, job, {**e, "situation": f"{e['situation']}\n\nBase fix {f['n']} failed: {f['why']}"},
+                      {"note": f"base fix {f['n']} failed: {f['why']}", "proposal": e["proposal"]}, e["decision"])
+    if c is not None:
+        gitops._cleanup(c.repo, c.wt(f"{FIX_PREFIX}{f['n']}"))
 
 
 DECISIONS = "_decisions.tick"  # the close-of-run tick belongs to the run, not to a job
@@ -777,6 +1004,14 @@ def _on_receipt(c: Ctx, name: str, r: dict) -> None:
         else:
             run.event(c.st, f"ignored the result of {name}: nothing was waiting for it")
         return
+    if name.startswith(FIX_PREFIX):
+        try:
+            return on_fix(c, name, r)
+        except Exception as e:  # the receipt is gone: never leave the fix waiting for it
+            f = _fix_of(c.st, name)
+            if f is not None and f["status"] not in FIX_DONE:
+                _fix_failed(c, f, f"runner error after {name}: {type(e).__name__}: {_clean(str(e))}")
+            return
     job, _, kind = name.rpartition(".")
     j = c.st["jobs"].get(job)
     slept = j is not None and _slept_through(j, kind)
@@ -856,7 +1091,7 @@ def start_worker(c: Ctx, job: str) -> bool:
         j["session"] = None  # known again only when this process says what it had: one may never start
         prompt = brief.worker_brief(c.st, job, mj, c.plan, worktree=wt, report=report,
                                     note=j["note"] or j["resume_msg"], previous_report=c.read_report(job))
-    env = claude.runner_env("worker", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo), worktree=wt, area=json.dumps(mj["area"]),
+    env = claude.runner_env("worker", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo), worktree=wt, area=json.dumps(run.area(c.st, job, mj)),
                             report=report, gate=mj["gate"], run_dir=c.dir, job=job)
     sid = j["session"] or str(uuid.uuid4())  # the worker's id before it says so: a kill may come first
     cmd = claude.agent_cmd("worker", claude.MODELS[j["tier"]], prompt, session=sid, resume=resume, usd=mj["budget"]["usd"])
@@ -911,7 +1146,7 @@ def start_review(c: Ctx, job: str) -> None:
     cmd = claude.agent_cmd("reviewer", claude.MODELS[tier], prompt, session=str(uuid.uuid4()),
                            usd=max(1, mj["budget"]["usd"] / 2))
     env = claude.runner_env("reviewer", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo), worktree=c.wt(job),
-                            area=json.dumps(mj["area"]), job=job, run_dir=c.dir)
+                            area=json.dumps(run.area(c.st, job, mj)), job=job, run_dir=c.dir)
     proc.start(c.dir, f"{job}.review", cmd, cwd=c.wt(job), env=env, minutes=30, meta={"head": j["head"]})
     j["status"] = "reviewing"
 
@@ -961,7 +1196,9 @@ def _dependents(c: Ctx, job: str) -> list[str]:
 def start_euklides(c: Ctx, job: str) -> None:
     j = c.st["jobs"][job]
     e, mj = j["euklides"], c.mjobs[job]
-    e["allowed"] = euklides.allowed(e["trigger"], j, mj["budget"]["usd"])  # fixed now: the answer is checked against it
+    e["allowed"] = euklides.allowed(e["trigger"], j, mj["budget"]["usd"], kind=e.get("kind"),  # fixed now: the
+                                    base_red=bool(e.get("base_red")),  # answer is checked against it
+                                    fixes_used=c.st.get("fix_base_count", 0))
     wt = c.wt(job)
     prompt = brief.euklides_prompt(c.st, job, j, mj, c.plan, trigger=e["trigger"], situation=e["situation"],
                                    allowed=e["allowed"], report=c.read_report(job), dependents=_dependents(c, job),
@@ -1149,6 +1386,9 @@ class Slots:
                     self.writers[st["repo"]] = self.writers.get(st["repo"], 0) + 1
                 if j.get("heavy") and j["status"] in ("gating", "integrating"):
                     self.heavy += 1
+            for f in st.get("fixes") or []:  # a base-fix worker writes too
+                if f["status"] == "working":
+                    self.writers[st["repo"]] = self.writers.get(st["repo"], 0) + 1
 
     def capped(self, repo: str) -> bool:
         return accounts.account_of(repo) in self.capped_accounts
@@ -1272,6 +1512,7 @@ def _hold_dependents(c: Ctx) -> None:
 
 def schedule(c: Ctx, slots: Slots) -> None:
     _hold_dependents(c)
+    _move_fixes(c, slots)
     for job, j in c.st["jobs"].items():
         move = _next_step(c, job, j, slots)
         if move is None:
@@ -1301,6 +1542,20 @@ def _gone_worker(st: dict, job: str, j: dict) -> bool:
     return True
 
 
+def _reconcile_fixes(st: dict, d: Path) -> None:
+    """A base fix whose process is gone with no receipt goes back one step; the second time it fails."""
+    for f in st.get("fixes") or []:
+        kind = FIX_RUNNING.get(f["status"])
+        if kind is None or (d / f"{FIX_PREFIX}{f['n']}.{kind}.proc").exists():
+            continue
+        f["lost"] = f.get("lost", 0) + 1
+        if f["lost"] >= 2:
+            _fix_failed(None, f, f"its {kind} was lost twice without a result", st=st)
+            continue
+        f["status"] = FIX_WAITING_FOR[kind]
+        run.event(st, f"base fix {f['n']}: its {kind} is gone without a result; going back to {f['status']}")
+
+
 def reconcile(st: dict) -> None:
     """The state is saved at the end of a cycle and processes start and end during it, so a crash can
     leave them apart. A process the state does not know about is adopted, never started twice; a status
@@ -1308,6 +1563,7 @@ def reconcile(st: dict) -> None:
     if st["status"] in ("done", "blocked"):
         return
     d = paths.run_dir(st["repo"], st["slug"])
+    _reconcile_fixes(st, d)
     if st.get("closing") == "decisions" and not (d / f"{DECISIONS}.proc").exists():
         st["closing"] = None
         run.event(st, "the decisions tick is gone without a result; starting it again")
@@ -1449,10 +1705,12 @@ def _answered_worker(st: dict, q: dict, text: str) -> None:
             euklides.set_marco(ask["decision"], text)
         except OSError as err:
             run.event(st, f"{job}: the Euklides journal could not be written: {err}")
-    if ask and text.strip().lower() == "ok" and ask.get("proposal"):
+    if ask and text.strip().lower() == "ok" and ask.get("proposal") and not ask.get("grant"):
         text = ask["proposal"]
     if text == questions.STOP_JOB or text.startswith(questions.STOP_JOB + " "):
         return _block(st, job, f"stopped by Marco at question {q['id']}: {text}"[:600])
+    if ask and ask.get("grant") and text.strip().lower() == "ok":
+        return _grant(st, job, ask["grant"], ask.get("decision"), by="Marco")
     if ask:
         return _go_on(st, job, ask["ctx"], text)
     _resume_with_answer(st, job, text)  # a question asked before Euklides
@@ -1590,7 +1848,7 @@ def _finish_attach(c: Ctx) -> None:
                 fail(c, job, f"runner error after attach: {type(e).__name__}: {e}")
 
 
-RETRY_STEP = {"working": "needs_worker", "euklides": "needs_worker", "waiting_answer": "needs_worker",
+RETRY_STEP = {"waiting_fix": "needs_integrate", "working": "needs_worker", "euklides": "needs_worker", "waiting_answer": "needs_worker",
               "attached": "needs_worker", "needs_euklides": "needs_worker", "gating": "needs_gate",
               "reviewing": "needs_review", "integrating": "needs_integrate", "needs_merge": "needs_integrate",
               "waiting_dep": "pending"}
@@ -2071,6 +2329,9 @@ def _retry_due() -> bool:
             if j.get("errors"):  # a running job has them only while its result cannot be archived
                 return True
             if j["status"] not in RUNNING and 0 < j.get("not_before", 0) <= now:
+                return True
+        for f in st.get("fixes") or []:
+            if f["status"] in FIX_WAITING and 0 < f.get("not_before", 0) <= now:
                 return True
     return False
 
