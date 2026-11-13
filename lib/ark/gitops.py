@@ -247,6 +247,18 @@ def changed_files(repo, base: str, head: str) -> list[str]:
     return [p for p in out.split("\0") if p]
 
 
+def changed_lines(repo, base: str, head: str, files: list[str]) -> int | None:
+    """Lines added plus removed in `files` between base and head; None when one of them is binary."""
+    out = git(repo, "diff", "--no-renames", "--numstat", "--end-of-options", base, head, "--", *files)
+    total = 0
+    for line in out.splitlines():
+        added, removed, _ = line.split("\t", 2)
+        if added == "-" or removed == "-":
+            return None
+        total += int(added) + int(removed)
+    return total
+
+
 def squash_keep(repo, base_ref: str, head_ref: str, message: str, scratch: Path) -> str | None:
     """Squash `head_ref` onto `base_ref` in a detached scratch worktree and commit; the new sha,
     or None on a real conflict (unmerged paths). Any other merge failure raises GitError.

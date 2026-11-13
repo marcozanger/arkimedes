@@ -86,6 +86,10 @@ def _ps_row(st: dict, job: str, j: dict) -> list[str]:
         tokens, last = f"{seen['tokens'] / 1000:.1f}k", seen["last"]
     if j.get("question"):
         last = j["question"]
+    if j["status"] == "waiting_dep":
+        last = f"waiting on {j['waiting_on']}"
+    if j["status"] == "waiting_fix":
+        last = f"waiting for base fix {j.get('fix', '?')}"
     last = " ".join(usage.clean(last).split())[:100]
     return [f"{st['repo']}/{st['slug']}", job, j["status"], j.get("tier", "?"), elapsed, tokens, f"${j.get('usd', 0):.2f}", last]
 
@@ -173,6 +177,18 @@ def cmd_stop(args) -> int:
         raise CtlError(f"{job} already finished: {status}")
     inbox.post(repo, slug, "stop", job=job)  # between processes: in a backoff, or waiting for Marco
     print(f"{job} has no process: it gets blocked on the next cycle")
+    return 0
+
+
+@_cmd
+def cmd_retry(args) -> int:
+    _writer()
+    repo, slug, job = _resolve(args.job)
+    j = run.load(repo, slug)["jobs"][job]
+    if j["status"] != "blocked":
+        raise CtlError(f"{job} is not blocked: {j['status']}")
+    inbox.post(repo, slug, "retry", job=job)
+    print(f"{job} goes back to its step on the next cycle")
     return 0
 
 
@@ -351,6 +367,9 @@ def register(sub) -> None:
     s = sub.add_parser("stop", help="stop a job: it ends blocked")
     s.add_argument("job", help="<job> or <repo>/<slug>:<job>")
     s.set_defaults(fn=cmd_stop)
+    s = sub.add_parser("retry", help="put a blocked job back on the step where it stopped")
+    s.add_argument("job", help="<job> or <repo>/<slug>:<job> (a closed run needs the long form)")
+    s.set_defaults(fn=cmd_retry)
     s = sub.add_parser("answer", help="answer the open questions, one by one")
     s.add_argument("--list", action="store_true", help="show them without answering")
     which = s.add_mutually_exclusive_group()

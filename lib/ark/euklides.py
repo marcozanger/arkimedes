@@ -14,16 +14,19 @@ from pathlib import Path
 from . import claude, history, run
 
 MAX_PER_JOB = 4  # decisions without Marco per job and run; after that Euklides can only ask
+MAX_FIX_BASE = 3  # base fixes per run without Marco
 TRIGGERS = ("failure", "question", "blocked")
-KEYS = {"action", "note", "undo", "why", "proposal"}
+KEYS = {"action", "note", "undo", "why", "proposal", "files"}
 NOTE_CHARS, WHY_CHARS, PROPOSAL_CHARS = 1000, 300, 1000
 SITUATION_CHARS = 600
 LESSONS_CHARS = 8000  # a hand-edited file that grew too long is cut, never fails the call
 
 
-def allowed(trigger: str, j: dict, budget_usd: float) -> list[str]:
+def allowed(trigger: str, j: dict, budget_usd: float, kind: str | None = None, base_red: bool = False,
+            fixes_used: int = 0) -> list[str]:
     """The actions open now, `ask` always last. Spending past the budget, changing the plan and
-    blocking are never actions: they can only be proposed to Marco."""
+    blocking are never actions: they can only be proposed to Marco. `widen` opens only after an area
+    block, `fix_base` only after an integration gate red on the base too, at most MAX_FIX_BASE a run."""
     if j.get("euklides_count", 0) >= MAX_PER_JOB:
         return ["ask"]
     under = j["usd"] < budget_usd
@@ -36,7 +39,26 @@ def allowed(trigger: str, j: dict, budget_usd: float) -> list[str]:
         out.append("answer")  # an answer costs no attempt by itself: the worker goes on in its session
     elif trigger == "blocked" and under:
         out.append("unblock")
+        if kind == "area":
+            out.append("widen")
+    if trigger == "blocked" and kind == "integrate" and base_red and fixes_used < MAX_FIX_BASE:
+        out.append("fix_base")  # the base's fix is not paid from the job's budget
     return out + ["ask"]
+
+
+def _files(v) -> list[str] | None:
+    """1 to 3 exact relative paths (no glob, no `..`, not absolute), or None."""
+    if not isinstance(v, list) or not 1 <= len(v) <= 3:
+        return None
+    out = []
+    for f in v:
+        if not isinstance(f, str) or not f.strip():
+            return None
+        f = f.strip()
+        if f.startswith("/") or ".." in f.split("/") or any(ch in f for ch in "*?[]{}\0"):
+            return None
+        out.append(f)
+    return out
 
 
 def _text(v, limit: int) -> str | None:
@@ -65,11 +87,15 @@ def parse(d, allowed_now: list[str]) -> dict | None:
         return None
     if action == "ask" and not proposal:
         return None
+    files = _files(d.get("files")) if action == "widen" else None
+    if action == "widen" and files is None:
+        return None
     if action == "answer" and undo == "plan":
         return {"action": "ask", "note": f"Euklides would answer this, but a wrong answer would reach beyond "
                                          f"this job: {why or 'no reason given'}",
                 "undo": "plan", "why": why, "proposal": note}
-    return {"action": action, "note": note, "undo": undo, "why": why, "proposal": proposal}
+    out = {"action": action, "note": note, "undo": undo, "why": why, "proposal": proposal}
+    return {**out, "files": files} if files else out  # only a widen carries files
 
 
 def folder() -> Path:
@@ -111,6 +137,8 @@ def record(st: dict, job: str, ctx: dict, d: dict, *, valid: bool, usd: float) -
                "trigger": ctx["trigger"], "situation": str(ctx.get("situation") or "")[:SITUATION_CHARS],
                "action": d["action"], "note": d["note"], "undo": d["undo"], "why": d["why"],
                "proposal": d["proposal"], "valid": valid, "usd": usd, "marco": None}
+        if d.get("files"):
+            row["files"] = d["files"]
         _append("decisions.jsonl", row)
         return row["id"]
 

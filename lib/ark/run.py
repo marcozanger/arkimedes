@@ -18,6 +18,11 @@ TERMINAL = {"merged", "blocked"}
 NOT_STARTED = {"pending", "needs_worker"}
 
 
+def area(st: dict, job: str, mj: dict) -> list[str]:
+    """The job's real area: the plan's globs plus the literal files Euklides granted it in this run."""
+    return [*mj["area"], *(st.get("grants") or {}).get(job, [])]
+
+
 def stamp_times(st: dict) -> None:
     """`started` the first pass a job is past NOT_STARTED, `finished` the pass it reached TERMINAL.
     A job that leaves blocked loses `finished` and keeps `started`. The control center reads both."""

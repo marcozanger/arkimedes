@@ -12,6 +12,7 @@ import math
 import os
 import signal
 import socket
+import subprocess
 import sys
 import tempfile
 import time
@@ -25,7 +26,6 @@ from .plan import load_plan, sha256_file
 from .validate import validate
 
 ERROR_ALERT_AFTER = 20    # cycles (about 5 minutes) a step keeps failing before Marco hears about it
-HOLDERS_PATIENCE = 900    # seconds a job waits for leftovers in its worktree before it blocks
 INFRA_QUICK = 120         # seconds: a model process that dies sooner, with no answer, never got to work
 INFRA_LIMIT = 200         # tries before a job stops waiting for the model; about 50 hours at the ceiling
 BACKOFF_FIRST = 15        # seconds before the first retry; it doubles each time
@@ -35,8 +35,12 @@ DECISIONS_TICKS = 2       # paid ticks a run's close may start before the runner
 SLEEP_MIN = 60            # seconds the wall clock must run ahead of the uptime clock to count as a sleep
 NET_WAIT_MAX = 600        # seconds the loop waits for the network after waking before it goes on
 NET_HOSTS = (("api.github.com", 443), ("api.anthropic.com", 443))
-CLOCK_KEYS = ("soft_deadline", "watch_from", "not_before", "holders_since")  # absolute times that limit a job
-SKIP_ALERT_AFTER = 3      # integration checks that could not run before Marco hears about it
+CLOCK_KEYS = ("soft_deadline", "watch_from", "not_before")  # absolute times that limit a job
+PASSING_WAITS = (60, 120, 240, 480, 900)  # about half an hour in all, then Euklides
+REMIND_EVERY = 86400  # an open question is repeated to Marco once a day
+WAITS_ON = ("blocked", "waiting_dep", "waiting_answer", "attached", "waiting_fix")  # a dependency in one of these holds its dependents
+SMALL_FILES, SMALL_LINES = 3, 30  # the small-fix rule: what Euklides may widen or fix without Marco
+FIX_BASE_USD = 2  # the budget of one base-fix worker
 
 # What a job's status says is running, and where the job goes back to if that process is not there.
 RUNNING = {"working": "worker", "gating": "gate", "reviewing": "review", "integrating": "integrate",
@@ -96,6 +100,10 @@ def ticks_dir() -> Path:
     return d
 
 
+def _wt(st: dict, job: str) -> Path:
+    return paths.worktrees_dir() / st["repo"] / st["slug"] / job
+
+
 class Ctx:
     def __init__(self, st: dict, forge):
         self.st, self.forge = st, forge
@@ -108,7 +116,7 @@ class Ctx:
         self.base = f"ark/{st['slug']}"
 
     def wt(self, job: str) -> Path:
-        return paths.worktrees_dir() / self.st["repo"] / self.st["slug"] / job
+        return _wt(self.st, job)
 
     def branch(self, job: str) -> str:
         return f"{self.base}-{job}"
@@ -264,7 +272,8 @@ def fail(c: Ctx, job: str, why: str) -> None:
 
 def _block(st: dict, job: str, why: str, critical: bool = False) -> None:
     why = _clean(why)
-    st["jobs"][job].update(status="blocked", reason=why)
+    j = st["jobs"][job]
+    j.update(status="blocked", reason=why, blocked_from=j["status"])
     run.alert(st, f"{job} blocked: {why}", critical=critical)
 
 
@@ -272,25 +281,45 @@ def block(c: Ctx, job: str, why: str, critical: bool = False) -> None:
     _block(c.st, job, why, critical=critical)
 
 
-def to_euklides(c: Ctx, job: str, trigger: str, situation: str, kind: str | None = None) -> None:
-    """Euklides decides how the job goes on. `kind` names a block a new attempt may fix:
-    area, review or integrate (what `unblock` has to reset)."""
-    c.st["jobs"][job].update(status="needs_euklides", euklides={
-        "trigger": trigger, "situation": _clean(situation)[:questions.MAX_TEXT], "kind": kind})
+def _to_euklides(st: dict, job: str, trigger: str, situation: str, kind: str | None = None, **extra) -> None:
+    st["jobs"][job].update(status="needs_euklides", euklides={
+        "trigger": trigger, "situation": _clean(situation)[:questions.MAX_TEXT], "kind": kind, **extra})
+
+
+def to_euklides(c: Ctx, job: str, trigger: str, situation: str, kind: str | None = None, **extra) -> None:
+    """Euklides decides how the job goes on. `kind` names a block a new attempt may fix: area, review,
+    integrate, or step (a passing fault; `back` is the status it returns to)."""
+    _to_euklides(c.st, job, trigger, situation, kind, **extra)
+
+
+def _passing(c: Ctx, job: str, counter: str, why: str, back: str) -> None:
+    """A fault that heals by waiting: the job returns to `back` after 1, 2, 4, 8 and 15 minutes. Still failing,
+    Euklides decides, with the last error; when he lets it go on, it returns to `back`."""
+    j = c.st["jobs"][job]
+    n = j[counter] = j.get(counter, 0) + 1
+    if n <= len(PASSING_WAITS):
+        j["status"] = back
+        j["not_before"] = time.time() + PASSING_WAITS[n - 1]
+        if n == 1:
+            run.event(c.st, f"{job}: {_clean(why)} (retrying in a minute)")
+        return
+    j.pop(counter, None)
+    j.pop("not_before", None)
+    to_euklides(c, job, "blocked", f"{why} (still failing after {len(PASSING_WAITS)} retries over about "
+                                   "30 minutes)", "step", back=back)
 
 
 def _error(c: Ctx, job: str, e: Exception) -> None:
-    """A git / gh error while moving a job: it stays where it is and is retried next cycle, since a laptop
-    offline must not block anything. Marco hears about it once, if it does not go away. Any other error
-    is not known to heal, and a job retrying it for ever is a job nobody looks at, so that one blocks."""
+    """An error while moving a job. Between processes it is a passing fault: the step runs again on the
+    PASSING_WAITS schedule, then Euklides decides. A running job's error is an archive failure, counted per cycle."""
     text = _clean(f"{type(e).__name__}: {e}")
     j = c.st["jobs"][job]
+    if j["status"] not in RUNNING:
+        return _passing(c, job, "step_tries", f"the step failed: {text}", j["status"])
     j["errors"] = j.get("errors", 0) + 1
     if j.get("error") != text:
         j["error"] = text
         run.event(c.st, f"{job}: {text} (retrying)")
-    if j["errors"] >= ERROR_ALERT_AFTER and not isinstance(e, (gitops.GitError, forge_mod.ForgeError)):
-        return block(c, job, f"the same step failed for {ERROR_ALERT_AFTER} cycles: {text}")
     if j["errors"] == ERROR_ALERT_AFTER:
         run.alert(c.st, f"{job} has been failing for {ERROR_ALERT_AFTER} cycles, still retrying: {text}")
 
@@ -317,7 +346,7 @@ def _after_stop(st: dict, job: str, then: dict) -> None:
         _escalate(j)
         j.update(note=then["note"], status="needs_worker")
     else:
-        _block(st, job, then["note"])
+        _to_euklides(st, job, "blocked", f"the intervene tick stopped it: {then['note']}", None)
 
 
 def on_worker(c: Ctx, job: str, r: dict) -> None:
@@ -361,7 +390,7 @@ def on_worker(c: Ctx, job: str, r: dict) -> None:
     files = gitops.changed_files(wt, f"origin/{c.base}", "HEAD")
     if not files:
         return fail(c, job, "the worker ended DONE without any change")
-    outside = [_printable(f) for f in files if not match_any(f, c.mjobs[job]["area"])]
+    outside = [_printable(f) for f in files if not match_any(f, run.area(c.st, job, c.mjobs[job]))]
     if outside:
         return to_euklides(c, job, "blocked", "changed files outside its area: " + ", ".join(outside[:5]), "area")
     j.update(status="needs_push", head=gitops.rev(wt, "HEAD"))
@@ -417,35 +446,19 @@ def on_review(c: Ctx, job: str, r: dict) -> None:
     j["status"] = "needs_worker"
 
 
-def _integrate_again(c: Ctx, job: str, counter: str) -> int:
-    j = c.st["jobs"][job]
-    j[counter] = j.get(counter, 0) + 1
-    j["status"] = "needs_integrate"
-    return j[counter]
-
-
 def on_integrate(c: Ctx, job: str, r: dict) -> None:
     j = c.st["jobs"][job]
     out = None if r["reason"] else _answer(r)
     if not isinstance(out, dict) or "ok" not in out:  # a stop or a death: nothing was learned about the job
         why = r["reason"] or "ark-integrate gave no result"
-        if _integrate_again(c, job, "integrate_lost") >= 2:
-            return block(c, job, f"ark-integrate ended twice without a result: {why}")
-        run.event(c.st, f"{job}: ark-integrate ended without a result ({why}); checking again")
-        return
+        return _passing(c, job, "integrate_lost", f"ark-integrate ended without a result ({why})", "needs_integrate")
     ok = out["ok"] is True and isinstance(out.get("base"), str)
     reason = out.get("reason", "")
     if not ok and out.get("base") is None:  # the check never ran: not the worker's doing
-        j["status"] = "needs_integrate"
-        n = _wait_longer(j, "integrate_skips")  # no slot while it waits: the next heavy job is not starved
-        if n >= INFRA_LIMIT:
-            return block(c, job, f"the integration check could not run, {n} times: {reason}")
-        if n == 1:
-            run.event(c.st, f"{job}: the integration check could not run: {reason}")
-        if n == SKIP_ALERT_AFTER:
-            run.alert(c.st, f"{job}: the integration check could not run, {n} times: {reason}")
-        return
-    j["integrate_lost"] = j["integrate_skips"] = 0
+        return _passing(c, job, "integrate_skips", f"the integration check could not run: {reason}",
+                        "needs_integrate")
+    j.pop("integrate_lost", None)
+    j.pop("integrate_skips", None)
     j.pop("not_before", None)
     merge.record(c.dir, job, "integrate", {"ok": ok, "base": out.get("base"),
                                            "head": out.get("head") or r["meta"].get("head"),
@@ -454,6 +467,9 @@ def on_integrate(c: Ctx, job: str, r: dict) -> None:
         j["status"] = "needs_merge"
         run.event(c.st, f"{job}: integration gate green on {out['base'][:8]}")
         return
+    if out.get("base_red") is True:  # not the job's doing: a second worker attempt would only fail the same way
+        return to_euklides(c, job, "blocked", f"integration gate red, and red on {c.base} without the job too: "
+                           f"{reason}\n\n{str(out.get('tail', ''))[-1500:]}", "integrate", base_red=True)
     j["integrate_fails"] += 1
     if j["integrate_fails"] >= 2:
         return to_euklides(c, job, "blocked", f"integration gate failed twice: {reason}\n\n"
@@ -494,6 +510,9 @@ def _go_on(st: dict, job: str, e: dict, text: str) -> None:
     """Back to work after a decision (Euklides' or Marco's): what blocked the job starts over, and the
     worker is told what to do. A review that never gave a verdict is simply run again."""
     j = st["jobs"][job]
+    if e.get("back"):  # a passing fault: the step runs again, the worker's work stands
+        j["status"] = e["back"]
+        return
     if e.get("kind") == "review":
         j.update(review_errors=0, status="needs_review")
         return
@@ -531,10 +550,231 @@ def on_euklides(c: Ctx, job: str, r: dict) -> None:
     run.event(c.st, f"{job} euklides: {d['action']} — {_clean(d['note'])[:300]}")
     if d["action"] == "ask":
         return _euklides_ask(c.st, job, e, d, decision)
+    if d["action"] == "widen":
+        return _widen(c, job, e, d, decision)
+    if d["action"] == "fix_base":
+        return _fix_base(c, job, e, d, decision)
     j["euklides_count"] = j.get("euklides_count", 0) + 1
     if d["action"] == "escalate":
         _escalate(j)
     _go_on(c.st, job, e, d["note"])
+
+
+# ---- what Euklides can fix: widen a job's area, fix the base ----------------------------------
+
+FIX_PREFIX = "_fix-"  # a job id never starts with "_": these names are the run's, not a job's
+FIX_DONE = ("landed", "failed")
+FIX_RUNNING = {"working": "worker", "gating": "gate"}
+FIX_WAITING_FOR = {"worker": "needs_worker", "gate": "needs_gate"}
+FIX_WAITING = ("needs_worker", "needs_gate", "needs_land")
+
+
+def _small_fix(c: Ctx, files: list[str], lines: int | None, skip: tuple = ()) -> str | None:
+    """None when the change is small; otherwise why not, in words Marco reads."""
+    if len(files) > SMALL_FILES:
+        return f"{len(files)} files, the small-fix rule allows {SMALL_FILES}"
+    if lines is None or lines > SMALL_LINES:
+        what = "a binary file" if lines is None else f"{lines} changed lines"
+        return f"{what}, the small-fix rule allows {SMALL_LINES}"
+    for other, mj in c.mjobs.items():
+        if other in skip:
+            continue
+        hit = [f for f in files if match_any(f, run.area(c.st, other, mj))]
+        if hit:
+            return f"{', '.join(hit)} belong to {other}'s area"
+    return None
+
+
+def _outside(c: Ctx, job: str) -> list[str]:
+    """What the job changed outside its area and its grants."""
+    return [_printable(f) for f in gitops.changed_files(c.wt(job), f"origin/{c.base}", "HEAD")
+            if not match_any(f, run.area(c.st, job, c.mjobs[job]))]
+
+
+def _widen(c: Ctx, job: str, e: dict, d: dict, decision) -> None:
+    """Grant the files the job changed outside its area, when the widen names them all and the change is small;
+    otherwise Marco decides, and his `ok` grants them."""
+    files, outside = d["files"], _outside(c, job)
+    if not outside:
+        why = "the job changes nothing outside its area now"
+    elif not set(outside) <= set(files):
+        why = f"the job also changed {', '.join(sorted(set(outside) - set(files)))}, which the widen did not name"
+    else:
+        why = _small_fix(c, outside, gitops.changed_lines(c.wt(job), f"origin/{c.base}", "HEAD", outside),
+                         skip=(job,))
+    if why:
+        grant = outside or files
+        d = {**d, "proposal": d["proposal"] or f"widen {job}'s area to {', '.join(grant)} (answer ok)"}
+        _euklides_ask(c.st, job, {**e, "situation": f"{e['situation']}\n\nOver the small-fix rule: {why}. "
+                                                    f"Files: {', '.join(grant)}"}, d, decision)
+        c.st["jobs"][job]["euklides_ask"]["grant"] = grant
+        return
+    c.st["jobs"][job]["euklides_count"] = c.st["jobs"][job].get("euklides_count", 0) + 1
+    _grant(c.st, job, outside, decision)
+
+
+def _grant(st: dict, job: str, files: list[str], decision, by: str = "Euklides") -> None:
+    """The files join the job's area for this run; the worker's head goes on as if it had stayed inside."""
+    grants = st.setdefault("grants", {}).setdefault(job, [])
+    grants += [f for f in files if f not in grants]
+    j = st["jobs"][job]
+    j.update(status="needs_push", head=gitops.rev(_wt(st, job), "HEAD"))
+    run.alert(st, f"{job}: {by} widened its area to {', '.join(files)} ({decision or 'not journaled'})")
+
+
+def _fix_base(c: Ctx, job: str, e: dict, d: dict, decision) -> None:
+    """One small worker fixes the integration branch; every job that finds the base red meanwhile waits on it."""
+    fixes = c.st.setdefault("fixes", [])
+    live = next((f for f in fixes if f["status"] not in FIX_DONE), None)
+    if live is None:
+        c.st["fix_base_count"] = c.st.get("fix_base_count", 0) + 1
+        live = {"n": len(fixes) + 1, "job": job, "note": _clean(d["note"]), "situation": e["situation"],
+                "decision": decision, "status": "needs_worker", "waiting": {}, "lost": 0}
+        fixes.append(live)
+        run.alert(c.st, f"Euklides is fixing the base (fix {live['n']}, for {job}): {_clean(d['note'])[:200]}")
+    live["waiting"][job] = {**e, "decision": decision, "proposal": d["proposal"] or d["note"]}
+    c.st["jobs"][job].update(status="waiting_fix", fix=live["n"])
+    c.st["jobs"][job]["euklides_count"] = c.st["jobs"][job].get("euklides_count", 0) + 1
+
+
+def _fix_of(st: dict, name: str) -> dict | None:
+    try:
+        n = int(name.split(".")[0].removeprefix(FIX_PREFIX))
+    except ValueError:
+        return None
+    return next((f for f in st.get("fixes") or [] if f["n"] == n), None)
+
+
+def _start_fix_worker(c: Ctx, f: dict) -> None:
+    name = f"{FIX_PREFIX}{f['n']}"
+    wt, m = c.wt(name), c.plan.manifest
+    gitops.fetch(c.repo)
+    gitops.add_worktree(c.repo, wt, c.branch(name), f"origin/{c.base}")  # ark/<slug>-_fix-<n>: no job's name
+    prompt = brief.fix_base_brief(c.st, f, c.plan, SMALL_FILES, SMALL_LINES)
+    env = claude.runner_env("worker", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo), worktree=wt,
+                            area=json.dumps(["**"]), report=c.report(name), gate=m["integration_gate"],
+                            run_dir=c.dir, job=name)
+    sid = str(uuid.uuid4())
+    cmd = claude.agent_cmd("worker", claude.MODELS["T1"], prompt, session=sid, resume=False, usd=FIX_BASE_USD)
+    proc.start(c.dir, f"{name}.worker", cmd, cwd=wt, env=env, minutes=30, pre=list(m.get("setup") or []),
+               meta={"session": sid})
+    f["status"] = "working"
+    run.event(c.st, f"base fix {f['n']}: worker started")
+
+
+def _start_fix_gate(c: Ctx, f: dict) -> None:
+    name = f"{FIX_PREFIX}{f['n']}"
+    env = claude.runner_env("gate", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo))  # it runs tests a worker wrote
+    proc.start(c.dir, f"{name}.gate", ["sh", "-c", c.plan.manifest["integration_gate"]], cwd=c.wt(name), env=env,
+               minutes=integrate.GATE_TIMEOUT / 60, meta={"head": f.get("head")})
+    f["status"] = "gating"
+
+
+def _move_fixes(c: Ctx, slots: Slots) -> None:
+    """The live base fix one step on. A step that raises is a passing fault: it waits and tries again on the
+    PASSING_WAITS schedule, then the fix fails and its jobs ask Marco."""
+    for f in c.st.get("fixes") or []:
+        if f["status"] not in FIX_WAITING or f.get("not_before", 0) > time.time():
+            continue
+        try:
+            if f["status"] == "needs_worker":
+                if not slots.writer(c.st["repo"]):
+                    continue
+                try:
+                    _start_fix_worker(c, f)
+                finally:
+                    if f["status"] != "working":
+                        slots.release_writer(c.st["repo"])
+            elif f["status"] == "needs_gate":
+                _start_fix_gate(c, f)
+            else:
+                _land_fix(c, f)
+        except Exception as e:
+            _fix_retry(c, f, f"{type(e).__name__}: {_clean(str(e))}")
+        else:
+            f.pop("tries", None)
+            f.pop("not_before", None)
+
+
+def _fix_retry(c: Ctx, f: dict, why: str) -> None:
+    n = f["tries"] = f.get("tries", 0) + 1
+    if n > len(PASSING_WAITS):
+        return _fix_failed(c, f, f"its step kept failing: {why}")
+    f["not_before"] = time.time() + PASSING_WAITS[n - 1]
+    if n == 1:
+        run.event(c.st, f"base fix {f['n']}: {why} (retrying in a minute)")
+
+
+def on_fix(c: Ctx, name: str, r: dict) -> None:
+    f = _fix_of(c.st, name)
+    kind = name.rpartition(".")[2]
+    if f is None or FIX_RUNNING.get(f["status"]) != kind:
+        return run.event(c.st, f"ignored the result of {_clean(name)}: nothing was waiting for it")
+    wt = c.wt(f"{FIX_PREFIX}{f['n']}")
+    if kind == "worker":
+        if not _clean_exit(r):
+            return _fix_failed(c, f, f"the fix worker ended without finishing: {r['reason'] or 'exit ' + str(r['exit'])}")
+        if not gitops.is_clean(wt):
+            return _fix_failed(c, f, "the fix worker left uncommitted changes")
+        files = [_printable(x) for x in gitops.changed_files(wt, f"origin/{c.base}", "HEAD")]
+        if not files:
+            return _fix_failed(c, f, "the fix worker changed nothing")
+        skip = tuple(j for j, s in c.st["jobs"].items() if s["status"] == "merged")
+        why = _small_fix(c, files, gitops.changed_lines(wt, f"origin/{c.base}", "HEAD", files), skip=skip)
+        if why:
+            return _fix_failed(c, f, f"over the small-fix rule: {why}")
+        f.update(status="needs_gate", head=gitops.rev(wt, "HEAD"), files=files)
+        run.event(c.st, f"base fix {f['n']}: worker done ({', '.join(files)})")
+        return
+    if r["exit"] != 0 or r["reason"]:
+        tail = _clean(r.get("result") or "")[-800:]
+        return _fix_failed(c, f, f"the integration gate is still red after the fix "
+                                 f"(exit {r['exit']}{', ' + r['reason'] if r['reason'] else ''}):\n{tail}")
+    f["status"] = "needs_land"
+    run.event(c.st, f"base fix {f['n']}: integration gate green")
+
+
+def _land_fix(c: Ctx, f: dict) -> None:
+    """One fix(base) commit on ark/<slug>, under the run's merge lock; then its jobs integrate again."""
+    scratch = c.wt(f"{FIX_PREFIX}{f['n']}-land")
+    try:
+        with merge.run_lock(c.dir):
+            gitops.fetch(c.repo)
+            base = gitops.rev(c.repo, f"origin/{c.base}")
+            sha = gitops.squash_keep(c.repo, base, f["head"],
+                                     f"fix(base): {_clean(f['note'])[:72]} (Euklides fix {f['n']})", scratch)
+            if sha is None:
+                return _fix_failed(c, f, "the fix does not apply on the integration branch any more")
+            if sha != base:
+                gitops.push_ref(c.repo, sha, c.base)
+    finally:
+        gitops._cleanup(c.repo, scratch)
+    f["status"] = "landed"
+    run.alert(c.st, f"base fix {f['n']} landed on {c.base}: {', '.join(f['files'])} "
+                    f"({f['decision'] or 'not journaled'})")
+    for job in f["waiting"]:
+        j = c.st["jobs"][job]
+        if j["status"] == "waiting_fix" and j.get("fix") == f["n"]:
+            j.update(status="needs_integrate", integrate_fails=0)
+            j.pop("fix", None)
+    gitops._cleanup(c.repo, c.wt(f"{FIX_PREFIX}{f['n']}"))
+
+
+def _fix_failed(c, f: dict, why: str, st: dict | None = None) -> None:
+    """Every job still waiting on the fix asks Marco, with Euklides' proposal and the reason."""
+    st = st if st is not None else c.st
+    f["status"], f["why"] = "failed", _clean(why)[:1000]
+    f.pop("not_before", None)
+    run.alert(st, f"base fix {f['n']} failed: {f['why'][:300]}")
+    for job, e in f["waiting"].items():
+        j = st["jobs"][job]
+        if j["status"] != "waiting_fix" or j.get("fix") != f["n"]:
+            continue
+        j.pop("fix", None)
+        _euklides_ask(st, job, {**e, "situation": f"{e['situation']}\n\nBase fix {f['n']} failed: {f['why']}"},
+                      {"note": f"base fix {f['n']} failed: {f['why']}", "proposal": e["proposal"]}, e["decision"])
+    if c is not None:
+        gitops._cleanup(c.repo, c.wt(f"{FIX_PREFIX}{f['n']}"))
 
 
 DECISIONS = "_decisions.tick"  # the close-of-run tick belongs to the run, not to a job
@@ -581,13 +821,14 @@ def _model_unreachable(c: Ctx, job: str, kind: str) -> None:
         j["setup_done"] = True  # no reason on the receipt: setup got through
         j["attempts"] = max(0, j["attempts"] - 1)
         j["session"] = None  # the same death as a session that cannot be resumed: the next try starts fresh
-    n = _wait_longer(j, "infra_tries")
-    if n >= INFRA_LIMIT:
-        return block(c, job, f"the model stayed unreachable for {n} tries")
-    if n == 2:  # the first may have been a lost session, which the fresh start above heals
-        run.alert(c.st, f"{job}: the model is unreachable (offline or auth expired?): nothing is charged, "
-                        "it keeps retrying with a growing wait", critical=True)
-    run.event(c.st, f"{job}: its {kind} got no answer from the model; try {n}")
+    if kind == "euklides":  # nobody else to send it to: back off without end, and tell Marco early
+        n = _wait_longer(j, "infra_tries")
+        if n == 2:
+            run.alert(c.st, f"{job}: Euklides' model is unreachable (offline or auth expired?): nothing is charged, "
+                            "it keeps retrying with a growing wait", critical=True)
+        return run.event(c.st, f"{job}: its euklides got no answer from the model; try {n}")
+    _passing(c, job, "infra_tries", f"its {kind} got no answer from the model (offline or auth expired?)",
+             WAITING[kind])
 
 
 def _slept_through(j: dict, kind: str) -> bool:
@@ -671,6 +912,16 @@ def _cannot_archive(c: Ctx, name: str, e: OSError) -> None:
     j = c.st["jobs"].get(job)
     if j is not None and j["status"] not in run.TERMINAL:
         _error(c, job, e)
+        if j.get("errors", 0) > ERROR_ALERT_AFTER and proc.discard(c.dir, name):
+            kind = name.rpartition(".")[2]
+            why = f"its {kind}'s result could not be archived for {ERROR_ALERT_AFTER} cycles: {_clean(str(e))}"
+            j.pop("errors", None)
+            j.pop("error", None)
+            if kind == "euklides":  # never send Euklides' own trouble back to him
+                e_ = j.pop("euklides", None) or {"trigger": "blocked", "situation": why, "kind": None}
+                return _euklides_ask(c.st, job, {**e_, "situation": why},
+                                     {"note": why, "proposal": ":stop"}, None)
+            to_euklides(c, job, "blocked", why, "step", back=WAITING.get(kind, "needs_worker"))
     if (j is None or j["status"] in run.TERMINAL) and proc.discard(c.dir, name):
         run.event(c.st, f"forgot {_clean(name)}, its result could not be archived; if it was still running, "
                         "it was not signalled")
@@ -753,6 +1004,14 @@ def _on_receipt(c: Ctx, name: str, r: dict) -> None:
         else:
             run.event(c.st, f"ignored the result of {name}: nothing was waiting for it")
         return
+    if name.startswith(FIX_PREFIX):
+        try:
+            return on_fix(c, name, r)
+        except Exception as e:  # the receipt is gone: never leave the fix waiting for it
+            f = _fix_of(c.st, name)
+            if f is not None and f["status"] not in FIX_DONE:
+                _fix_failed(c, f, f"runner error after {name}: {type(e).__name__}: {_clean(str(e))}")
+            return
     job, _, kind = name.rpartition(".")
     j = c.st["jobs"].get(job)
     slept = j is not None and _slept_through(j, kind)
@@ -798,13 +1057,10 @@ def _worktree_free(c: Ctx, job: str) -> bool:
     except Exception as e:
         pids, what = None, f"cannot tell who is in its worktree {wt}: {e}"
     if pids == []:
-        j.pop("holders_since", None)
+        j.pop("holder_tries", None)
         return True
-    if "holders_since" not in j:
-        j["holders_since"] = time.time()
-        run.alert(c.st, f"{job} waits: {what}")
-    elif time.time() - j["holders_since"] > HOLDERS_PATIENCE:
-        block(c, job, f"{what} (waited {HOLDERS_PATIENCE // 60} minutes)")
+    if j.get("not_before", 0) <= time.time():
+        _passing(c, job, "holder_tries", what, j["status"])
     return False
 
 
@@ -835,7 +1091,7 @@ def start_worker(c: Ctx, job: str) -> bool:
         j["session"] = None  # known again only when this process says what it had: one may never start
         prompt = brief.worker_brief(c.st, job, mj, c.plan, worktree=wt, report=report,
                                     note=j["note"] or j["resume_msg"], previous_report=c.read_report(job))
-    env = claude.runner_env("worker", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo), worktree=wt, area=json.dumps(mj["area"]),
+    env = claude.runner_env("worker", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo), worktree=wt, area=json.dumps(run.area(c.st, job, mj)),
                             report=report, gate=mj["gate"], run_dir=c.dir, job=job)
     sid = j["session"] or str(uuid.uuid4())  # the worker's id before it says so: a kill may come first
     cmd = claude.agent_cmd("worker", claude.MODELS[j["tier"]], prompt, session=sid, resume=resume, usd=mj["budget"]["usd"])
@@ -856,10 +1112,12 @@ def push_job(c: Ctx, job: str) -> None:
     except gitops.GitError:
         remote = gitops.remote_sha(c.repo, branch)
         if remote and remote != j["head"] and not gitops.is_ancestor(c.repo, remote, j["head"]):
-            return block(c, job, f"non-fast-forward: {branch} on origin holds {remote[:8]}, which this head does "
-                                 "not descend from: the worker amended or rebased, or someone else pushed there. "
-                                 "Delete that branch or look at it")
+            return _passing(c, job, "push_tries",
+                            f"non-fast-forward: {branch} on origin holds {remote[:8]}, which this head does "
+                            "not descend from: the worker amended or rebased, or someone else pushed there. "
+                            "Delete that branch or look at it", "needs_push")
         raise
+    j.pop("push_tries", None)
     j["status"] = "needs_gate"
     run.event(c.st, f"{job}: head {j['head'][:8]} pushed")
 
@@ -888,7 +1146,7 @@ def start_review(c: Ctx, job: str) -> None:
     cmd = claude.agent_cmd("reviewer", claude.MODELS[tier], prompt, session=str(uuid.uuid4()),
                            usd=max(1, mj["budget"]["usd"] / 2))
     env = claude.runner_env("reviewer", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo), worktree=c.wt(job),
-                            area=json.dumps(mj["area"]), job=job, run_dir=c.dir)
+                            area=json.dumps(run.area(c.st, job, mj)), job=job, run_dir=c.dir)
     proc.start(c.dir, f"{job}.review", cmd, cwd=c.wt(job), env=env, minutes=30, meta={"head": j["head"]})
     j["status"] = "reviewing"
 
@@ -901,7 +1159,7 @@ def start_integrate(c: Ctx, job: str) -> None:
     env = claude.runner_env("integrate", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo))  # it runs tests a worker wrote
     # Above the check's own timeout, or a slow gate dies here with no result instead of red with its reason.
     proc.start(c.dir, f"{job}.integrate", cmd, cwd=paths.code_dir(), env=env,
-               minutes=integrate.GATE_TIMEOUT / 60 + 30, meta={"head": j["head"]})
+               minutes=2 * integrate.GATE_TIMEOUT / 60 + 30, meta={"head": j["head"]})
     j["status"] = "integrating"
 
 
@@ -938,11 +1196,16 @@ def _dependents(c: Ctx, job: str) -> list[str]:
 def start_euklides(c: Ctx, job: str) -> None:
     j = c.st["jobs"][job]
     e, mj = j["euklides"], c.mjobs[job]
-    e["allowed"] = euklides.allowed(e["trigger"], j, mj["budget"]["usd"])  # fixed now: the answer is checked against it
+    e["allowed"] = euklides.allowed(e["trigger"], j, mj["budget"]["usd"], kind=e.get("kind"),  # fixed now: the
+                                    base_red=bool(e.get("base_red")),  # answer is checked against it
+                                    fixes_used=c.st.get("fix_base_count", 0))
     wt = c.wt(job)
     prompt = brief.euklides_prompt(c.st, job, j, mj, c.plan, trigger=e["trigger"], situation=e["situation"],
                                    allowed=e["allowed"], report=c.read_report(job), dependents=_dependents(c, job),
-                                   worktree=wt, log=c.dir / f"{job}.worker.log", lessons=euklides.lessons())
+                                   worktree=wt, log=c.dir / f"{job}.worker.log", lessons=euklides.lessons(),
+                                   earlier=[d for d in euklides.decisions()
+                                            if str(d.get("id", "")).startswith(f"{c.st['repo']}/{c.st['slug']}/{job}/")][-10:],
+                                   base_check=("red on " + c.base + " without the job too") if e.get("base_red") else None)
     cmd = claude.agent_cmd("euklides", claude.EUKLIDES_MODEL, prompt, session=str(uuid.uuid4()), usd=claude.EUKLIDES_USD)
     proc.start(c.dir, f"{job}.euklides", cmd, cwd=wt if wt.is_dir() else ticks_dir(),
                env=claude.runner_env("euklides", repo_name=c.st["repo"]), minutes=claude.EUKLIDES_MINUTES)
@@ -960,6 +1223,12 @@ def _reports(c: Ctx) -> dict[str, str]:
 
 def maybe_close(c: Ctx) -> None:
     st = c.st
+    live = [j for j in st["jobs"].values() if j["status"] not in run.TERMINAL]
+    if live and all(j["status"] == "waiting_dep" for j in live) and not proc.active(c.dir) \
+            and not any(st["jobs"][j["waiting_on"]]["status"] in ("waiting_answer", "attached") for j in live):
+        for job, j in st["jobs"].items():  # nothing can move them now: the run ends
+            if j["status"] == "waiting_dep":
+                _block(st, job, f"a job it depends on is blocked: {j['waiting_on']}")
     if any(j["status"] not in run.TERMINAL for j in st["jobs"].values()) or proc.active(c.dir):
         return
     if st["closing"] is None:
@@ -1117,6 +1386,9 @@ class Slots:
                     self.writers[st["repo"]] = self.writers.get(st["repo"], 0) + 1
                 if j.get("heavy") and j["status"] in ("gating", "integrating"):
                     self.heavy += 1
+            for f in st.get("fixes") or []:  # a base-fix worker writes too
+                if f["status"] == "working":
+                    self.writers[st["repo"]] = self.writers.get(st["repo"], 0) + 1
 
     def capped(self, repo: str) -> bool:
         return accounts.account_of(repo) in self.capped_accounts
@@ -1156,8 +1428,6 @@ def _next_step(c: Ctx, job: str, j: dict, slots: Slots):
         return None
     if s in ("pending", "needs_merge"):  # needs_merge: a new approval may have added the dependency
         deps = [c.st["jobs"][d]["status"] for d in c.mjobs[job].get("after") or []]
-        if "blocked" in deps:
-            return lambda: block(c, job, "a job it depends on is blocked")
         if not all(d == "merged" for d in deps):
             return None
     if s in ("pending", "needs_worker"):
@@ -1219,7 +1489,30 @@ def watch(c: Ctx) -> None:
                 run.event(c.st, f"{job}: the intervene tick did not start: {type(e).__name__}: {_clean(str(e))}")
 
 
+def _stuck_dep(c: Ctx, job: str) -> str | None:
+    return next((d for d in c.mjobs[job].get("after") or [] if c.st["jobs"][d]["status"] in WAITS_ON), None)
+
+
+def _hold_dependents(c: Ctx) -> None:
+    """A job whose dependency is blocked or waits for Marco waits too, and starts again when it moves."""
+    for job, j in c.st["jobs"].items():
+        if j["status"] not in ("pending", "waiting_dep"):
+            continue
+        dep = _stuck_dep(c, job)
+        if dep and j["status"] == "pending":
+            j.update(status="waiting_dep", waiting_on=dep)
+            run.event(c.st, f"{job} waits: {dep} is {c.st['jobs'][dep]['status']}")
+        elif dep:
+            j["waiting_on"] = dep
+        elif j["status"] == "waiting_dep":
+            j["status"] = "pending"
+            j.pop("waiting_on", None)
+            run.event(c.st, f"{job}: nothing it depends on is stuck any more")
+
+
 def schedule(c: Ctx, slots: Slots) -> None:
+    _hold_dependents(c)
+    _move_fixes(c, slots)
     for job, j in c.st["jobs"].items():
         move = _next_step(c, job, j, slots)
         if move is None:
@@ -1231,6 +1524,7 @@ def schedule(c: Ctx, slots: Slots) -> None:
         else:
             j.pop("error", None)
             j.pop("errors", None)
+            j.pop("step_tries", None)
 
 
 def _gone_worker(st: dict, job: str, j: dict) -> bool:
@@ -1248,6 +1542,20 @@ def _gone_worker(st: dict, job: str, j: dict) -> bool:
     return True
 
 
+def _reconcile_fixes(st: dict, d: Path) -> None:
+    """A base fix whose process is gone with no receipt goes back one step; the second time it fails."""
+    for f in st.get("fixes") or []:
+        kind = FIX_RUNNING.get(f["status"])
+        if kind is None or (d / f"{FIX_PREFIX}{f['n']}.{kind}.proc").exists():
+            continue
+        f["lost"] = f.get("lost", 0) + 1
+        if f["lost"] >= 2:
+            _fix_failed(None, f, f"its {kind} was lost twice without a result", st=st)
+            continue
+        f["status"] = FIX_WAITING_FOR[kind]
+        run.event(st, f"base fix {f['n']}: its {kind} is gone without a result; going back to {f['status']}")
+
+
 def reconcile(st: dict) -> None:
     """The state is saved at the end of a cycle and processes start and end during it, so a crash can
     leave them apart. A process the state does not know about is adopted, never started twice; a status
@@ -1255,6 +1563,7 @@ def reconcile(st: dict) -> None:
     if st["status"] in ("done", "blocked"):
         return
     d = paths.run_dir(st["repo"], st["slug"])
+    _reconcile_fixes(st, d)
     if st.get("closing") == "decisions" and not (d / f"{DECISIONS}.proc").exists():
         st["closing"] = None
         run.event(st, "the decisions tick is gone without a result; starting it again")
@@ -1396,10 +1705,12 @@ def _answered_worker(st: dict, q: dict, text: str) -> None:
             euklides.set_marco(ask["decision"], text)
         except OSError as err:
             run.event(st, f"{job}: the Euklides journal could not be written: {err}")
-    if ask and text.strip().lower() == "ok" and ask.get("proposal"):
+    if ask and text.strip().lower() == "ok" and ask.get("proposal") and not ask.get("grant"):
         text = ask["proposal"]
     if text == questions.STOP_JOB or text.startswith(questions.STOP_JOB + " "):
         return _block(st, job, f"stopped by Marco at question {q['id']}: {text}"[:600])
+    if ask and ask.get("grant") and text.strip().lower() == "ok":
+        return _grant(st, job, ask["grant"], ask.get("decision"), by="Marco")
     if ask:
         return _go_on(st, job, ask["ctx"], text)
     _resume_with_answer(st, job, text)  # a question asked before Euklides
@@ -1537,9 +1848,65 @@ def _finish_attach(c: Ctx) -> None:
                 fail(c, job, f"runner error after attach: {type(e).__name__}: {e}")
 
 
+RETRY_STEP = {"waiting_fix": "needs_integrate", "working": "needs_worker", "euklides": "needs_worker", "waiting_answer": "needs_worker",
+              "attached": "needs_worker", "needs_euklides": "needs_worker", "gating": "needs_gate",
+              "reviewing": "needs_review", "integrating": "needs_integrate", "needs_merge": "needs_integrate",
+              "waiting_dep": "pending"}
+RETRY_CLEARS = ("reason", "not_before", "step_tries", "infra_tries", "holder_tries", "push_tries", "integrate_lost",
+                "integrate_skips", "errors", "error", "euklides_count", "blocked_from", "waiting_on", "euklides",
+                "euklides_ask", "question")
+
+
+def _retry_status(j: dict) -> str:
+    was = j.get("blocked_from")
+    if was in RETRY_STEP:
+        return RETRY_STEP[was]
+    if was and (was == "pending" or was.startswith("needs_")):
+        return was
+    return "needs_push" if j.get("head") else "needs_worker"  # blocked by code older than blocked_from
+
+
+def _apply_retry(st: dict, item: dict) -> None:
+    """`ark retry`: the job goes back to the step it was blocked from, with that step's counters cleared, and every
+    job blocked only because it waited on it goes back to pending."""
+    job = item.get("job")
+    j = st["jobs"].get(job)
+    if j is None or j["status"] != "blocked":
+        return run.event(st, f"a retry for {_clean(str(job))} found nothing blocked")
+    status = _retry_status(j)
+    for k in RETRY_CLEARS:
+        j.pop(k, None)
+    j.update(status=status, integrate_fails=0, review_errors=0)
+    questions.drop_kind(st, "worker", job=job)
+    run.event(st, f"{job}: retried by Marco, back to {status}")
+    moved = True
+    while moved:
+        moved = False
+        for name, d in st["jobs"].items():
+            dep = d.get("waiting_on")
+            if d["status"] == "blocked" and dep and st["jobs"][dep]["status"] != "blocked":
+                d.update(status="pending")
+                for k in ("reason", "blocked_from", "waiting_on"):
+                    d.pop(k, None)
+                run.event(st, f"{name}: back to pending, {dep} is no longer blocked")
+                moved = True
+
+
+def _reopen(st: dict) -> None:
+    """A closed blocked run with a retry for one of its blocked jobs runs again; its final PR stays and its
+    decisions doc is written again when it closes."""
+    items = [i for i in inbox.pending(st["repo"], st["slug"]) if i["kind"] == "retry"]
+    if not any((st["jobs"].get(i.get("job")) or {}).get("status") == "blocked" for i in items):
+        return
+    st.update(status="running", closing=None)
+    for k in ("decisions_sha", "closing_wait", "closing_errors", "decisions_ticks"):
+        st.pop(k, None)
+    run.event(st, "reopened by ark retry")
+
+
 ANSWERS = {"worker": _answered_worker, "plan_changed": _answered_plan_changed, "cap_run": _answered_cap_run}
 INBOX = {"answer": _apply_answer, "stop": _apply_stop, "steer": _apply_steer,
-         "attach": _apply_attach, "attach_done": _apply_attach_done}
+         "attach": _apply_attach, "attach_done": _apply_attach_done, "retry": _apply_retry}
 
 
 def apply_inbox(st: dict) -> None:
@@ -1562,6 +1929,8 @@ def apply_inbox(st: dict) -> None:
 
 
 def step(st: dict, states: list[dict], forge, slots: Slots, hold: bool = False) -> None:
+    if st["status"] == "blocked":
+        _reopen(st)
     if st["status"] in ("done", "blocked"):
         inbox.drop_all(st["repo"], st["slug"])  # nobody will read them
         return
@@ -1574,6 +1943,7 @@ def step(st: dict, states: list[dict], forge, slots: Slots, hold: bool = False) 
             return
     proc.reap(paths.run_dir(st["repo"], st["slug"]))  # first: nothing below can excuse a process from its deadline
     apply_inbox(st)
+    _remind_questions(st)
     _retry_stops(st)
     if st.get("ending"):
         return _finish_ending(st)
@@ -1762,6 +2132,18 @@ def _orphans(known, alerts: list[str]) -> None:
                                               f"{type(e).__name__}: {e}", alerts)
 
 
+def _remind_questions(st: dict) -> None:
+    """A run waiting for Marco never closes by itself: he hears about each open question once a day."""
+    now = time.time()
+    for q in st.get("questions") or []:
+        at = q.setdefault("remind_at", now + REMIND_EVERY)
+        if at <= now:
+            q["remind_at"] = now + REMIND_EVERY
+            who = f" from {q['job']}" if q.get("job") else ""
+            run.alert(st, f"still waiting for your answer to {q['id']}{who}: {q['text'][:200]} — `ark answer`",
+                      critical=True)
+
+
 def _nothing_to_advance(states: list[dict], capped_accounts=frozenset()) -> bool:
     """Called after every run took its step: there are live runs, no process alive anywhere, and each run is
     held or waits for Marco. A pending job beside a waiting one only waits for it: this pass started all it could.
@@ -1776,7 +2158,7 @@ def _nothing_to_advance(states: list[dict], capped_accounts=frozenset()) -> bool
         statuses = [j["status"] for j in st["jobs"].values() if j["status"] not in run.TERMINAL]
         if not any(s in WAITS_FOR_MARCO for s in statuses):
             return False
-        if any(s not in WAITS_FOR_MARCO and s != "pending" for s in statuses):
+        if any(s not in WAITS_FOR_MARCO and s not in ("pending", "waiting_dep") for s in statuses):
             return False
     return True
 
@@ -1949,7 +2331,10 @@ def _retry_due() -> bool:
                 return True
             if j.get("errors"):  # a running job has them only while its result cannot be archived
                 return True
-            if j["status"] not in RUNNING and ("holders_since" in j or 0 < j.get("not_before", 0) <= now):
+            if j["status"] not in RUNNING and 0 < j.get("not_before", 0) <= now:
+                return True
+        for f in st.get("fixes") or []:
+            if f["status"] in FIX_WAITING and 0 < f.get("not_before", 0) <= now:
                 return True
     return False
 
@@ -1970,7 +2355,50 @@ def _beat(poll: float, said: str | None) -> str | None:
     return problem
 
 
-def _polling(once: bool) -> int:
+def code_version(code=None) -> str:
+    """What a new process would load: the runner's Python files and its launcher."""
+    code = Path(code or paths.code_dir())
+    h = hashlib.sha256()
+    for f in sorted([*(code / "lib" / "ark").glob("*.py"), code / "bin" / "ark-loop"]):
+        if f.is_file():
+            h.update(f.relative_to(code).as_posix().encode() + b"\0" + f.read_bytes() + b"\0")
+    return h.hexdigest()[:12]
+
+
+def _self_check(code=None) -> str | None:
+    """None when the code on disk imports, reads the workspace and every run; otherwise why not."""
+    code = Path(code or paths.code_dir())
+    env = {**os.environ, "PYTHONPATH": str(code / "lib")}
+    try:
+        r = subprocess.run([sys.executable, "-m", "ark.loop", "--self-check"], cwd=code, env=env,
+                           capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return f"{type(e).__name__}: {e}"
+    if r.returncode == 0:
+        return None
+    return _clean((r.stderr or r.stdout).strip()[-600:] or f"exit {r.returncode}")
+
+
+def _maybe_restart(started: dict, argv) -> None:
+    """New code on disk takes over between cycles; code that fails its self-check never does."""
+    now = code_version()
+    if now == started["version"] or now == started.get("bad"):
+        return
+    why = _self_check()
+    if why:
+        started["bad"] = now
+        text = f"ark-loop: the new code ({now}) failed its self-check and was not loaded; still running {started['version']}: {why}"
+        print(f"⚠ {text}", flush=True)
+        notify.deliver([text], [text])
+        return
+    text = f"ark-loop: restarting on new code {started['version']} → {now}"
+    print(text, flush=True)
+    notify.deliver([text], [])
+    os.execv(sys.executable, [sys.executable, "-m", "ark.loop", *argv])
+
+
+def _polling(once: bool, argv=()) -> int:
+    started = {"version": code_version(), "bad": None}
     poll_default = paths.DEFAULTS["poll_seconds"]
     last_line, last_sig, last_full, last_error, last_clocks = None, None, 0.0, None, None
     beat_poll, beat_said = poll_default, None
@@ -2015,6 +2443,7 @@ def _polling(once: bool) -> int:
                 return 1
         if once:
             return 0
+        _maybe_restart(started, argv)
         time.sleep(poll)
 
 
@@ -2023,9 +2452,16 @@ def main(argv=None) -> int:
     # for it. It must stop on Ctrl-C however it was launched; what it starts gets the default back at exec.
     signal.signal(signal.SIGINT, signal.default_int_handler)
     argv = sys.argv[1:] if argv is None else argv
-    if set(argv) - {"--once"}:  # a typo must not start something that spends money
+    if set(argv) - {"--once", "--self-check"}:  # a typo must not start something that spends money
         print("usage: ark-loop [--once]", file=sys.stderr)
         return 2
+    if "--self-check" in argv:  # run by a live loop on new code: never takes the lock, never starts anything
+        paths.load_workspace()
+        for a in approvals():
+            run.load(a["repo"], a["slug"])
+        signature()
+        print("ok")
+        return 0
     if os.environ.get("ANTHROPIC_API_KEY"):
         print("ark-loop does not run with ANTHROPIC_API_KEY: the workers would bill per token instead of using "
               "your subscription. Run `unset ANTHROPIC_API_KEY` and start it again.", file=sys.stderr)
@@ -2052,7 +2488,7 @@ def main(argv=None) -> int:
         print("ark-loop is already running.", file=sys.stderr)
         return 1
     try:
-        return _polling("--once" in argv)
+        return _polling("--once" in argv, argv)
     except KeyboardInterrupt:  # Ctrl-C is how it stops; workers live in their own sessions and go on
         return 130
     finally:

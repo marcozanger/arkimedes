@@ -11,11 +11,32 @@ them.
 | `ark ps` | per live run a header line (status, elapsed, eta, as in `ark status`), then its open jobs: status, tier, time, tokens, cost, last message; and the open questions |
 | `ark logs <job> [-f] [--kind worker]` | a process's log, readable; the archived one after it ends |
 | `ark stop <job>` | stops its processes, and the job ends blocked; with no process, it blocks on the next cycle |
+| `ark retry <job>` | puts a blocked job back on the step where it stopped (see `ark retry` below) |
 | `ark steer <job> "<instruction>"` | stops the worker and resumes its session with the instruction |
 | `ark attach <job>` | hands the worker to you in an interactive session; on a clean exit it goes on to the gate |
 | `ark answer [--list] [--run <repo>/<slug> <id> "<text>"] [--cap <id> "<text>"]` | answers open questions, one by one (account questions first); `--cap` answers an account's daily cap question |
 
 `<job>` also takes the form `<repo>/<slug>:<job>`, needed when two live runs share a job name or the run has finished.
+
+## ark retry
+
+`ark retry <job>` lifts a block by hand. It refuses a job that is not blocked and any runner process
+(`ARK_ROLE` set). It posts a `retry` inbox item; on the next cycle the job returns to the step it was blocked
+from, with that step's counters cleared:
+
+| Blocked from | Goes back to |
+|---|---|
+| working, euklides, waiting_answer, attached | needs_worker |
+| gating | needs_gate |
+| reviewing | needs_review |
+| integrating, needs_merge | needs_integrate |
+| waiting_dep | pending |
+| another `needs_*` step | that step |
+| unknown (older code) | needs_push with a head, else needs_worker |
+
+Jobs blocked only because they waited on it go back to pending. A run that closed blocked reopens when a retry
+for one of its blocked jobs arrives: it keeps its final PR and closes again normally. A closed run needs the long
+form `<repo>/<slug>:<job>`.
 
 ## Questions
 
@@ -39,8 +60,20 @@ Euklides (Opus, read-only: Read, Grep, Glob, in the job's worktree) decides how 
 | question | a worker ended BLOCKED; its question goes to Euklides before Marco |
 | blocked | changed files outside the area, a reviewer without verdict twice, an integration gate failed twice |
 
-Every other block still blocks at once: stopped by Marco, ark-merge refused, an unreachable model, a dependency
-blocked, an error that does not heal.
+Only two blocks skip Euklides: Marco's stop (`ark stop`, `:stop`) and ark-merge refusing. Every other block goes
+to Euklides first, including the intervene tick's `stop_block`.
+
+A passing fault (an error in a step, an unreachable worker or review model, processes left in the worktree, a
+push that is not a fast-forward, an integration check with no result, a result that cannot be archived) heals by
+itself: the job returns to the step that failed after 60, 120, 240, 480 and 900 seconds, with no alert. If it still
+fails, Euklides decides with the last error (trigger `blocked`); when he lets it go on, the job returns to that
+same step and the worker's work stands. An unreachable Euklides keeps backing off and alerts at the second try.
+
+A job whose dependency is blocked, or waits for Marco (`waiting_answer`, `attached`), is `waiting_dep`
+(`ark ps` shows "waiting on <job>") and starts again when the dependency moves. When every live job waits on a
+blocked one, the run closes and blocks them with the reason.
+
+A run with an open question stays open, and the question is alerted again once a day until it is answered.
 
 The runner, not the model, decides which actions are open: `retry` (same tier, same session) and `escalate` (a fresh
 worker one tier up) after a failure, `answer` to a question, `unblock` after a fixable block, and always `ask`. A job
@@ -56,6 +89,29 @@ and Marco's answer to a question it asked is written on that line. Euklides read
 every call. A journal that cannot be written is an event; the decision still applies.
 
 A run saved before Euklides, with a job in `needs_judge` or `judging`, loads as `needs_euklides`.
+
+### What Euklides can fix
+
+Two more actions let Euklides fix small things himself, inside the **small-fix rule** the runner checks: at most 3
+files and 30 changed lines, no binary file, and no file inside another job's area.
+
+- `widen` opens after an area block (files changed outside the area), under budget. It names the files; when the
+  job changed exactly those outside its area and the change is within the rule, they become **grants**: the run
+  state keeps them under `grants.<job>`, and every later area check (the worker's, the reviewer's, ark-merge's)
+  counts them as part of the area. Briefs show them as "Granted in this run".
+- `fix_base` opens after the integration gate failed twice and is red on the base too, at most 3 times per run. A
+  small worker (job name `_fix-<n>`, branch `ark/<slug>-_fix-<n>`, never pushed) fixes `ark/<slug>`; its change must
+  be within the rule (files of merged jobs do not count) and the integration gate must pass on it. Then one
+  `fix(base): … (Euklides fix <n>)` commit lands on `ark/<slug>` under the run's merge lock, and every job waiting
+  on it (`waiting_fix`, `ark ps` shows "waiting for base fix <n>") integrates again. Only one fix runs at a time;
+  a job that hits a red base meanwhile waits on the same fix.
+
+Over the rule, or when the fix fails (its worker, its gate, or a step failing five times), every job concerned
+becomes a question to Marco with Euklides' proposal and the reason. For a widen over the rule, `ok` grants the
+files. The fix never syncs `main` into the run, never edits the plan and opens no PR of its own.
+
+Every widen and fix_base is journaled in `history/euklides/decisions.jsonl` (with its `files`), so `ark review`
+shows them; each sends a notice, and a landed fix shows in the final PR's commit list.
 
 Ending a run stops every process and blocks every open job. No final PR is opened; what merged stays on `ark/<slug>`
 and the worktrees stay.
@@ -102,6 +158,15 @@ finished, the budget for what runs and what is left. Delay is forecast end minus
 - A worker that is over its tier's minutes, silent for 20 minutes, or over its tier's tokens gets an intervene tick,
   which chooses wait (once), steer (twice per job), stop and escalate, or stop and block. The process's hard deadline
   is twice its tier's minutes.
+
+## New code
+
+Between polls the loop hashes `lib/ark/*.py` and `bin/ark-loop`. When the hash differs from the one it started with,
+it runs `python -m ark.loop --self-check` on the code on disk (imports it, reads the workspace and every run, takes
+no lock, starts nothing). If that passes, it prints `ark-loop: restarting on new code <old> → <new>`, sends the
+notice and re-execs itself in the same process; the cycle already saved every state, workers keep running, and the
+new loop adopts them from the state and the `.proc` files with no second attempt. If the self-check fails, the old
+loop keeps running and sends one alert for that code version; it tries again only when the code changes again.
 
 ## Sleep
 

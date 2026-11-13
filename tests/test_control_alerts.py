@@ -83,6 +83,7 @@ def test_an_unreachable_model_reaches_the_notifier(feature, ark_home, tmp_path, 
     sent = sent_file(ark_home, tmp_path)
     monkeypatch.setenv("FAKE_DOWN", "1")
     monkeypatch.setattr(loop, "BACKOFF_FIRST", 0)
+    monkeypatch.setattr(loop, "PASSING_WAITS", (0,) * 5)
     feature()
     drive(lambda: "unreachable" in (sent.read_text() if sent.exists() else ""))
 
