@@ -45,7 +45,7 @@ def test_the_page_exposes_its_entry_points():
     assert "hashchange" in html and "data-link" not in html
     for route in ('"#/"', '"#/history"', '"#/euklides"', '"#/dashboard"', "#/plan/"):
         assert route in html, route
-    assert 'const TABS = ["timeline", "questions", "events", "spec", "plan"]' in html
+    assert 'const TABS = ["timeline", "questions", "events", "decisions", "spec", "plan"]' in html
 
 
 def test_html_is_built_only_through_render():

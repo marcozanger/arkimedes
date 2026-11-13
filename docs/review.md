@@ -16,6 +16,16 @@ any, its undo and proposal.
 
 Anything else is asked again.
 
+## A run's decisions file
+
+`ark review <repo>/<slug>` also walks the decisions of that run's `decisions.md` (`D1`, `D2`, …) after
+Euklides' own, with the same replies. Without a target only Euklides' decisions are listed. The same verdicts
+can be given with a click in the Decisions tab of `ark ui`, which also asks whether the run needs `a fix` or
+`more work`. They are rows in `reviews.jsonl` with the id `<repo>/<slug>/D<n>` and the decision's `text` (a
+verdict stands only while that text is unchanged); the follow-up is a row `<repo>/<slug>/followup` with the
+verdict `none`, `fix` or `more`. The distill reads both, so a verdict on a worker's or reviewer's decision
+becomes a lesson like any other.
+
 ## Options
 
 - `--all` — also decisions already reviewed.

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 
-from . import euklides, run
+from . import euklides, run, runreview
 
 PROMPT = "ok · mal: <comment> · skip · q > "
 
@@ -73,12 +73,19 @@ def _verdict(reply: str):
 def run_review(args, *, ask=input, say=print, model=None) -> int:
     reviewed = {r.get("id") for r in euklides.reviews()}
     items = pending(euklides.decisions(), reviewed, args.all, args.target)
+    if args.target and "/" in args.target:   # the run's own decisions file comes after Euklides' decisions
+        repo, _, slug = args.target.partition("/")
+        state = runreview.load(repo, slug)
+        items += [{"run_item": True, "id": f"{args.target}/{i['id']}", "key": i["id"], "repo": repo, "slug": slug,
+                   "job": i["job"], "text": i["text"]} for i in state["items"] if args.all or i["verdict"] is None]
     if not items:
         say("Nothing to review.")
         return 0
     new = 0
     for i, d in enumerate(items, 1):
-        say(f"\n[{i}/{len(items)}]\n" + card(d, _outcome(d)) + "\n" + PROMPT.strip(" >"))
+        shown = (f"{d['id']}\nrun: {d['repo']}/{d['slug']} · job: {d['job']} · from decisions.md\n{d['text']}"
+                 if d.get("run_item") else card(d, _outcome(d)))
+        say(f"\n[{i}/{len(items)}]\n" + shown + "\n" + PROMPT.strip(" >"))
         v = None
         while v is None:
             try:
@@ -91,7 +98,10 @@ def run_review(args, *, ask=input, say=print, model=None) -> int:
             break
         if v == "skip":
             continue
-        euklides.add_review(d["id"], v[0], v[1])
+        if d.get("run_item"):
+            runreview.save(d["repo"], d["slug"], d["key"], "ok" if v[0] == "ok" else "change", v[1])
+        else:
+            euklides.add_review(d["id"], v[0], v[1])
         new += 1
     say(f"\n{new} verdict(s) recorded.")
     if new and not args.no_distill:

@@ -228,9 +228,10 @@ def set_marco(decision_id: str, answer: str) -> None:
                        [{**r, "marco": answer} if r.get("id") == decision_id else r for r in rows])
 
 
-def add_review(decision_id: str, verdict: str, comment: str) -> None:
+def add_review(decision_id: str, verdict: str, comment: str, **extra) -> None:
+    """`extra`: what a run decision's row keeps beyond Euklides' own (its text); see runreview."""
     with _locked():
-        _append("reviews.jsonl", {"id": decision_id, "at": run.now(), "verdict": verdict, "comment": comment})
+        _append("reviews.jsonl", {"id": decision_id, "at": run.now(), "verdict": verdict, "comment": comment, **extra})
 
 
 def lessons() -> str:

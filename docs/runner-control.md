@@ -44,7 +44,8 @@ form `<repo>/<slug>:<job>`.
 `ark abort <repo>/<slug>` is Marco saying a blocked (or never started) plan will not be done. It refuses a plan
 with live jobs (stop them first) and any runner process. On the next cycle the run becomes `aborted`: the loop
 never steps it again, `ark retry` cannot reopen it, its history row says `aborted`, and the control center shows
-it in History only, not on the home screen.
+it in History only, not on the home screen. Home shows only what is in progress (running, held, approved and
+waiting) and the drafts: every finished plan (`done`, `blocked`, `aborted`) is in History only.
 
 A run that closed `blocked` with a final PR is looked at every ten minutes: once Marco merges that PR the run
 becomes `done`, whatever jobs were left blocked stay on record in its state.
@@ -162,6 +163,9 @@ files and 30 changed lines, no binary file, and no file inside another job's are
 Over the rule, or when the fix fails (its worker, its gate, or a step failing five times), every job concerned
 becomes a question to Marco with Euklides' proposal and the reason. For a widen over the rule, `ok` grants the
 files. The fix never syncs `main` into the run, never edits the plan and opens no PR of its own.
+
+The decisions file written at close (`runs/<repo>/<slug>/decisions.md`) is reviewed by Marco in the `ark ui` Decisions tab
+or with `ark review <repo>/<slug>`; see `docs/review.md`.
 
 Every widen and fix_base is journaled in `history/euklides/decisions.jsonl` (with its `files`), so `ark review`
 shows them; each sends a notice, and a landed fix shows in the final PR's commit list.
