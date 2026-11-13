@@ -5,8 +5,8 @@ import pytest
 from ark import euklides
 
 TODAY = {
-    "model": "opus", "usd_per_call": 3, "minutes_per_call": 20, "tools": ["Read", "Grep", "Glob"],
-    "denied_tools": ["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch", "WebSearch", "Task", "Agent"],
+    "model": "opus", "usd_per_call": 5, "minutes_per_call": 30, "tools": ["Read", "Grep", "Glob", "Bash", "Edit", "Write"],
+    "denied_tools": ["WebFetch", "WebSearch", "Task", "Agent", "NotebookEdit"],
     "budget_margin": 0.10, "decisions_per_job": 4,
 }
 
@@ -24,7 +24,7 @@ def test_no_block_gives_todays_values(ark_home):
 
 @pytest.mark.parametrize("key,value", [
     ("model", "sonnet"), ("model", "claude-sonnet-5-5"), ("usd_per_call", 1.5), ("minutes_per_call", 5),
-    ("tools", ["Read"]), ("denied_tools", ["Bash"]), ("budget_margin", 0), ("budget_margin", 1),
+    ("tools", ["Read"]), ("denied_tools", ["WebFetch"]), ("budget_margin", 0), ("budget_margin", 1),
     ("decisions_per_job", 0),
 ])
 def test_each_key_overrides_only_itself(ark_home, key, value):
@@ -46,6 +46,6 @@ def test_a_bad_value_names_its_key(ark_home, key, value):
 
 
 def test_a_tool_in_both_lists_is_refused(ark_home):
-    write(ark_home, {"tools": ["Read", "Bash"]})
+    write(ark_home, {"tools": ["Read", "WebFetch"]})
     with pytest.raises(ValueError, match="euklides.tools"):
         euklides.settings()

@@ -10,13 +10,13 @@ def job(**over):
 
 
 @pytest.mark.parametrize("trigger, j, budget, expected", [
-    ("failure", job(), 2, ["retry", "escalate", "ask"]),
-    ("failure", job(tier="T2"), 2, ["retry", "ask"]),
-    ("failure", job(usd=2.0), 2, ["ask"]),
-    ("question", job(), 2, ["answer", "ask"]),
-    ("question", job(usd=9.0), 2, ["answer", "ask"]),
-    ("blocked", job(), 2, ["unblock", "ask"]),
-    ("blocked", job(usd=2.5), 2, ["ask"]),
+    ("failure", job(), 2, ["retry", "escalate", "fixed", "ask"]),
+    ("failure", job(tier="T2"), 2, ["retry", "fixed", "ask"]),
+    ("failure", job(usd=2.0), 2, ["fixed", "ask"]),
+    ("question", job(), 2, ["answer", "fixed", "ask"]),
+    ("question", job(usd=9.0), 2, ["answer", "fixed", "ask"]),
+    ("blocked", job(), 2, ["unblock", "fixed", "ask"]),
+    ("blocked", job(usd=2.5), 2, ["fixed", "ask"]),
     ("failure", job(euklides_count=4), 2, ["ask"]),
     ("question", job(euklides_count=4), 2, ["ask"]),
 ])
@@ -27,11 +27,18 @@ def test_allowed_actions(trigger, j, budget, expected):
 def test_decisions_per_job_comes_from_the_settings(ark_home):
     (ark_home / "workspace.json").write_text(json.dumps({"roots": [], "euklides": {"decisions_per_job": 1}}))
     assert euklides.allowed("failure", job(euklides_count=1), 2) == ["ask"]
-    assert euklides.allowed("failure", job(euklides_count=0), 2) == ["retry", "escalate", "ask"]
+    assert euklides.allowed("failure", job(euklides_count=0), 2) == ["retry", "escalate", "fixed", "ask"]
 
 
 def test_a_job_without_a_count_has_made_no_decision():
-    assert euklides.allowed("failure", {"tier": "T0", "usd": 0.0}, 1) == ["retry", "escalate", "ask"]
+    assert euklides.allowed("failure", {"tier": "T0", "usd": 0.0}, 1) == ["retry", "escalate", "fixed", "ask"]
+
+
+def test_fixed_is_read_with_its_note():
+    assert euklides.parse({"action": "fixed", "note": "moved the file into the area"}, ["fixed", "ask"]) == {
+        "action": "fixed", "note": "moved the file into the area", "undo": None, "why": "", "proposal": None}
+    assert euklides.parse({"action": "fixed"}, ["fixed", "ask"]) is None
+    assert euklides.parse({"action": "fixed", "note": "x"}, ["ask"]) is None
 
 
 def d(**fields):

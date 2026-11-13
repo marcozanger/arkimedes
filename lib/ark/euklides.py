@@ -15,10 +15,11 @@ from . import claude, history, paths, run
 
 DEFAULTS = {
     "model": "opus",
-    "usd_per_call": 3,
-    "minutes_per_call": 20,
-    "tools": ["Read", "Grep", "Glob"],
-    "denied_tools": ["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch", "WebSearch", "Task", "Agent"],
+    "usd_per_call": 5,
+    "minutes_per_call": 30,
+    # it repairs the job's branch itself; the push layer and merge-guard keep pushes and PRs the runner's
+    "tools": ["Read", "Grep", "Glob", "Bash", "Edit", "Write"],
+    "denied_tools": ["WebFetch", "WebSearch", "Task", "Agent", "NotebookEdit"],
     "budget_margin": 0.10,  # read, not used yet
     "decisions_per_job": 4,  # decisions without Marco per job and run; after that Euklides can only ask
 }
@@ -73,7 +74,8 @@ def allowed(trigger: str, j: dict, budget_usd: float, kind: str | None = None, b
             fixes_used: int = 0) -> list[str]:
     """The actions open now, `ask` always last. Spending past the budget, changing the plan and
     blocking are never actions: they can only be proposed to Marco. `widen` opens only after an area
-    block, `fix_base` only after an integration gate red on the base too, at most MAX_FIX_BASE a run."""
+    block, `fix_base` only after an integration gate red on the base too, at most MAX_FIX_BASE a run.
+    `fixed` (Euklides repaired the branch himself) is open while decisions remain."""
     if j.get("euklides_count", 0) >= settings()["decisions_per_job"]:
         return ["ask"]
     under = j["usd"] < budget_usd
@@ -90,7 +92,7 @@ def allowed(trigger: str, j: dict, budget_usd: float, kind: str | None = None, b
             out.append("widen")
     if trigger == "blocked" and kind == "integrate" and base_red and fixes_used < MAX_FIX_BASE:
         out.append("fix_base")  # the base's fix is not paid from the job's budget
-    return out + ["ask"]
+    return out + ["fixed", "ask"]  # fixed: Euklides repaired the branch himself; the runner checks it
 
 
 def _files(v) -> list[str] | None:

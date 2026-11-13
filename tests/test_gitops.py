@@ -118,6 +118,48 @@ def test_push_ref_never_forces_or_deletes(runner, tmp_path):
     assert gitops.remote_sha(repo, "ark/x") == first
 
 
+def test_push_ref_lease_rewrites_only_what_it_expects(runner, tmp_path):
+    repo = runner()
+    base = gitops.rev(repo, "HEAD")
+    wt = tmp_path / "other"
+    gitops.add_worktree(repo, wt, "ark/other", base)
+    _commit(wt, "o.txt", "o\n")
+    old = gitops.rev(wt, "HEAD")
+    gitops.push_ref(repo, old, "ark/x")
+    _commit(repo, "r.txt", "r\n")
+    new = gitops.rev(repo, "HEAD")
+    with pytest.raises(gitops.GitError):  # origin holds `old`, not `base`: the lease fails
+        gitops.push_ref_lease(repo, new, "ark/x", base)
+    assert gitops.remote_sha(repo, "ark/x") == old
+    with pytest.raises(gitops.GitError):  # never to a branch that is not ark/*
+        gitops.push_ref_lease(repo, new, "master", gitops.remote_sha(repo, "master"))
+    with pytest.raises(gitops.GitError):
+        gitops.push_ref_lease(repo, new, "ark/x", "")
+    gitops.push_ref_lease(repo, new, "ark/x", old)
+    assert gitops.remote_sha(repo, "ark/x") == new
+
+
+def test_branch_commits_and_changes(runner, tmp_path):
+    repo = runner()
+    base = gitops.rev(repo, "HEAD")
+    gitops.push_ref(repo, base, "ark/base")
+    gitops.fetch(repo)
+    wt = tmp_path / "job"
+    gitops.add_worktree(repo, wt, "ark/base-job", "origin/ark/base")
+    assert gitops.branch_commits(wt, "origin/ark/base") == [] and gitops.branch_changes(wt, "origin/ark/base") == []
+    _commit(wt, "a.txt", "1\n2\n", "feat: a\twith a tab")
+    _commit(wt, "b.bin", "x", "feat: b")
+    (wt / "b.bin").write_bytes(b"\0\1\2")
+    subprocess.run(["git", "-C", str(wt), "commit", "-qam", "binary"], check=True)
+    got = gitops.branch_commits(wt, "origin/ark/base")
+    assert [(c["subject"], c["parents"]) for c in got] == [("binary", 1), ("feat: b", 1), ("feat: a\twith a tab", 1)]
+    assert got[0]["sha"] == gitops.rev(wt, "HEAD")
+    assert gitops.branch_changes(wt, "origin/ark/base") == [("a.txt", 2, 0), ("b.bin", None, None)]
+    assert gitops.current_branch(wt) == "ark/base-job"
+    subprocess.run(["git", "-C", str(wt), "checkout", "-q", "--detach"], check=True)
+    assert gitops.current_branch(wt) is None
+
+
 BAD_BRANCHES = ["master", "main", "ARK/x", "+ark/x", "-ark/x", "ark/x:master", "ark/x:refs/heads/master",
                 "ark/../master", "ark/x/../../master", "ark//master", "ark/", "ark/x/", "ark/x\n",
                 "ark/x master", "ark/*", "ark/x..y", "ark/ x"]
