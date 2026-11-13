@@ -108,7 +108,7 @@ def _empty(repo: str, slug: str) -> dict:
     return {"repo": repo, "slug": slug, "title": slug, "status": "waiting", "reason": "", "error": None,
             "approval": "-", "approved_at": None, "plan_path": "", "plan_sha": None, "spec": None, "created": None,
             "progress": {"merged": 0, "total": 0}, "times": None, "jobs": [], "events": [], "final_pr": None,
-            "plan_file": "", "decisions": "", "cost": _cost_zero(), "manifest": {"setup": [], "integration_gate": "", "final_pr_title": ""}}
+            "plan_file": "", "decisions": "", "questions": [], "answers": [], "spec_file": "", "cost": _cost_zero(), "manifest": {"setup": [], "integration_gate": "", "final_pr_title": ""}}
 
 
 def _job(jid: str, mj: dict, sj: dict, heads: dict) -> dict:
@@ -145,8 +145,13 @@ def _plan(repo: str, slug: str, a: dict | None, now: datetime, rows: list[dict] 
     st = run.load(repo, slug) or {}  # StateCorrupt goes up to _safe
     p.update(status=st.get("status", "waiting"), reason=st.get("reason") or "", events=list(st.get("events") or []),
              final_pr=st.get("final_pr"))
+    p["questions"] = [{k: q.get(k) for k in ("id", "kind", "job", "text", "asked")}
+                      for q in st.get("questions") or [] if isinstance(q, dict)]
+    p["answers"] = [{**{k: a.get(k) for k in ("id", "kind", "job", "question", "answer", "asked", "at")},
+                     "by": a.get("by")} for a in st.get("answers") or [] if isinstance(a, dict)]
+    p["spec_file"] = _text(plan_path.parent / "spec.md")
     sjobs = st.get("jobs") if isinstance(st.get("jobs"), dict) else {}
-    by = {j["id"]: j for j in mjobs}
+    by ={j["id"]: j for j in mjobs}
     ids = list(by) + [k for k in sjobs if k not in by]
     jobs = [_job(i, by.get(i, {}), sjobs.get(i) or {}, heads) for i in ids]
     t = timing.compute([{"id": j["id"], "after": j["after"], "minutes": j["budget"]["minutes"], "status": j["status"],
