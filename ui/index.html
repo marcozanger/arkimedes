@@ -327,13 +327,13 @@ function decide(mem, snap, meta) {
   m.loopDown = !alive;
   plans.filter(p => p.status === "done" && !m.done.includes(`${p.repo}/${p.slug}`)).forEach(p => {
     const key = `${p.repo}/${p.slug}`;
-    note("done", `${key} is done`, "All jobs merged.", key, p.final_pr && p.final_pr.url ? p.final_pr.url : null);
+    note("done", `${key} is done`, (!p.progress || p.progress.merged === p.progress.total) ? "All jobs merged." : "The final PR is merged.", key, p.final_pr && p.final_pr.url ? p.final_pr.url : null);
     m.done = m.done.concat(key);
   });
   return { notes, mem: m };
 }
 function titleFor(mem, snap, meta) {
-  const n = (mem.unread || []).length;
+  const n = ((snap && snap.plans) || []).filter(p => flagOf(p)).length;  // the same plans as the badge on Home: those that wait for Marco
   const down = mem.loopDown || (snap && snap.loop && !snap.loop.alive);
   return (n > 0 ? `(${n}) ` : "") + (meta && meta.stale ? "Stale · " : down ? "Loop down · " : "") + "Arkimedes";
 }
@@ -368,6 +368,7 @@ function etaText(p) {
   }
   if (p.status === "held") return "Paused";
   if (p.status === "blocked") return "Stopped";
+  if (p.status === "aborted") return "Aborted";
   if (p.status === "waiting") return t.left_min != null ? `Not started · ~${dur(t.left_min)} of work` : "Not started";
   if (t.left_min == null) return "Not estimated";
   return `~${dur(t.left_min)} left · ${lateText(t.delay_min) || "on time"}`;
@@ -383,6 +384,7 @@ function spendText(c) {
 }
 function flagOf(p) {
   const jobs = p.jobs || [];
+  if (p.status === "aborted" || p.status === "done") return "";  // what was left blocked in them is on record, not a call for Marco
   if (p.status === "blocked" || jobs.some(j => j.status === "blocked")) return "Blocked";
   if (p.status === "held" || (p.questions || []).length || jobs.some(j => WAITS_FOR_YOU.includes(j.status))) return "Waits for you";
   return "";
@@ -507,7 +509,7 @@ function todaySpend() {
   const isToday = iso => iso && new Date(iso).toDateString() === today;
   return plans().flatMap(p => p.jobs || []).filter(j => isToday(j.started) || isToday(j.finished)).reduce((a, j) => a + Number(j.usd || 0), 0);
 }
-const waitsCount = () => plans().filter(p => flagOf(p) && p.status !== "done").length;
+const waitsCount = () => plans().filter(p => flagOf(p)).length;
 
 function banner() {
   if (S.meta.stale) return { cls: "bad", text: `Stale data: ${S.meta.error || "ark did not answer"}. Showing what ark returned at ${clock(ms(S.meta.updated))}.` };
@@ -525,7 +527,7 @@ function menu() {
     ? `<span><i class="dot"></i>Loop running · beat ${esc(clock(ms(S.data.loop.last_beat)))}</span>`
     : '<span><i class="dot off"></i>Loop stopped</span>') : "<span>Loop: no data yet</span>";
   return `<span class="brand">Arkimedes</span>
-    ${nav("#/", "Home", r === "home" || r === "plan" || r === "draft", n ? `<span class="count">${n}</span>` : "")}
+    ${nav("#/", "Home", r === "home" || r === "plan" || r === "draft", n ? `<span class="count" title="${n} ${n === 1 ? "plan waits" : "plans wait"} for you: blocked, paused, or with a question">${n}</span>` : "")}
     ${nav("#/history", "History", r === "history")}
     ${nav("#/euklides", "Euklides", r === "euklides")}
     <div class="foot">${loop}<span>Today: $${esc(todaySpend().toFixed(2))}</span></div>`;
@@ -552,14 +554,16 @@ function home() {
   if (!S.data) return `<p class="muted">${S.meta.stale ? "ark did not answer yet: " + esc(S.meta.error) : "Waiting for ark…"}</p>`;
   const recent = (a, b) => String(b.approved_at || "").localeCompare(String(a.approved_at || ""));
   const urgent = p => (flagOf(p) === "Blocked" ? 0 : flagOf(p) ? 1 : 2);
-  const flight = plans().filter(p => ["running", "held", "blocked"].includes(p.status)).sort(recent).sort((a, b) => urgent(a) - urgent(b));
+  const flight = plans().filter(p => ["running", "held"].includes(p.status)).sort(recent).sort((a, b) => urgent(a) - urgent(b));
+  const stopped = plans().filter(p => p.status === "blocked").sort(recent);  // closed and waiting for a retry or an `ark abort`; aborted plans are in History only
   const queued = plans().filter(p => p.status === "waiting").sort(recent);
   const done = plans().filter(p => p.status === "done").sort(recent);
   const drafts = S.drafts || [];
-  return `<div class="screen-head"><h1>Plans</h1><span class="small muted">${flight.length} in flight · ${queued.length} approved · ${drafts.length} drafts</span></div>
+  return `<div class="screen-head"><h1>Plans</h1><span class="small muted">${flight.length} in flight${stopped.length ? ` · ${stopped.length} blocked` : ""} · ${queued.length} approved · ${drafts.length} drafts</span></div>
     ${S.flash ? `<div class="msg ok">${esc(S.flash)}</div>` : ""}
     ${group("In flight", flight, planLine, "Nothing is running.")}
     ${group("Approved, not started", queued, planLine, "No approved plan is waiting to start.")}
+    ${stopped.length ? group("Blocked", stopped, planLine, "") : ""}
     ${group("Drafts", drafts, draftLine, S.drafts === null ? "Loading drafts…" : "No drafts. Start one with New plan.")}
     ${done.length ? group("Finished", done, planLine, "") : ""}`;
 }
@@ -593,13 +597,17 @@ function planScreen() {
     <div class="mono small muted">${esc(keyOf(p))}${p.final_pr && p.final_pr.url ? ` · ${link(p.final_pr.url, "final PR")}` : ""}${p.reason ? ` · ${esc(p.reason)}` : ""}</div></div>`;
   if (p.error) return head + `<div class="problem crit"><strong>This plan cannot be read</strong><div class="reason">${esc(p.error)}</div></div>`;
   const qs = (p.questions || []).length;
-  const tabs = TABS.map(t => `<a class="tab" role="tab" href="${planHref(p, t)}" aria-selected="${r.tab === t}">${t[0].toUpperCase() + t.slice(1)}${t === "questions" && qs ? `<span class="count">${qs}</span>` : ""}</a>`).join("");
+  const alerts = recentAlerts(p).length;
+  const tabs = TABS.map(t => `<a class="tab" role="tab" href="${planHref(p, t)}" aria-selected="${r.tab === t}">${t[0].toUpperCase() + t.slice(1)}${t === "questions" && qs ? `<span class="count">${qs}</span>` : ""}${t === "events" && alerts ? `<span class="count">${alerts}</span>` : ""}</a>`).join("");
   const body = { timeline, questions, events, spec: specTab, plan: planTab }[r.tab](p);
   return head + numbers(p) + `<div class="tabs" role="tablist">${tabs}</div>` + body;
 }
-function notices(p) {
+function recentAlerts(p) {
   const day = NOW() - 864e5;
-  return ((S.data && S.data.alerts) || []).filter(a => a.repo === p.repo && a.slug === p.slug && ms(a.at) > day).slice(-3).reverse()
+  return ((S.data && S.data.alerts) || []).filter(a => a.repo === p.repo && a.slug === p.slug && ms(a.at) > day).slice(-3).reverse();
+}
+function notices(p) {
+  return recentAlerts(p)
     .map(a => `<div class="problem ${a.critical ? "crit" : ""}"><div class="small muted">${esc(clock(ms(a.at)))}${a.job ? " · " + esc(a.job) : ""}</div><div class="reason">${esc(a.text)}</div></div>`).join("");
 }
 const LEGEND = `<div class="legend"><span><i class="swatch" style="background:var(--ok)"></i>merged</span><span><i class="swatch" style="background:var(--accent)"></i>active</span><span><i class="swatch" style="background:var(--attn)"></i>waits for you</span><span><i class="swatch" style="background:var(--bad)"></i>blocked</span><span><i class="swatch" style="height:4px;background:var(--wait);opacity:.55"></i>budget</span><span><i class="swatch hatch"></i>≈ forecast</span><span><i class="swatch" style="width:2px;height:12px;background:var(--fg)"></i>now</span></div>`;
@@ -607,7 +615,7 @@ function timeline(p) {
   const now = NOW(), live = LIVE.includes(p.status);
   const pts = p.jobs.flatMap(j => [j.plan_start, j.plan_end, j.fc_start, j.fc_end, j.started, j.finished].map(ms)).filter(x => x != null);
   if (live && pts.length) pts.push(now);
-  if (!pts.length) return notices(p) + '<p class="hint">No times yet: the jobs have not started.</p>' + jobList(p);
+  if (!pts.length) return '<p class="hint">No times yet: the jobs have not started.</p>' + jobList(p);
   const t0 = Math.min(...pts), T = Math.max(Math.max(...pts) - t0, 60e3);
   const pct = v => `${((v - t0) / T * 100).toFixed(2)}%`;
   const bar = (cls, a, b, tip) => (a == null || b == null ? "" : `<span class="bar ${cls}" style="left:${pct(a)};width:${(Math.max(b - a, 0) / T * 100).toFixed(2)}%" title="${esc(tip)}"></span>`);
@@ -625,7 +633,7 @@ function timeline(p) {
   }).join("");
   const axis = `<div class="axis"><span></span><div class="ticks"><span style="left:0">${esc(clock(t0))}</span><span class="last" style="left:100%">${esc(clock(t0 + T))}</span></div><span></span></div>`;
   const job = p.jobs.find(j => j.id === S.job);
-  return notices(p) + `<div>${LEGEND}${rows}${axis}</div>`
+  return `<div>${LEGEND}${rows}${axis}</div>`
     + (job ? detail(job) : '<p class="hint">Click a job for its tasks, its PR and why it is late.</p>');
 }
 function jobList(p) {

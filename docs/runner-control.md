@@ -12,6 +12,7 @@ them.
 | `ark logs <job> [-f] [--kind worker]` | a process's log, readable; the archived one after it ends |
 | `ark stop <job>` | stops its processes, and the job ends blocked; with no process, it blocks on the next cycle |
 | `ark retry <job>` | puts a blocked job back on the step where it stopped (see `ark retry` below) |
+| `ark abort <repo>/<slug> [--why "<line>"]` | ends a blocked or waiting plan for good (see `ark abort` below) |
 | `ark steer <job> "<instruction>"` | stops the worker and resumes its session with the instruction |
 | `ark attach <job>` | hands the worker to you in an interactive session; on a clean exit it goes on to the gate |
 | `ark answer [--list] [--run <repo>/<slug> <id> "<text>"] [--cap <id> "<text>"]` | answers open questions, one by one (account questions first); `--cap` answers an account's daily cap question |
@@ -37,6 +38,16 @@ from, with that step's counters cleared:
 Jobs blocked only because they waited on it go back to pending. A run that closed blocked reopens when a retry
 for one of its blocked jobs arrives: it keeps its final PR and closes again normally. A closed run needs the long
 form `<repo>/<slug>:<job>`.
+
+## ark abort
+
+`ark abort <repo>/<slug>` is Marco saying a blocked (or never started) plan will not be done. It refuses a plan
+with live jobs (stop them first) and any runner process. On the next cycle the run becomes `aborted`: the loop
+never steps it again, `ark retry` cannot reopen it, its history row says `aborted`, and the control center shows
+it in History only, not on the home screen.
+
+A run that closed `blocked` with a final PR is looked at every ten minutes: once Marco merges that PR the run
+becomes `done`, whatever jobs were left blocked stay on record in its state.
 
 ## Questions
 

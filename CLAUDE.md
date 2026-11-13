@@ -33,5 +33,5 @@ session (a hook enforces `approvals/`), and only Marco approves plans, from a te
 | `ark review [<repo>/<slug>] [--all]` | review Euklides' decisions; new verdicts are distilled into history/euklides/lessons.md |
 | `ark stats` | rewrite `history/insights.md` from `history/jobs.jsonl` |
 
-Over running plans, also without a model: `ark ps`, `ark logs`, `ark stop`, `ark retry`, `ark steer`, `ark attach`, `ark answer`.
+Over running plans, also without a model: `ark ps`, `ark logs`, `ark stop`, `ark retry`, `ark abort`, `ark steer`, `ark attach`, `ark answer`.
 See `docs/runner-control.md` and `docs/report.md`.

@@ -49,7 +49,7 @@ def _states() -> list[dict]:
 
 
 def _live(st: dict) -> bool:
-    return st["status"] not in ("done", "blocked")
+    return st["status"] not in run.FINISHED
 
 
 def _resolve(spec: str) -> tuple[str, str, str]:
@@ -189,6 +189,22 @@ def cmd_retry(args) -> int:
         raise CtlError(f"{job} is not blocked: {j['status']}")
     inbox.post(repo, slug, "retry", job=job)
     print(f"{job} goes back to its step on the next cycle")
+    return 0
+
+
+@_cmd
+def cmd_abort(args) -> int:
+    _writer()
+    repo, _, slug = args.plan.partition("/")
+    st = next((x for x in _states() if x["repo"] == repo and x["slug"] == slug), None)
+    if st is None:
+        raise CtlError(f"{args.plan} has no run")
+    if st["status"] == "aborted":
+        raise CtlError(f"{args.plan} is already aborted")
+    if st["status"] not in ("blocked", "waiting"):
+        raise CtlError(f"{args.plan} is {st['status']}: stop its jobs first, or wait until it ends blocked")
+    inbox.post(repo, slug, "abort", why=args.why or "")
+    print(f"{args.plan} is aborted on the next cycle; `ark retry` cannot bring it back")
     return 0
 
 
@@ -370,6 +386,10 @@ def register(sub) -> None:
     s = sub.add_parser("retry", help="put a blocked job back on the step where it stopped")
     s.add_argument("job", help="<job> or <repo>/<slug>:<job> (a closed run needs the long form)")
     s.set_defaults(fn=cmd_retry)
+    s = sub.add_parser("abort", help="end a blocked or waiting plan for good: it leaves the home screen for History")
+    s.add_argument("plan", help="<repo>/<slug>")
+    s.add_argument("--why", default="", help="one line for the record")
+    s.set_defaults(fn=cmd_abort)
     s = sub.add_parser("answer", help="answer the open questions, one by one")
     s.add_argument("--list", action="store_true", help="show them without answering")
     which = s.add_mutually_exclusive_group()
