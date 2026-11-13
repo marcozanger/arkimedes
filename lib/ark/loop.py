@@ -38,9 +38,9 @@ NET_HOSTS = (("api.github.com", 443), ("api.anthropic.com", 443))
 CLOCK_KEYS = ("soft_deadline", "watch_from", "not_before")  # absolute times that limit a job
 PASSING_WAITS = (60, 120, 240, 480, 900)  # about half an hour in all, then Euklides
 REMIND_EVERY = 86400  # an open question is repeated to Marco once a day
-WAITS_ON = ("blocked", "waiting_dep", "waiting_answer", "attached", "waiting_fix")
+WAITS_ON = ("blocked", "waiting_dep", "waiting_answer", "attached", "waiting_fix")  # a dependency in one of these holds its dependents
 SMALL_FILES, SMALL_LINES = 3, 30  # the small-fix rule: what Euklides may widen or fix without Marco
-FIX_BASE_USD = 2  # the budget of one base-fix worker  # a dependency in one of these holds its dependents
+FIX_BASE_USD = 2  # the budget of one base-fix worker
 
 # What a job's status says is running, and where the job goes back to if that process is not there.
 RUNNING = {"working": "worker", "gating": "gate", "reviewing": "review", "integrating": "integrate",
