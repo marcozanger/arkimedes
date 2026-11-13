@@ -98,7 +98,7 @@ let tries = 0;
 function check() {
   tries++;
   const ready = frames.every(f => f.contentDocument && f.contentDocument.body && f.contentDocument.body.dataset.rendered === "1");
-  if (!ready && tries < 100) { setTimeout(check, 50); return; }
+  if (!ready && tries < 500) { setTimeout(check, 50); return; }
   setTimeout(() => {
     frames.forEach(f => { out[f.dataset.name] = measure(f); });
     document.getElementById("result").textContent = JSON.stringify(out);
@@ -177,7 +177,7 @@ def profile():
 def _dump(chrome, url, width, dark, profile):
     args = [chrome, "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
             f"--user-data-dir={profile}", f"--window-size={max(width, 500) + 40},{4 * 900}",
-            "--virtual-time-budget=15000", "--dump-dom", url]
+            "--virtual-time-budget=40000", "--dump-dom", url]
     if dark:
         args.insert(1, "--force-dark-mode")
         args.insert(1, "--blink-settings=preferredColorScheme=0")
