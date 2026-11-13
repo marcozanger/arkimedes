@@ -205,6 +205,10 @@ Its `version` field changes when the shape does. It reads:
   integration gate) or `reviewing`, with `since` and, for a gate, `usual_min`, the median of that run's finished
   gates. A job with no process running has none.
 
+- per plan, for the Dashboard: `account` (the account its repo spends on), `euklides` (`decisions` Euklides took for the
+  plan and how many of them were `asked`, a question for Marco; from `history/euklides/decisions.jsonl`) and, in `cost`,
+  `closed_at` and `tokens` (the plan's `ended` and `tokens` in `history/plans.jsonl`; null until the run closes).
+
 Estimate: each job lasts its `budget.minutes` after its `after` jobs. Forecast: real times for what
 finished, the budget for what runs and what is left. Delay is forecast end minus estimated end.
 

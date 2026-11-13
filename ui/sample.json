@@ -283,12 +283,19 @@
         "wall_min": null,
         "working_min": null,
         "waiting_min": null,
-        "estimated_min": 140
+        "estimated_min": 140,
+        "closed_at": null,
+        "tokens": null
       },
       "manifest": {
         "setup": [],
         "integration_gate": "",
         "final_pr_title": ""
+      },
+      "account": "globallogic",
+      "euklides": {
+        "decisions": 2,
+        "asked": 1
       }
     },
     {
@@ -439,12 +446,19 @@
         "wall_min": null,
         "working_min": null,
         "waiting_min": null,
-        "estimated_min": 90
+        "estimated_min": 90,
+        "closed_at": null,
+        "tokens": null
       },
       "manifest": {
         "setup": [],
         "integration_gate": "",
         "final_pr_title": ""
+      },
+      "account": "personal",
+      "euklides": {
+        "decisions": 1,
+        "asked": 0
       }
     },
     {
@@ -610,12 +624,19 @@
         "wall_min": null,
         "working_min": null,
         "waiting_min": null,
-        "estimated_min": 140
+        "estimated_min": 140,
+        "closed_at": null,
+        "tokens": null
       },
       "manifest": {
         "setup": [],
         "integration_gate": "",
         "final_pr_title": ""
+      },
+      "account": "personal",
+      "euklides": {
+        "decisions": 0,
+        "asked": 0
       }
     },
     {
@@ -736,12 +757,19 @@
         "wall_min": null,
         "working_min": null,
         "waiting_min": null,
-        "estimated_min": 95
+        "estimated_min": 95,
+        "closed_at": null,
+        "tokens": null
       },
       "manifest": {
         "setup": [],
         "integration_gate": "",
         "final_pr_title": ""
+      },
+      "account": "personal",
+      "euklides": {
+        "decisions": 0,
+        "asked": 0
       }
     },
     {
@@ -865,12 +893,19 @@
         "wall_min": 558,
         "working_min": 105,
         "waiting_min": 450,
-        "estimated_min": 90
+        "estimated_min": 90,
+        "closed_at": "2026-11-07T03:55:00+00:00",
+        "tokens": 884000
       },
       "manifest": {
         "setup": [],
         "integration_gate": "",
         "final_pr_title": ""
+      },
+      "account": "personal",
+      "euklides": {
+        "decisions": 3,
+        "asked": 1
       }
     },
     {
@@ -912,12 +947,425 @@
         "wall_min": null,
         "working_min": null,
         "waiting_min": null,
-        "estimated_min": null
+        "estimated_min": null,
+        "closed_at": null,
+        "tokens": null
       },
       "manifest": {
         "setup": [],
         "integration_gate": "",
         "final_pr_title": ""
+      },
+      "account": "personal",
+      "euklides": {
+        "decisions": 0,
+        "asked": 0
+      }
+    },
+    {
+      "repo": "socrates",
+      "slug": "search-index",
+      "title": "Search index",
+      "status": "done",
+      "reason": "",
+      "error": "",
+      "progress": {
+        "merged": 2,
+        "total": 2
+      },
+      "times": {
+        "delay_min": 0,
+        "left_min": 0,
+        "estimated_end": "2026-11-07T03:55:00+00:00",
+        "forecast_end": "2026-11-07T03:55:00+00:00",
+        "started": "2026-11-07T02:45:00+00:00"
+      },
+      "approved_at": "2026-11-07T02:45:00+00:00",
+      "created": "2026-11-06",
+      "approval": "ok",
+      "plan_sha": "9f3a1c7d2b8e4a65c0d1",
+      "plan_path": "socrates/search-index/plan.md",
+      "spec": "",
+      "plan_file": "---\ntitle: API cleanup\n---\n\n# API cleanup\n\n## Goal\n\nShort goal for API cleanup.\n\n## Tasks\n\n- routes: do the work\n- tests: do the work\n\n## Run manifest\n\n- job: routes\n- job: tests\n",
+      "decisions": "- Kept the v1 route names.\n  Why: clients still call them.\n  Rejected: renaming now.\n",
+      "questions": [],
+      "answers": [],
+      "spec_file": "",
+      "events": [
+        "2026-11-07T03:05:00+00:00 job routes started",
+        "2026-11-07T03:55:00+00:00 plan done"
+      ],
+      "final_pr": {
+        "url": "https://github.com/example/socrates/pull/9"
+      },
+      "jobs": [
+        {
+          "id": "routes",
+          "status": "merged",
+          "pr_title": "refactor: routes",
+          "budget": {
+            "minutes": 25,
+            "usd": 2
+          },
+          "plan_start": "2026-11-07T03:05:00+00:00",
+          "plan_end": "2026-11-07T03:30:00+00:00",
+          "started": "2026-11-07T03:05:00+00:00",
+          "finished": "2026-11-07T03:30:00+00:00",
+          "fc_start": null,
+          "fc_end": null,
+          "usd": 3.2,
+          "tier": "T1",
+          "tier_path": [
+            "T1"
+          ],
+          "attempts": 1,
+          "pr": {
+            "url": "https://github.com/example/socrates/pull/70"
+          },
+          "after": [],
+          "reason": "",
+          "question": "",
+          "tasks": [],
+          "done": [],
+          "includes": "",
+          "excludes": "",
+          "gate": "pytest -q",
+          "heavy": false,
+          "phase": null,
+          "area": [
+            "src/**"
+          ]
+        },
+        {
+          "id": "tests",
+          "status": "merged",
+          "pr_title": "test: route tests",
+          "budget": {
+            "minutes": 20,
+            "usd": 2
+          },
+          "plan_start": "2026-11-07T03:30:00+00:00",
+          "plan_end": "2026-11-07T03:50:00+00:00",
+          "started": "2026-11-07T03:30:00+00:00",
+          "finished": "2026-11-07T03:55:00+00:00",
+          "fc_start": null,
+          "fc_end": null,
+          "usd": 3.2,
+          "tier": "T1",
+          "tier_path": [
+            "T1"
+          ],
+          "attempts": 1,
+          "pr": {
+            "url": "https://github.com/example/socrates/pull/71"
+          },
+          "after": [
+            "routes"
+          ],
+          "reason": "",
+          "question": "",
+          "tasks": [],
+          "done": [],
+          "includes": "",
+          "excludes": "",
+          "gate": "pytest -q",
+          "heavy": false,
+          "phase": null,
+          "area": [
+            "src/**"
+          ]
+        }
+      ],
+      "cost": {
+        "usd": 6.4,
+        "budget_usd": 8.32,
+        "closed": true,
+        "wall_min": 210,
+        "working_min": 210,
+        "waiting_min": 0,
+        "estimated_min": 90,
+        "closed_at": "2026-11-05T16:20:00+00:00",
+        "tokens": 720000
+      },
+      "manifest": {
+        "setup": [],
+        "integration_gate": "",
+        "final_pr_title": ""
+      },
+      "account": "personal",
+      "euklides": {
+        "decisions": 0,
+        "asked": 0
+      }
+    },
+    {
+      "repo": "humanharness",
+      "slug": "mods-api",
+      "title": "Mods API",
+      "status": "done",
+      "reason": "",
+      "error": "",
+      "progress": {
+        "merged": 2,
+        "total": 2
+      },
+      "times": {
+        "delay_min": 0,
+        "left_min": 0,
+        "estimated_end": "2026-11-07T03:55:00+00:00",
+        "forecast_end": "2026-11-07T03:55:00+00:00",
+        "started": "2026-11-07T02:45:00+00:00"
+      },
+      "approved_at": "2026-11-07T02:45:00+00:00",
+      "created": "2026-11-06",
+      "approval": "ok",
+      "plan_sha": "9f3a1c7d2b8e4a65c0d1",
+      "plan_path": "humanharness/mods-api/plan.md",
+      "spec": "",
+      "plan_file": "---\ntitle: API cleanup\n---\n\n# API cleanup\n\n## Goal\n\nShort goal for API cleanup.\n\n## Tasks\n\n- routes: do the work\n- tests: do the work\n\n## Run manifest\n\n- job: routes\n- job: tests\n",
+      "decisions": "- Kept the v1 route names.\n  Why: clients still call them.\n  Rejected: renaming now.\n",
+      "questions": [],
+      "answers": [],
+      "spec_file": "",
+      "events": [
+        "2026-11-07T03:05:00+00:00 job routes started",
+        "2026-11-07T03:55:00+00:00 plan done"
+      ],
+      "final_pr": {
+        "url": "https://github.com/example/humanharness/pull/9"
+      },
+      "jobs": [
+        {
+          "id": "routes",
+          "status": "merged",
+          "pr_title": "refactor: routes",
+          "budget": {
+            "minutes": 25,
+            "usd": 2
+          },
+          "plan_start": "2026-11-07T03:05:00+00:00",
+          "plan_end": "2026-11-07T03:30:00+00:00",
+          "started": "2026-11-07T03:05:00+00:00",
+          "finished": "2026-11-07T03:30:00+00:00",
+          "fc_start": null,
+          "fc_end": null,
+          "usd": 5.9,
+          "tier": "T2",
+          "tier_path": [
+            "T2"
+          ],
+          "attempts": 1,
+          "pr": {
+            "url": "https://github.com/example/socrates/pull/70"
+          },
+          "after": [],
+          "reason": "",
+          "question": "",
+          "tasks": [],
+          "done": [],
+          "includes": "",
+          "excludes": "",
+          "gate": "pytest -q",
+          "heavy": false,
+          "phase": null,
+          "area": [
+            "src/**"
+          ]
+        },
+        {
+          "id": "tests",
+          "status": "merged",
+          "pr_title": "test: route tests",
+          "budget": {
+            "minutes": 20,
+            "usd": 2
+          },
+          "plan_start": "2026-11-07T03:30:00+00:00",
+          "plan_end": "2026-11-07T03:50:00+00:00",
+          "started": "2026-11-07T03:30:00+00:00",
+          "finished": "2026-11-07T03:55:00+00:00",
+          "fc_start": null,
+          "fc_end": null,
+          "usd": 5.9,
+          "tier": "T2",
+          "tier_path": [
+            "T2"
+          ],
+          "attempts": 1,
+          "pr": {
+            "url": "https://github.com/example/socrates/pull/71"
+          },
+          "after": [
+            "routes"
+          ],
+          "reason": "",
+          "question": "",
+          "tasks": [],
+          "done": [],
+          "includes": "",
+          "excludes": "",
+          "gate": "pytest -q",
+          "heavy": false,
+          "phase": null,
+          "area": [
+            "src/**"
+          ]
+        }
+      ],
+      "cost": {
+        "usd": 11.8,
+        "budget_usd": 15.34,
+        "closed": true,
+        "wall_min": 340,
+        "working_min": 340,
+        "waiting_min": 0,
+        "estimated_min": 90,
+        "closed_at": "2026-11-03T12:00:00+00:00",
+        "tokens": 1390000
+      },
+      "manifest": {
+        "setup": [],
+        "integration_gate": "",
+        "final_pr_title": ""
+      },
+      "account": "globallogic",
+      "euklides": {
+        "decisions": 4,
+        "asked": 2
+      }
+    },
+    {
+      "repo": "arkimedes",
+      "slug": "wait-final-pr",
+      "title": "Wait for the final PR",
+      "status": "aborted",
+      "reason": "",
+      "error": "",
+      "progress": {
+        "merged": 0,
+        "total": 2
+      },
+      "times": {
+        "delay_min": 0,
+        "left_min": 0,
+        "estimated_end": "2026-11-07T03:55:00+00:00",
+        "forecast_end": "2026-11-07T03:55:00+00:00",
+        "started": "2026-11-07T02:45:00+00:00"
+      },
+      "approved_at": "2026-11-07T02:45:00+00:00",
+      "created": "2026-11-06",
+      "approval": "ok",
+      "plan_sha": "9f3a1c7d2b8e4a65c0d1",
+      "plan_path": "arkimedes/wait-final-pr/plan.md",
+      "spec": "",
+      "plan_file": "---\ntitle: API cleanup\n---\n\n# API cleanup\n\n## Goal\n\nShort goal for API cleanup.\n\n## Tasks\n\n- routes: do the work\n- tests: do the work\n\n## Run manifest\n\n- job: routes\n- job: tests\n",
+      "decisions": "- Kept the v1 route names.\n  Why: clients still call them.\n  Rejected: renaming now.\n",
+      "questions": [],
+      "answers": [],
+      "spec_file": "",
+      "events": [
+        "2026-11-07T03:05:00+00:00 job routes started",
+        "2026-11-07T03:55:00+00:00 plan done"
+      ],
+      "final_pr": null,
+      "jobs": [
+        {
+          "id": "routes",
+          "status": "pending",
+          "pr_title": "refactor: routes",
+          "budget": {
+            "minutes": 25,
+            "usd": 2
+          },
+          "plan_start": "2026-11-07T03:05:00+00:00",
+          "plan_end": "2026-11-07T03:30:00+00:00",
+          "started": "2026-11-07T03:05:00+00:00",
+          "finished": "2026-11-07T03:30:00+00:00",
+          "fc_start": null,
+          "fc_end": null,
+          "usd": 0.0,
+          "tier": "T0",
+          "tier_path": [
+            "T0"
+          ],
+          "attempts": 1,
+          "pr": {
+            "url": "https://github.com/example/socrates/pull/70"
+          },
+          "after": [],
+          "reason": "",
+          "question": "",
+          "tasks": [],
+          "done": [],
+          "includes": "",
+          "excludes": "",
+          "gate": "pytest -q",
+          "heavy": false,
+          "phase": null,
+          "area": [
+            "src/**"
+          ]
+        },
+        {
+          "id": "tests",
+          "status": "pending",
+          "pr_title": "test: route tests",
+          "budget": {
+            "minutes": 20,
+            "usd": 2
+          },
+          "plan_start": "2026-11-07T03:30:00+00:00",
+          "plan_end": "2026-11-07T03:50:00+00:00",
+          "started": "2026-11-07T03:30:00+00:00",
+          "finished": "2026-11-07T03:55:00+00:00",
+          "fc_start": null,
+          "fc_end": null,
+          "usd": 0.0,
+          "tier": "T0",
+          "tier_path": [
+            "T0"
+          ],
+          "attempts": 1,
+          "pr": {
+            "url": "https://github.com/example/socrates/pull/71"
+          },
+          "after": [
+            "routes"
+          ],
+          "reason": "",
+          "question": "",
+          "tasks": [],
+          "done": [],
+          "includes": "",
+          "excludes": "",
+          "gate": "pytest -q",
+          "heavy": false,
+          "phase": null,
+          "area": [
+            "src/**"
+          ]
+        }
+      ],
+      "cost": {
+        "usd": 0,
+        "budget_usd": 0.0,
+        "closed": true,
+        "wall_min": 0,
+        "working_min": 0,
+        "waiting_min": 0,
+        "estimated_min": 90,
+        "closed_at": "2026-10-30T09:30:00+00:00",
+        "tokens": 0
+      },
+      "manifest": {
+        "setup": [],
+        "integration_gate": "",
+        "final_pr_title": ""
+      },
+      "account": "personal",
+      "euklides": {
+        "decisions": 0,
+        "asked": 0
       }
     }
   ]

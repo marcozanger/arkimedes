@@ -5,8 +5,8 @@ import { readFileSync } from "node:fs";
 const html = readFileSync(process.argv[2], "utf8");
 const START = "// ---- logic: start ----", END = "// ---- logic: end ----";
 const code = html.split(START)[1].split(END)[0];
-const { decide, titleFor, readPlan, segments, etaText, spendText, flagOf, parseRoute, dur, draftHeader, docSections, jobCount, homeGroups } =
-  new Function(code + "; return {decide, titleFor, readPlan, segments, etaText, spendText, flagOf, parseRoute, dur, draftHeader, docSections, jobCount, homeGroups};")();
+const { decide, titleFor, readPlan, segments, etaText, spendText, flagOf, parseRoute, dur, draftHeader, docSections, jobCount, homeGroups, topTier, dashTime, dashRows, dashStats, dashDelta, dashKpis, dashSpendByDay, dashStatusCounts, dashSpendByRepo, dashActive, dashSet, dashFresh, dashIsFresh, dashChoices } =
+  new Function(code + "; return {decide, titleFor, readPlan, segments, etaText, spendText, flagOf, parseRoute, dur, draftHeader, docSections, jobCount, homeGroups, topTier, dashTime, dashRows, dashStats, dashDelta, dashKpis, dashSpendByDay, dashStatusCounts, dashSpendByRepo, dashActive, dashSet, dashFresh, dashIsFresh, dashChoices};")();
 
 const fresh = () => ({ lastAlert: null, loopDown: false, stale: false, done: [], unread: [] });
 const ok = { stale: false, error: "" };
@@ -236,6 +236,99 @@ const snap = (alerts = [], over = {}) => ({ version: 1, loop: { alive: true }, a
   assert.deepEqual(sections[0].lines, ["goal text", "```", "## not a section", "```", "### sub"]);
   assert.equal(jobCount("## Run manifest\n```yaml\njobs:\n  - id: one\n    tasks: [T1]\n  - id: two\n```\n"), 2);
   assert.equal(jobCount("no manifest"), 0);
+}
+
+// 15. the dashboard: filters, the previous period and the numbers
+{
+  const NOW = Date.parse("2026-11-20T12:00:00Z"), D = 864e5, ago = d => new Date(NOW - d * D).toISOString();
+  const mk = (slug, over = {}) => ({ repo: "arkimedes", slug, title: slug, status: "done", error: null, account: "personal",
+    progress: { merged: 2, total: 2 }, approved_at: ago(40), times: { started: ago(40) }, jobs: [{ tier: "T1", tier_path: ["T1"] }],
+    euklides: { decisions: 0, asked: 0 }, cost: { usd: 4, closed: true, closed_at: ago(2), wall_min: 100, tokens: 1000 }, ...over });
+  const cost = (d, usd, extra = {}) => ({ usd, closed: true, closed_at: ago(d), wall_min: 60, tokens: 500, ...extra });
+  const plans = [
+    mk("a", { cost: cost(1, 10) }),
+    mk("b", { repo: "humanharness", account: "globallogic", status: "blocked", progress: { merged: 1, total: 4 }, cost: cost(3, 6, { wall_min: 200 }),
+      jobs: [{ tier: "T1", tier_path: ["T1", "T2"] }], euklides: { decisions: 2, asked: 1 } }),
+    mk("c", { status: "running", cost: { usd: 2, closed: false, closed_at: null }, times: { started: ago(0.5) }, progress: { merged: 0, total: 3 } }),
+    mk("old", { cost: cost(10, 5) }),                      // previous period of 7 days, inside the 14
+    mk("ancient", { cost: cost(25, 50) }),
+    mk("broken", { error: "cannot read", cost: cost(1, 99) }),
+    mk("undated", { approved_at: null, created: null, times: null, cost: { usd: 1, closed: false } }),
+  ];
+  const f7 = { ...dashFresh(), period: 7 };
+  assert.equal(topTier(plans[1]), "T2");
+  assert.equal(topTier({ jobs: [{ tier: "sonnet" }, { tier: "haiku" }] }), "T1");
+  assert.equal(topTier({ jobs: [] }), "");
+  assert.equal(dashTime(plans[2]), Date.parse(ago(0.5)));
+  assert.equal(dashTime(plans[6]), null);
+  let r = dashRows(plans, f7, NOW);
+  assert.deepEqual(r.rows.map(p => p.slug), ["c", "a", "b"]);          // newest first; broken and undated are out
+  assert.deepEqual(r.prev.map(p => p.slug), ["old"]);
+  assert.deepEqual(dashRows(plans, { ...f7, period: 30 }, NOW).rows.map(p => p.slug), ["c", "a", "b", "old", "ancient"]);
+  assert.deepEqual(dashRows(plans, { ...f7, repos: ["humanharness"] }, NOW).rows.map(p => p.slug), ["b"]);
+  assert.deepEqual(dashRows(plans, { ...f7, status: ["running", "blocked"] }, NOW).rows.map(p => p.slug), ["c", "b"]);
+  assert.deepEqual(dashRows(plans, { ...f7, account: "globallogic" }, NOW).rows.map(p => p.slug), ["b"]);
+  assert.deepEqual(dashRows(plans, { ...f7, tier: "T2" }, NOW).rows.map(p => p.slug), ["b"]);
+  assert.deepEqual(dashRows(plans, { ...f7, euk: "asked" }, NOW).rows.map(p => p.slug), ["b"]);
+  assert.deepEqual(dashRows(plans, { ...f7, euk: "none" }, NOW).rows.map(p => p.slug), ["c", "a"]);
+  assert.deepEqual(dashRows(plans, { ...f7, q: " C " }, NOW).rows.map(p => p.slug), ["c"]);
+  assert.deepEqual(dashRows(plans, { ...f7, q: "humanharness/B" }, NOW).rows.map(p => p.slug), ["b"]);   // repo/slug, any case
+
+  const s = dashStats(r.rows);
+  assert.equal(s.plans, 3);
+  assert.equal(s.jobs, 9);
+  assert.equal(s.merged, 3);
+  assert.equal(Math.round(s.mergedPct), 33);
+  assert.equal(s.usd, 18);
+  assert.equal(s.medianMin, 60);                 // only done plans with a wall time: a; b is blocked, c still runs
+  assert.equal(s.tokens, 1000);                  // c has no tokens until it closes
+  assert.equal(s.euk, 2);
+  assert.equal(dashStats([]).mergedPct, null);
+  assert.equal(dashStats([]).medianMin, null);
+
+  assert.deepEqual(dashDelta(18, 5, false, 7), { cls: "down", text: "▲ 260% vs previous 7 days" });
+  assert.deepEqual(dashDelta(3, 6, false, 7), { cls: "up", text: "▼ 50% vs previous 7 days" });
+  assert.deepEqual(dashDelta(3, 6, true, 7).cls, "down");
+  assert.deepEqual(dashDelta(3, 6, null, 7).cls, "flat");
+  assert.equal(dashDelta(5, 5, true, 7).text, "same as the previous 7 days");
+  assert.equal(dashDelta(5, 0, true, 7).text, "no previous period");
+  assert.equal(dashDelta(null, 4, true, 7).text, "no previous period");
+  const k = dashKpis(plans, f7, NOW);
+  assert.deepEqual(k.map(x => x.label), ["Plans", "Jobs merged", "Spend", "Median plan time", "Tokens", "Euklides decisions"]);
+  assert.equal(k[0].value, "3");
+  assert.equal(k[0].text, "▲ 200% vs previous 7 days");
+  assert.equal(k[1].value, "33%");
+  assert.equal(k[2].value, "$18.00");
+  assert.equal(k[3].value, "1h");
+  assert.equal(k[4].value, "1k");
+
+  const days = dashSpendByDay(r.rows, 7, NOW);
+  assert.equal(days.length, 7);
+  assert.equal(days[6].usd, 2);                 // c started 12h ago: today
+  assert.equal(days[5].usd, 10);                // a, 1 day ago
+  assert.equal(days[3].usd, 6);                 // b, 3 days ago
+  assert.equal(days.reduce((a, d) => a + d.usd, 0), s.usd);
+  assert.deepEqual(dashStatusCounts(r.rows), { done: 1, running: 1, waiting: 0, held: 0, blocked: 1, aborted: 0 });
+  assert.deepEqual(dashSpendByRepo(r.rows), [["arkimedes", 12], ["humanharness", 6]]);
+  assert.deepEqual(dashChoices(plans), { repos: ["arkimedes", "humanharness"], accounts: ["globallogic", "personal"] });
+
+  // the filter state
+  let f = dashFresh();
+  assert.ok(dashIsFresh(f));
+  assert.deepEqual(dashActive(f), []);
+  f = dashSet({ ...f, shown: 24 }, "repos", "arkimedes");
+  assert.equal(f.shown, 8);                                           // a new filter starts on the first page
+  f = dashSet(dashSet(f, "status", "done"), "period", "7");
+  assert.deepEqual([f.repos, f.status, f.period], [["arkimedes"], ["done"], 7]);
+  f = dashSet(dashSet(f, "tier", "T2"), "euk", "asked");
+  f = dashSet(dashSet(f, "account", "personal"), "q", " x ");
+  assert.deepEqual(dashActive(f), ["arkimedes", "done", "account personal", "top tier T2", "Euklides asked", "“x”"]);
+  assert.ok(!dashIsFresh(f));
+  assert.equal(dashSet(f, "period", "99").period, 7);
+  assert.deepEqual(dashSet(f, "status", "done").status, []);          // a second click turns it off
+  assert.equal(dashSet(dashFresh(), "more").shown, 16);
+  assert.deepEqual(dashSet(f, "reset"), dashFresh());
+  assert.ok(!dashIsFresh({ ...dashFresh(), period: 14 }));
 }
 
 console.log("ui logic ok");
