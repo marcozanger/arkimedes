@@ -13,6 +13,7 @@ import os
 import stat
 import sys
 import time
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 from . import forge as forge_mod, gitops, paths, run
@@ -133,7 +134,7 @@ def check(st: dict, job: str, forge, repo) -> str | None:
     changed = gitops.changed_files(repo, f"origin/{base}", head)
     if not changed:
         return f"the job changes nothing against {base}"
-    outside = [f for f in changed if not match_any(f, mjobs[job]["area"])]
+    outside = [f for f in changed if not match_any(f, run.area(st, job, mjobs[job]))]
     if outside:
         return "files outside the job's area: " + ", ".join(outside[:5])
     g = read_record(d, job, "gate")
@@ -218,15 +219,26 @@ def merge(st: dict, job: str, forge, repo) -> None:
     reason = _role_reason() or state_reason(st)
     if reason:
         raise MergeRefused(reason)
-    d = paths.run_dir(st["repo"], st["slug"])
-    try:
-        d.mkdir(parents=True, exist_ok=True)
-        lock = _open_lock(d / "merge.lock")
-    except OSError as e:
-        raise MergeRefused(f"cannot take the merge lock: {e}") from e
-    with lock:
-        _take_lock(lock)
+    with ExitStack() as held:
+        try:
+            held.enter_context(run_lock(paths.run_dir(st["repo"], st["slug"])))
+        except OSError as e:
+            raise MergeRefused(f"cannot take the merge lock: {e}") from e
         _merge_locked(st, job, forge, repo)
+
+
+@contextmanager
+def run_lock(run_dir):
+    """The run's merge lock: nothing else moves ark/<slug> while it is held. Raises OSError when it cannot
+    be opened, ForgeError when another holder keeps it past LOCK_WAIT."""
+    d = Path(run_dir)
+    d.mkdir(parents=True, exist_ok=True)
+    lock = _open_lock(d / "merge.lock")
+    try:
+        _take_lock(lock)
+        yield
+    finally:
+        lock.close()
 
 
 def main(argv=None) -> int:

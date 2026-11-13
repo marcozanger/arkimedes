@@ -88,6 +88,8 @@ def _ps_row(st: dict, job: str, j: dict) -> list[str]:
         last = j["question"]
     if j["status"] == "waiting_dep":
         last = f"waiting on {j['waiting_on']}"
+    if j["status"] == "waiting_fix":
+        last = f"waiting for base fix {j.get('fix', '?')}"
     last = " ".join(usage.clean(last).split())[:100]
     return [f"{st['repo']}/{st['slug']}", job, j["status"], j.get("tier", "?"), elapsed, tokens, f"${j.get('usd', 0):.2f}", last]
 
