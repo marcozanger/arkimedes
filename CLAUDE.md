@@ -12,7 +12,7 @@ Talk to Marco in Spanish. Write every file in English.
 
 Planning for the runner is the `/ark-plan` skill, from any session; its rules live in
 `skills/ark-plan/SKILL.md`. Never write `approvals/`, `runs/`, `history/` or `repos/` from a
-session (a hook enforces `approvals/`), and never run `ark approve` on your own initiative.
+session (a hook enforces `approvals/`), and only Marco approves plans, from a terminal or with a click in `ark ui`; a session never approves on its own.
 
 ## Developing Arkimedes
 
