@@ -23,6 +23,7 @@
   color-scheme: dark;
 } }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 var(--sans); }
 button, input, textarea, select { font: inherit; color: inherit; }
 button { cursor: pointer; }
@@ -171,6 +172,26 @@ h1, h2, h3 { margin: 0; }
 .md li.dcard dd { margin: 0; }
 .md .mmd-out { display: none; }
 
+/* history and Euklides */
+.filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.filters select, .filters input { border: 1px solid var(--line); background: var(--raised); border-radius: 6px; padding: 5px 8px; min-width: 0; }
+.filters input { flex: 1 1 180px; }
+.hrow { display: grid; grid-template-columns: 110px minmax(0, 2fr) 80px 50px minmax(0, 1.2fr) minmax(0, 1.2fr); gap: 6px 14px; align-items: center; padding: 9px 14px; border-top: 1px solid var(--line); color: var(--fg); text-decoration: none; font-size: 13px; font-variant-numeric: tabular-nums; min-width: 0; }
+.hrow:first-child { border-top: 0; }
+a.hrow:hover { background: var(--wait-soft); }
+.hrow > span { min-width: 0; overflow-wrap: anywhere; }
+.hrow.head { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); background: var(--bg); }
+.kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px 16px; }
+.kv div { display: grid; gap: 1px; min-width: 0; overflow-wrap: anywhere; }
+.kv strong { font-weight: 600; }
+.decision { display: grid; gap: 4px; padding: 10px 0; border-top: 1px solid var(--line); min-width: 0; overflow-wrap: anywhere; }
+.decision:first-of-type { border-top: 0; }
+.decision .top { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; }
+.toggles { display: grid; gap: 6px; }
+.toggles label { display: flex; gap: 8px; align-items: center; }
+.copyline { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.copyline code { font: 13px var(--mono); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; }
+
 /* floating commands */
 .fab { position: fixed; right: 18px; bottom: 18px; display: grid; justify-items: end; gap: 8px; z-index: 5; max-width: calc(100vw - 36px); }
 .fab-buttons { display: flex; gap: 8px; }
@@ -189,13 +210,16 @@ h1, h2, h3 { margin: 0; }
   .docidx .label { width: 100%; }
 }
 @media (max-width: 720px) {
-  .app { grid-template-columns: minmax(0, 1fr); }
+  .app { grid-template-columns: minmax(0, 1fr); align-content: start; }
   .menu { position: static; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center; border-right: 0; border-bottom: 1px solid var(--line); padding: 8px 10px; }
   .brand { padding: 0 8px 0 2px; }
   .foot { margin: 0; border: 0; padding: 0 2px; width: 100%; display: flex; flex-wrap: wrap; gap: 2px 12px; }
   .main { padding: 14px 12px 96px; }
   .line { grid-template-columns: minmax(0, 1fr); gap: 5px; }
   .numbers, .facts { grid-template-columns: minmax(0, 1fr); }
+  .hrow { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .hrow .hplan { grid-column: 1 / -1; order: -1; font-weight: 550; }
+  .hrow.head { display: none; }
   .row, .axis { grid-template-columns: 92px minmax(0, 1fr) 62px; gap: 6px; }
   .docbody { padding: 12px; }
   .fab { right: 12px; bottom: 12px; max-width: calc(100vw - 24px); }
@@ -228,7 +252,8 @@ import { STRINGS } from "/vendor/spec-review/strings.mjs";
 
 const L = STRINGS.en;
 const S = { data: null, meta: { stale: false, error: "" }, drafts: null, history: null, euk: null,
-  route: { screen: "home" }, job: null, answers: {} };
+  route: { screen: "home" }, job: null, answers: {}, filter: { repo: "", status: "", text: "" }, copied: "" };
+const NOTE_KINDS = [["alert", "Alerts from a run"], ["done", "A plan finished"], ["loop", "ark-loop stopped or the data went stale"]];
 const LIVE = ["waiting", "running", "held"];
 const COMMANDS = {
   euklides: { title: "Ask Euklides", help: "Open a session in the Arkimedes folder and ask.", text: "cd ~/.claude/arkimedes && claude" },
@@ -463,7 +488,11 @@ function planScreen() {
   const r = S.route, p = currentPlan();
   const back = '<a class="back" href="#/">← Back</a>';
   if (!S.data) return back + '<p class="muted">Waiting for ark…</p>';
-  if (!p) return back + `<div class="empty">No approved plan ${esc(r.repo)}/${esc(r.slug)} in the runner.</div>`;
+  if (!p) {
+    const row = (S.history || []).find(h => h.repo === r.repo && h.slug === r.slug);
+    if (row) return closedPlan(row);
+    return back + `<div class="empty">${S.history === null ? "Loading…" : `No plan ${esc(r.repo)}/${esc(r.slug)} in the runner or its history.`}</div>`;
+  }
   const head = `${back}<div class="phead"><div class="top"><h1>${esc(p.title || p.slug)}</h1><span class="pill ${pillKind(p.status)}">${esc(p.status)}</span>${flagPill(p)}</div>
     <div class="mono small muted">${esc(keyOf(p))}${p.final_pr && p.final_pr.url ? ` · ${link(p.final_pr.url, "final PR")}` : ""}${p.reason ? ` · ${esc(p.reason)}` : ""}</div></div>`;
   if (p.error) return head + `<div class="problem crit"><strong>This plan cannot be read</strong><div class="reason">${esc(p.error)}</div></div>`;
@@ -590,11 +619,65 @@ function draftScreen() {
   return `<a class="back" href="#/">← Back</a><div class="screen-head"><h1>${esc(r.repo)}/${esc(r.slug)}</h1></div>
     <div class="empty">Review this draft with <span class="mono">/spec-review</span> in a session; the page does not review drafts yet.</div>`;
 }
+function historyRows() {
+  const f = S.filter, q = f.text.trim().toLowerCase();
+  return (S.history || []).filter(r => (!f.repo || r.repo === f.repo) && (!f.status || r.status === f.status)
+    && (!q || `${r.repo}/${r.slug}`.toLowerCase().includes(q)));
+}
+function tookText(r) {
+  if (r.wall_minutes == null) return "–";
+  return r.budget_minutes ? `${dur(r.wall_minutes)} of ~${dur(r.budget_minutes)}` : dur(r.wall_minutes);
+}
 function historyScreen() {
-  return '<div class="screen-head"><h1>History</h1></div><div class="empty">No closed runs yet.</div>';
+  if (S.history === null) return '<div class="screen-head"><h1>History</h1></div><p class="muted">Loading history…</p>';
+  const all = S.history, rows = historyRows(), f = S.filter;
+  const opts = (values, on, all) => [`<option value="">${all}</option>`, ...values.map(v => `<option value="${esc(v)}"${v === on ? " selected" : ""}>${esc(v)}</option>`)].join("");
+  const repos = [...new Set(all.map(r => r.repo))].sort(), statuses = [...new Set(all.map(r => r.status).filter(Boolean))].sort();
+  const filters = `<div class="filters"><select id="f-repo" data-filter="repo" aria-label="Repo">${opts(repos, f.repo, "Every repo")}</select>
+    <select id="f-status" data-filter="status" aria-label="Status">${opts(statuses, f.status, "Every status")}</select>
+    <input id="f-text" data-filter="text" type="search" placeholder="Find a plan…" aria-label="Find a plan" value="${esc(f.text)}"></div>`;
+  const line = r => `<a class="hrow" href="#/plan/${esc(r.repo)}/${esc(r.slug)}/timeline"><span>${esc(when(ms(r.ended)))}</span><span class="hplan mono">${esc(r.repo)}/${esc(r.slug)}</span>
+    <span><span class="pill ${pillKind(r.status)}">${esc(r.status)}</span></span><span>${esc(r.jobs ?? "–")} jobs</span><span>${esc(tookText(r))}</span>
+    <span>${spend({ usd: Number(r.usd || 0), budget_usd: Number(r.budget_usd || 0) })}</span></a>`;
+  const head = '<div class="hrow head"><span>Closed</span><span class="hplan">Plan</span><span>Status</span><span>Jobs</span><span>Took vs estimate</span><span>Spend vs budget</span></div>';
+  return `<div class="screen-head"><h1>History</h1><span class="small muted">${rows.length} of ${all.length} closed runs</span></div>${filters}
+    ${rows.length ? `<div class="lines">${head}${rows.map(line).join("")}</div>` : `<div class="empty">${all.length ? "No run matches these filters." : "No closed runs yet."}</div>`}`;
+}
+function closedPlan(r) {
+  const head = `<a class="back" href="#/history">← Back</a><div class="phead"><div class="top"><h1>${esc(r.slug)}</h1><span class="pill ${pillKind(r.status)}">${esc(r.status)}</span></div>
+    <div class="mono small muted">${esc(r.repo)}/${esc(r.slug)} · closed ${esc(when(ms(r.ended)))}</div></div>`;
+  const box = (label, value) => `<div class="number"><span class="label">${label}</span><strong>${value}</strong></div>`;
+  return head + `<div class="numbers">${box("Jobs", esc(r.jobs ?? "–"))}${box("Took", esc(tookText(r)))}${box("Spend", spend({ usd: Number(r.usd || 0), budget_usd: Number(r.budget_usd || 0) }))}${box("Started", esc(when(ms(r.started))))}</div>
+    <div class="empty">This run is closed and read-only: only its summary is kept. <span class="mono">ark report ${esc(r.repo)}/${esc(r.slug)}</span> shows its full report.</div>`;
+}
+function notePrefs() {
+  return { alert: true, done: true, loop: true, ...(store.get("ark-ui-notify") || {}) };
 }
 function euklidesScreen() {
-  return '<div class="screen-head"><h1>Euklides</h1></div><div class="empty">Loading…</div>';
+  const e = S.euk;
+  if (e === null) return '<div class="screen-head"><h1>Euklides</h1></div><p class="muted">Loading Euklides…</p>';
+  const kv = (label, value) => `<div><span class="label">${label}</span><strong>${esc(value ?? "–")}</strong></div>`;
+  const ds = e.decisions || [];
+  const unreviewed = ds.filter(d => !d.review).length;
+  const verdict = d => (d.review ? `<span class="pill ${d.review.verdict === "ok" ? "merged" : "blocked"}">${esc(d.review.verdict)}</span>` : '<span class="pill">not reviewed</span>');
+  const decision = d => `<div class="decision"><div class="top"><span class="pill active">${esc(d.action)}</span>${verdict(d)}
+      <span class="mono small">${esc(d.repo)}/${esc(d.slug)} · ${esc(d.job)}</span><span class="small muted">${esc(when(ms(d.at)))}${d.usd != null ? ` · $${esc(Number(d.usd).toFixed(2))}` : ""}</span></div>
+    <span>${esc(d.note)}</span>${d.why ? `<span class="small muted">Why: ${esc(d.why)}</span>` : ""}${d.trigger ? `<span class="small muted">After: ${esc(d.trigger)}</span>` : ""}
+    ${d.review && d.review.comment ? `<span class="small">Your verdict: ${esc(d.review.comment)}</span>` : ""}</div>`;
+  const prefs = notePrefs();
+  const perm = typeof Notification === "undefined" ? "unsupported" : Notification.permission;
+  const permLine = perm === "granted" ? '<span class="small muted">This browser shows notifications.</span>'
+    : perm === "default" ? '<button class="btn" type="button" data-notify="1">Turn on browser notifications</button>'
+    : '<span class="small muted">Notifications are off in this browser.</span>';
+  const toggles = NOTE_KINDS.map(([k, label]) => `<label><input type="checkbox" data-pref="${k}"${prefs[k] ? " checked" : ""}> ${label}</label>`).join("");
+  const copy = e.review_command || "ark review";
+  return `<div class="screen-head"><h1>Euklides</h1><span class="small muted">decides for a job when it cannot go on, within limits</span></div>
+    <div class="card"><span class="label">Model and limits</span><div class="kv">${kv("Model", e.model)}${kv("Per call", e.usd_per_call != null ? `$${e.usd_per_call} · ${e.minutes_per_call ?? "–"} min` : null)}${kv("Tools", e.tools)}${kv("Decisions per job without you", e.max_per_job)}</div></div>
+    <div class="card"><span class="label">Review its decisions</span><span class="small muted">${unreviewed ? `${unreviewed} of the last ${ds.length} decisions are not reviewed.` : "Every recent decision is reviewed."} Run this in a terminal; your verdicts become lessons.</span>
+      <div class="copyline"><code>${esc(copy)}</code><button class="btn" type="button" data-copy="${esc(copy)}">${S.copied === copy ? "Copied" : "Copy"}</button></div></div>
+    <div class="card"><span class="label">Lessons</span>${e.lessons ? `<div class="md">${renderBlocks(String(e.lessons).split("\n"), L)}</div>` : '<p class="hint">No lessons yet: they come from your verdicts.</p>'}</div>
+    <div class="card"><span class="label">Recent decisions</span>${ds.length ? ds.map(decision).join("") : '<p class="hint">No decisions yet.</p>'}</div>
+    <div class="card"><span class="label">Browser notifications</span><div class="toggles">${toggles}</div>${permLine}</div>`;
 }
 
 const SCREENS = { home, plan: planScreen, draft: draftScreen, history: historyScreen, euklides: euklidesScreen };
@@ -607,7 +690,11 @@ function render(force) {
   document.body.dataset.screen = S.route.screen;
   const main = document.getElementById("main"), typing = document.activeElement;
   if (!force && typing && typing.tagName === "TEXTAREA" && main.contains(typing)) return;  // keep what Marco is writing
+  const keepId = typing && typing.id && main.contains(typing) ? typing.id : "";
+  const caret = keepId && typing.tagName === "INPUT" && typing.type === "search" ? typing.selectionStart : null;
   main.innerHTML = SCREENS[S.route.screen]();
+  const again = keepId && document.getElementById(keepId);
+  if (again) { again.focus(); if (caret != null) again.setSelectionRange(caret, caret); }
 }
 
 let M = Object.assign({ lastAlert: null, loopDown: false, stale: false, done: [], unread: [] }, store.get("ark-ui") || {});
@@ -627,7 +714,8 @@ function notify(data, meta) {
   const r = decide(M, data, meta);
   M = r.mem;
   keep();
-  if (typeof Notification !== "undefined" && Notification.permission === "granted") r.notes.forEach(show);
+  const prefs = notePrefs();
+  if (typeof Notification !== "undefined" && Notification.permission === "granted") r.notes.filter(n => prefs[n.kind] !== false).forEach(show);
   setTitle();
 }
 function readNow() {
@@ -658,8 +746,13 @@ window.addEventListener("hashchange", route);
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") { M = { ...M, unread: M.unread.filter(u => u.plan) }; keep(); setTitle(); }
 });
+document.addEventListener("change", e => {
+  const t = e.target;
+  if (t.dataset && t.dataset.pref) store.set("ark-ui-notify", { ...notePrefs(), [t.dataset.pref]: t.checked });
+});
 document.addEventListener("input", e => {
   const t = e.target;
+  if (t.dataset && t.dataset.filter) { S.filter = { ...S.filter, [t.dataset.filter]: t.value }; render(true); return; }
   if (!t.dataset || !t.dataset.q) return;
   const p = currentPlan();
   if (!p) return;
@@ -682,8 +775,17 @@ function copyCommand() {
   try { navigator.clipboard.writeText(c.text).then(() => done(true), () => done(false)); } catch (e) { done(false); }
 }
 document.addEventListener("click", e => {
-  const t = e.target.closest("[data-job],[data-answer],[data-goto],[data-cmd],#cmd-copy,#cmd-close");
+  const t = e.target.closest("[data-job],[data-answer],[data-goto],[data-cmd],[data-copy],[data-notify],#cmd-copy,#cmd-close");
   if (!t) return;
+  if (t.dataset.notify) {
+    try { Promise.resolve(Notification.requestPermission()).then(() => render(true), () => render(true)); } catch (err) { render(true); }
+    return;
+  }
+  if (t.dataset.copy) {
+    const text = t.dataset.copy;
+    try { navigator.clipboard.writeText(text).then(() => { S.copied = text; render(true); }, () => {}); } catch (err) { /* select it by hand */ }
+    return;
+  }
   if (t.id === "cmd-copy") { copyCommand(); return; }
   if (t.id === "cmd-close") { document.getElementById("cmd").hidden = true; return; }
   if (t.dataset.cmd) { openCommand(t.dataset.cmd); return; }
@@ -707,6 +809,14 @@ async function load() {
   if (s === "home") {
     const r = await api("/api/drafts");
     if (r.ok && Array.isArray(r.body)) { S.drafts = r.body; render(); }
+  }
+  if (s === "history" || (s === "plan" && !currentPlan())) {
+    const r = await api("/api/history");
+    if (r.ok && Array.isArray(r.body)) { S.history = r.body; render(); }
+  }
+  if (s === "euklides") {
+    const r = await api("/api/euklides");
+    if (r.ok && r.body && typeof r.body === "object") { S.euk = r.body; render(); }
   }
 }
 S.route = parseRoute(location.hash);
