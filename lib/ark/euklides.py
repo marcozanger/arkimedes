@@ -11,9 +11,17 @@ import json
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import claude, history, run
+from . import claude, history, paths, run
 
-MAX_PER_JOB = 4  # decisions without Marco per job and run; after that Euklides can only ask
+DEFAULTS = {
+    "model": "opus",
+    "usd_per_call": 3,
+    "minutes_per_call": 20,
+    "tools": ["Read", "Grep", "Glob"],
+    "denied_tools": ["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch", "WebSearch", "Task", "Agent"],
+    "budget_margin": 0.10,  # read, not used yet
+    "decisions_per_job": 4,  # decisions without Marco per job and run; after that Euklides can only ask
+}
 MAX_FIX_BASE = 3  # base fixes per run without Marco
 TRIGGERS = ("failure", "question", "blocked")
 KEYS = {"action", "note", "undo", "why", "proposal", "files"}
@@ -22,12 +30,51 @@ SITUATION_CHARS = 600
 LESSONS_CHARS = 8000  # a hand-edited file that grew too long is cut, never fails the call
 
 
+def _num(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _tools(v) -> bool:
+    return isinstance(v, list) and all(isinstance(t, str) and t.strip() for t in v)
+
+
+def settings() -> dict:
+    """DEFAULTS overridden by the `euklides` block of workspace.json. Raises ValueError naming euklides.<key>."""
+    block = paths.load_workspace().get("euklides")
+    if block is None:
+        block = {}
+    if not isinstance(block, dict):
+        raise ValueError("euklides must be an object")
+    for k in block:
+        if k not in DEFAULTS:
+            raise ValueError(f"euklides.{k} is not a setting (known: {', '.join(DEFAULTS)})")
+    out = {**{k: (list(v) if isinstance(v, list) else v) for k, v in DEFAULTS.items()}, **block}
+    m = out["model"]
+    if not (isinstance(m, str) and (m in ("haiku", "sonnet", "opus") or m.startswith("claude-"))):
+        raise ValueError("euklides.model must be haiku, sonnet, opus or a string starting with claude-")
+    for k in ("usd_per_call", "minutes_per_call"):
+        if not _num(out[k]) or out[k] <= 0:
+            raise ValueError(f"euklides.{k} must be a positive number")
+    for k in ("tools", "denied_tools"):
+        if not _tools(out[k]):
+            raise ValueError(f"euklides.{k} must be a list of non-empty strings")
+    both = sorted(set(out["tools"]) & set(out["denied_tools"]))
+    if both:
+        raise ValueError(f"euklides.tools and euklides.denied_tools both list {', '.join(both)}")
+    if not _num(out["budget_margin"]) or not 0 <= out["budget_margin"] <= 1:
+        raise ValueError("euklides.budget_margin must be a number between 0 and 1")
+    d = out["decisions_per_job"]
+    if not isinstance(d, int) or isinstance(d, bool) or d < 0:
+        raise ValueError("euklides.decisions_per_job must be an integer of 0 or more")
+    return out
+
+
 def allowed(trigger: str, j: dict, budget_usd: float, kind: str | None = None, base_red: bool = False,
             fixes_used: int = 0) -> list[str]:
     """The actions open now, `ask` always last. Spending past the budget, changing the plan and
     blocking are never actions: they can only be proposed to Marco. `widen` opens only after an area
     block, `fix_base` only after an integration gate red on the base too, at most MAX_FIX_BASE a run."""
-    if j.get("euklides_count", 0) >= MAX_PER_JOB:
+    if j.get("euklides_count", 0) >= settings()["decisions_per_job"]:
         return ["ask"]
     under = j["usd"] < budget_usd
     out = []

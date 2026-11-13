@@ -3240,9 +3240,30 @@ def test_start_euklides_runs_read_only_in_the_worktree(tmp_path, monkeypatch):
     j = c.st["jobs"]["shell"]
     assert j["status"] == "euklides" and j["euklides"]["allowed"] == ["retry", "escalate", "ask"]
     assert started["name"] == "shell.euklides" and started["cwd"] == tmp_path / "shell"
-    assert started["minutes"] == claude.EUKLIDES_MINUTES and started["env"]["ARK_ROLE"] == "euklides"
+    assert started["minutes"] == 20 and started["env"]["ARK_ROLE"] == "euklides"
     assert started["cmd"][started["cmd"].index("--allowedTools") + 1] == "Read,Grep,Glob"
     assert "Jobs that build on this one: ui" in started["cmd"][started["cmd"].index("-p") + 1]
+
+
+def test_start_euklides_takes_its_settings_from_the_workspace(tmp_path, monkeypatch, ark_home):
+    set_workspace(ark_home, euklides={"model": "sonnet", "usd_per_call": 2, "minutes_per_call": 7, "tools": ["Read"]})
+    c = bare(tmp_path, status="needs_euklides", euklides={"trigger": "failure", "situation": "red", "kind": None})
+    c.plan = SimpleNamespace(manifest={"jobs": [c.mjobs["shell"]]}, sections={"Goal": "g"})
+    c.read_report = lambda j: "report"
+    started = {}
+    monkeypatch.setattr(proc, "start", lambda d, name, cmd, **kw: started.update(cmd=cmd, **kw))
+    monkeypatch.setattr(loop.brief, "task_texts", lambda plan: {}, raising=False)
+    loop.start_euklides(c, "shell")
+    cmd = started["cmd"]
+    assert cmd[cmd.index("--model") + 1] == "sonnet" and cmd[cmd.index("--max-budget-usd") + 1] == "2"
+    assert cmd[cmd.index("--allowedTools") + 1] == "Read" and started["minutes"] == 7
+
+
+def test_a_bad_euklides_setting_stops_the_cycle_before_any_process(ark_home, monkeypatch):
+    set_workspace(ark_home, euklides={"model": 5})
+    monkeypatch.setattr(proc, "start", lambda *a, **k: pytest.fail("a process started"))
+    with pytest.raises(ValueError, match="euklides.model"):
+        loop.cycle(SimpleNamespace())
 
 
 def test_start_euklides_without_a_worktree_runs_in_the_ticks_folder(tmp_path, monkeypatch):
