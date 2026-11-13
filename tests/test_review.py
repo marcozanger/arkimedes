@@ -114,3 +114,14 @@ def test_the_distill_gets_at_most_200_decisions_newest_first(ark_home):
     from ark import distill
     p = distill.prompt()
     assert p.count('"id": ') == 200 and p.index(ids[-1]) < p.index(ids[-2])
+
+
+def test_a_run_level_decision_is_listed_with_the_runs_outcome(ark_home):
+    st = {"repo": "arkimedes", "slug": "euk"}
+    raise_ = {"action": "raise", "note": "the run is nearly done", "undo": None, "why": "", "proposal": None,
+              "usd": 0.5}
+    euklides.record(st, "_run", {"trigger": "cap_run", "situation": "spent $5.00 of $4.00"}, raise_,
+                    valid=True, usd=0.1)
+    _, out, _ = go(["q"], "--no-distill")
+    assert "job: _run" in out and "decided: raise — the run is nearly done" in out and "raised: $0.50" in out
+    assert "outcome: run gone" in out

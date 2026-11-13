@@ -10,13 +10,13 @@ def job(**over):
 
 
 @pytest.mark.parametrize("trigger, j, budget, expected", [
-    ("failure", job(), 2, ["retry", "escalate", "ask"]),
-    ("failure", job(tier="T2"), 2, ["retry", "ask"]),
-    ("failure", job(usd=2.0), 2, ["ask"]),
-    ("question", job(), 2, ["answer", "ask"]),
-    ("question", job(usd=9.0), 2, ["answer", "ask"]),
-    ("blocked", job(), 2, ["unblock", "ask"]),
-    ("blocked", job(usd=2.5), 2, ["ask"]),
+    ("failure", job(), 2, ["retry", "escalate", "fixed", "ask"]),
+    ("failure", job(tier="T2"), 2, ["retry", "fixed", "ask"]),
+    ("failure", job(usd=2.0), 2, ["fixed", "ask"]),
+    ("question", job(), 2, ["answer", "fixed", "ask"]),
+    ("question", job(usd=9.0), 2, ["answer", "fixed", "ask"]),
+    ("blocked", job(), 2, ["unblock", "fixed", "ask"]),
+    ("blocked", job(usd=2.5), 2, ["fixed", "ask"]),
     ("failure", job(euklides_count=4), 2, ["ask"]),
     ("question", job(euklides_count=4), 2, ["ask"]),
 ])
@@ -24,8 +24,21 @@ def test_allowed_actions(trigger, j, budget, expected):
     assert euklides.allowed(trigger, j, budget) == expected
 
 
+def test_decisions_per_job_comes_from_the_settings(ark_home):
+    (ark_home / "workspace.json").write_text(json.dumps({"roots": [], "euklides": {"decisions_per_job": 1}}))
+    assert euklides.allowed("failure", job(euklides_count=1), 2) == ["ask"]
+    assert euklides.allowed("failure", job(euklides_count=0), 2) == ["retry", "escalate", "fixed", "ask"]
+
+
 def test_a_job_without_a_count_has_made_no_decision():
-    assert euklides.allowed("failure", {"tier": "T0", "usd": 0.0}, 1) == ["retry", "escalate", "ask"]
+    assert euklides.allowed("failure", {"tier": "T0", "usd": 0.0}, 1) == ["retry", "escalate", "fixed", "ask"]
+
+
+def test_fixed_is_read_with_its_note():
+    assert euklides.parse({"action": "fixed", "note": "moved the file into the area"}, ["fixed", "ask"]) == {
+        "action": "fixed", "note": "moved the file into the area", "undo": None, "why": "", "proposal": None}
+    assert euklides.parse({"action": "fixed"}, ["fixed", "ask"]) is None
+    assert euklides.parse({"action": "fixed", "note": "x"}, ["ask"]) is None
 
 
 def d(**fields):
@@ -124,3 +137,56 @@ def test_a_journal_line_that_is_not_json_is_skipped(ark_home):
     with open(history.history_dir() / "euklides" / "decisions.jsonl", "a") as f:
         f.write("not json\n")
     assert len(euklides.decisions()) == 1
+
+
+# ---- raise: Euklides may add budget, up to a share of what was planned -------------------------
+
+def test_a_raise_is_read_with_its_usd():
+    got = euklides.parse({"action": "raise", "usd": 0.4, "note": "one more attempt will do"}, ["raise", "ask"])
+    assert got == {"action": "raise", "note": "one more attempt will do", "undo": None, "why": "",
+                   "proposal": None, "usd": 0.4}
+
+
+@pytest.mark.parametrize("raw", [
+    {"action": "raise", "note": "x"},                              # no usd
+    {"action": "raise", "note": "x", "usd": 0},
+    {"action": "raise", "note": "x", "usd": -1},
+    {"action": "raise", "note": "x", "usd": True},
+    {"action": "raise", "note": "x", "usd": "0.4"},
+    {"action": "raise", "note": "x", "usd": float("inf")},
+    {"action": "raise", "note": "x", "usd": float("nan")},
+    {"action": "retry", "note": "x", "usd": 0.4},                  # usd only with a raise
+])
+def test_a_raise_without_a_positive_usd_is_not_usable(raw):
+    assert euklides.parse(raw, ["raise", "retry", "ask"]) is None
+
+
+def test_a_raise_is_not_usable_when_it_is_not_open():
+    assert euklides.parse({"action": "raise", "note": "x", "usd": 0.1}, ["retry", "ask"]) is None
+
+
+@pytest.mark.parametrize("j, margin, expected", [
+    (job(usd=1.0), 0.5, ["raise", "fixed", "ask"]),                 # at its budget, margin left
+    (job(usd=1.2), 0.5, ["raise", "fixed", "ask"]),                 # over it
+    (job(usd=0.5), 0.5, ["retry", "escalate", "fixed", "ask"]),     # under it: no raise
+    (job(usd=1.2), 0, ["fixed", "ask"]),                            # no margin at all
+    (job(usd=1.6, usd_raised=0.5), 0.5, ["fixed", "ask"]),          # the margin is spent
+    (job(usd=1.2, usd_raised=0.25), 0.5, ["retry", "escalate", "fixed", "ask"]),  # under budget + raised
+    (job(usd=1.3, usd_raised=0.25), 0.5, ["raise", "fixed", "ask"]),  # over again, $0.25 left
+])
+def test_raise_opens_at_or_over_the_budget_while_margin_is_left(j, margin, expected):
+    assert euklides.allowed("failure", j, 1, margin) == expected
+
+
+def test_marcos_raise_counts_for_the_budget_but_not_against_the_margin():
+    j = job(usd=1.5, usd_raised=0.6, marco_raised=0.6)
+    assert euklides.margin_left(j, 1, 0.5) == 0.5
+    assert euklides.allowed("blocked", j, 1, 0.5) == ["unblock", "fixed", "ask"]
+    assert euklides.allowed("blocked", job(usd=1.6, usd_raised=0.6), 1, 0.5) == ["fixed", "ask"]
+
+
+def test_the_prompt_states_the_budget_what_was_raised_and_the_margin_left():
+    from test_euklides_brief import euk
+    p = euk(allowed=["raise", "ask"], usd_raised=0.25, margin_left=0.25)
+    assert "planned $2" in p and "raised $0.25" in p and "margin left $0.25" in p
+    assert "`raise`" in p and "a total" in p

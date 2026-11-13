@@ -16,11 +16,6 @@ STALL_MINUTES = 20  # no new line in the log for this long
 HARD_FACTOR = 2     # the tier minutes call the intervene tick; the process dies at this many times them
 NEXT_TIER = {"T0": "T1", "T1": "T2"}
 TICK_MODEL = {"intervene": "opus", "decisions": "sonnet", "distill": "sonnet"}
-EUKLIDES_MODEL = "opus"
-EUKLIDES_USD = 3
-EUKLIDES_MINUTES = 20
-EUKLIDES_TOOLS = "Read,Grep,Glob"
-EUKLIDES_DENIED = "Bash,Write,Edit,MultiEdit,NotebookEdit,WebFetch,WebSearch,Task,Agent"
 ROLE_FILES = {"worker": "ark-dev.md", "reviewer": "ark-reviewer.md"}
 NO_TOOLS = "Bash,Write,Edit,MultiEdit,NotebookEdit"
 DEAD_PUSH_URL = "/dev/null/no-push-from-workers"
@@ -30,7 +25,8 @@ def claude_bin() -> str:
     return os.environ.get("ARK_CLAUDE") or shutil.which("claude") or "claude"
 
 
-def agent_cmd(role: str, model: str, prompt: str, *, session: str, resume: bool = False, usd: float) -> list[str]:
+def agent_cmd(role: str, model: str, prompt: str, *, session: str, resume: bool = False, usd: float,
+              tools: list[str] | None = None, denied_tools: list[str] | None = None) -> list[str]:
     code = paths.code_dir()
     cmd = [claude_bin(), "-p", prompt, "--model", model,
            "--settings", str(code / "worker-settings.json"),
@@ -41,7 +37,7 @@ def agent_cmd(role: str, model: str, prompt: str, *, session: str, resume: bool 
                 "--output-format", "stream-json", "--verbose"]
     elif role == "euklides":  # reads the worktree and the worker log; never writes, runs or browses
         cmd += ["--append-system-prompt-file", str(code / "agents" / "euklides.md"),
-                "--output-format", "json", "--allowedTools", EUKLIDES_TOOLS, "--disallowedTools", EUKLIDES_DENIED]
+                "--output-format", "json", "--allowedTools", ",".join(tools or []), "--disallowedTools", ",".join(denied_tools or [])]
     else:
         cmd += ["--output-format", "json", "--disallowedTools", NO_TOOLS]
     cmd += ["--resume", session] if resume else ["--session-id", session]

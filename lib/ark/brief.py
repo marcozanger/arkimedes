@@ -177,8 +177,33 @@ EUKLIDES_ACTIONS = {
              "none in another job's area) and asks Marco if it fails.",
     "fix_base": "`fix_base`: the integration branch itself is red; a small worker fixes it there in its own commit; "
                 "`note` says what is red and what to change. Same small-fix rule.",
+    "fixed": "`fixed`: you repaired the job's branch yourself (any git or test command in the worktree, even a "
+             "rewrite of the branch); `note` says what you did. Leave the tree clean, on the job's branch, with the "
+             "job's work committed. Never push, touch other branches, or open or merge PRs: the runner checks and "
+             "pushes, then runs the job's gate.",
+    "raise": "`raise`: add `usd` (a positive number) to this job's budget and let it go on; `note` says why the "
+             "job is worth it and what it does next. Your margin is a total across all your raises on this job, not "
+             "per decision; a raise past what is left of it becomes a question to Marco, the only way past it.",
     "ask": "`ask`: Marco decides; `note` is the question, `proposal` what you would do.",
 }
+BRANCH_COMMITS, BRANCH_FILES = 30, 50
+
+
+def _branch(commits, changed) -> str:
+    """The job's commits (newest first) and changed files against the base, cut to a readable size."""
+    def more(n: int) -> list[str]:
+        return [f"… and {n} more"] if n > 0 else []
+    if not commits and not changed:
+        return "(no commits)"
+    lines = ["Commits (newest first):"]
+    for c in list(commits)[:BRANCH_COMMITS]:
+        mark = " (merge)" if c["parents"] > 1 else " (revert)" if c["subject"].startswith("Revert ") else ""
+        lines.append(f"{c['sha'][:8]} {c['subject']}{mark}")
+    lines += more(len(commits) - BRANCH_COMMITS)
+    lines.append("Changed files (+added -removed lines):")
+    for path, added, removed in list(changed)[:BRANCH_FILES]:
+        lines.append(f"{path} (binary)" if added is None else f"{path} +{added} -{removed}")
+    return "\n".join(lines + more(len(changed) - BRANCH_FILES))
 TRIGGER_TEXT = {
     "failure": "A job attempt failed.",
     "question": "The worker stopped with a question.",
@@ -202,18 +227,23 @@ def _earlier(st: dict, job_id: str, earlier: list[dict]) -> str:
 
 def euklides_prompt(st: dict, job_id: str, j: dict, mj: dict, plan: Plan, *, trigger: str, situation: str,
                     allowed: list[str], report: str | None, dependents: list[str], worktree, log,
-                    lessons: str, earlier=(), base_check: str | None = None) -> str:
+                    lessons: str, earlier=(), base_check: str | None = None, base: str = "",
+                    commits=(), changed=(), usd_raised: float = 0, margin_left: float = 0) -> str:
     return "\n\n".join([
-        f"{TRIGGER_TEXT[trigger]} Decide how the job goes on. Read the worktree and the log if it helps.",
+        f"{TRIGGER_TEXT[trigger]} Decide how the job goes on. Read the worktree and the log if it helps; when "
+        "you can repair the branch yourself, do it and reply `fixed` if that is open.",
         f"Trigger: {trigger}",
         f"Run: {st['repo']}/{st['slug']} · job `{job_id}` ({mj['pr_title']})",
         f"Tier now: {j['tier']} · tiers so far: {' → '.join(j['tier_path'])} · attempts: {j['attempts']}",
-        f"Spent: ${j['usd']:g} of ${mj['budget']['usd']:g}",
+        f"Spent: ${j['usd']:g} of ${mj['budget']['usd'] + usd_raised:g} (planned ${mj['budget']['usd']:g}, "
+        f"raised ${usd_raised:g}; your margin left ${max(0, margin_left):g}, a total across your raises)",
         "Jobs that build on this one: " + (", ".join(dependents) or "none"),
-        f"Worktree (read-only for you): {worktree}",
+        f"Worktree (the job's branch, yours to repair; never push): {worktree}",
         f"Worker log: {log}",
         "## The job",
         *_job_block(mj, plan, _grants(st, job_id)),
+        f"## The branch against the run's base (origin/{base})",
+        _untrusted("Its commits and changed files", _branch(commits, changed)),
         _untrusted("The situation", situation or "(none)"),
         _untrusted("Earlier questions and decisions on this job", _earlier(st, job_id, list(earlier))),
         _untrusted("The run's last events", "\n".join(st.get("events", [])[-15:]) or "(none)"),
@@ -228,6 +258,43 @@ def euklides_prompt(st: dict, job_id: str, j: dict, mj: dict, plan: Plan, *, tri
         "End with one line of JSON and nothing after it:",
         '{"action": "' + allowed[0] + '", "note": "...", "undo": "job", "why": "...", "proposal": null}',
         *(['A `widen` also carries `"files": ["<path>", ...]`.'] if "widen" in allowed else []),
+        *(['A `raise` also carries `"usd": <positive number>`.'] if "raise" in allowed else []),
+    ]) + "\n"
+
+
+RUN_ACTIONS_TEXT = {
+    "raise": "`raise`: add `usd` (a positive number) to the run's total and let it go on; `note` says why the run is "
+             "worth it. Your margin is a total across all your raises on this run, not per decision; a raise past "
+             "what is left of it becomes Marco's budget question, the only way past it.",
+    "ask": "`ask`: Marco decides; `note` is what he should know, `proposal` what you would do (`raise <usd>` or "
+           "`stop`).",
+}
+
+
+def euklides_run_prompt(st: dict, *, spent: float, planned: float, usd_raised: float, euklides_raised: float,
+                        margin_left: float, allowed: list[str], lessons: str, earlier=()) -> str:
+    """Euklides' brief when a whole run is over its total budget: job `_run`, no worktree, raise or ask."""
+    jobs = "\n".join(f"- {k}: {j['status']}, spent ${j['usd']:.2f}" for k, j in st["jobs"].items()) or "(none)"
+    return "\n\n".join([
+        "This run is over its total budget. Running workers finish; nothing new starts until it is raised. "
+        "Decide whether the run is worth more money now, or whether Marco should decide. You have no worktree "
+        "in this call: read, never edit.",
+        "Trigger: cap_run",
+        f"Run: {st['repo']}/{st['slug']} · job `_run`",
+        f"Money: spent ${spent:.2f} · planned total ${planned:.2f} · Marco raised ${usd_raised:.2f} · "
+        f"you raised ${euklides_raised:.2f} · your margin left ${max(0, margin_left):.2f} (a total across your raises)",
+        _untrusted("The jobs", jobs),
+        _untrusted("Earlier decisions on this run's budget",
+                   "\n".join(f"- {d['id']}: {d['action']} — {d.get('note', '')}" for d in earlier) or "(none)"),
+        _untrusted("The run's last events", "\n".join(st.get("events", [])[-15:]) or "(none)"),
+        "## Lessons from Marco's reviews",
+        "Lessons: " + (("\n" + lessons) if lessons else "(none yet)"),
+        "## Decide",
+        "Actions open now: " + ", ".join(allowed),
+        _bullets(RUN_ACTIONS_TEXT[a] for a in allowed),
+        "End with one line of JSON and nothing after it:",
+        '{"action": "raise", "usd": 1.0, "note": "...", "why": "..."}',
+        'or {"action": "ask", "note": "...", "proposal": "raise <usd> | stop"}',
     ]) + "\n"
 
 

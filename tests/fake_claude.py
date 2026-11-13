@@ -7,7 +7,8 @@ worker    appends "attempt <n>" to <area[0] with ** -> <job>.txt> (or outside/<j
           the most workers alive at once.
 reviewer  FIX on the first review of a job in FAKE_FIX, CLEAN otherwise.
 euklides  FAKE_EUKLIDES is its raw answer; by default retry for a failure and ask (proposal ":stop")
-          otherwise. Each call leaves euklides.<n>.prompt and .cwd in FAKE_STATE.
+          otherwise. Each call leaves euklides.<n>.prompt, .cwd and .env (ARK_ROLE, GIT_CONFIG_*) in
+          FAKE_STATE. FAKE_EUKLIDES_RUN=<shell command> runs that command in its cwd before it answers.
 tick      the decisions file when asked for one, else `retry` (no intervene action: the runner picks one).
 
 FAKE_EARLY_OUTSIDE=job makes a first commit outside the area, under a last commit inside it.
@@ -157,6 +158,10 @@ elif ROLE == "euklides":
     n = bump("euklides")
     (STATE / f"euklides.{n}.prompt").write_text(PROMPT)
     (STATE / f"euklides.{n}.cwd").write_text(os.getcwd())
+    (STATE / f"euklides.{n}.env").write_text(json.dumps(
+        {k: v for k, v in os.environ.items() if k == "ARK_ROLE" or k.startswith("GIT_CONFIG_")}))
+    if os.environ.get("FAKE_EUKLIDES_RUN"):
+        subprocess.run(["sh", "-c", os.environ["FAKE_EUKLIDES_RUN"]], check=True)
     if os.environ.get("FAKE_EUKLIDES"):
         emit(os.environ["FAKE_EUKLIDES"], stream=False)  # raw JSON: it can hold any escape
     elif "Trigger: failure" in PROMPT and "`retry`" in PROMPT:
