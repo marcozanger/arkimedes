@@ -461,6 +461,9 @@ def on_integrate(c: Ctx, job: str, r: dict) -> None:
         j["status"] = "needs_merge"
         run.event(c.st, f"{job}: integration gate green on {out['base'][:8]}")
         return
+    if out.get("base_red") is True:  # not the job's doing: a second worker attempt would only fail the same way
+        return to_euklides(c, job, "blocked", f"integration gate red, and red on {c.base} without the job too: "
+                           f"{reason}\n\n{str(out.get('tail', ''))[-1500:]}", "integrate", base_red=True)
     j["integrate_fails"] += 1
     if j["integrate_fails"] >= 2:
         return to_euklides(c, job, "blocked", f"integration gate failed twice: {reason}\n\n"
@@ -921,7 +924,7 @@ def start_integrate(c: Ctx, job: str) -> None:
     env = claude.runner_env("integrate", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo))  # it runs tests a worker wrote
     # Above the check's own timeout, or a slow gate dies here with no result instead of red with its reason.
     proc.start(c.dir, f"{job}.integrate", cmd, cwd=paths.code_dir(), env=env,
-               minutes=integrate.GATE_TIMEOUT / 60 + 30, meta={"head": j["head"]})
+               minutes=2 * integrate.GATE_TIMEOUT / 60 + 30, meta={"head": j["head"]})
     j["status"] = "integrating"
 
 
@@ -962,7 +965,10 @@ def start_euklides(c: Ctx, job: str) -> None:
     wt = c.wt(job)
     prompt = brief.euklides_prompt(c.st, job, j, mj, c.plan, trigger=e["trigger"], situation=e["situation"],
                                    allowed=e["allowed"], report=c.read_report(job), dependents=_dependents(c, job),
-                                   worktree=wt, log=c.dir / f"{job}.worker.log", lessons=euklides.lessons())
+                                   worktree=wt, log=c.dir / f"{job}.worker.log", lessons=euklides.lessons(),
+                                   earlier=[d for d in euklides.decisions()
+                                            if str(d.get("id", "")).startswith(f"{c.st['repo']}/{c.st['slug']}/{job}/")][-10:],
+                                   base_check=("red on " + c.base + " without the job too") if e.get("base_red") else None)
     cmd = claude.agent_cmd("euklides", claude.EUKLIDES_MODEL, prompt, session=str(uuid.uuid4()), usd=claude.EUKLIDES_USD)
     proc.start(c.dir, f"{job}.euklides", cmd, cwd=wt if wt.is_dir() else ticks_dir(),
                env=claude.runner_env("euklides", repo_name=c.st["repo"]), minutes=claude.EUKLIDES_MINUTES)

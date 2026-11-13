@@ -131,11 +131,11 @@ def test_red_integration_gate_never_merges(feature):
     repo, _ = feature(manifest(integration_gate="exit 1"))
     drive(waits_for_marco)
     q = answer_open_question(":stop")
-    assert "integration gate failed twice" in q["text"]
+    assert "red on" in q["text"]
     drive(jobs_settled)
     st = state()
     assert st["jobs"]["shell"]["status"] == "blocked"
-    assert st["jobs"]["shell"]["attempts"] == 2                                 # sent back once
+    assert st["jobs"]["shell"]["attempts"] == 1                                 # red on the base too: no second attempt
     gitops.fetch(repo)
     assert gitops.changed_files(repo, st["base_sha"], f"origin/ark/{SLUG}") == [f"docs/decisions/{SLUG}.md"]  # nothing merged
 
@@ -510,7 +510,7 @@ def test_a_red_gate_full_of_non_ascii_still_reaches_the_loop_as_red(feature):
     feature(manifest(integration_gate=gate))
     drive(stopping(jobs_settled))
     j = state()["jobs"]["shell"]
-    assert j["status"] == "blocked" and j["integrate_fails"] == 2 and asked_marco("(exit 1)")
+    assert j["status"] == "blocked" and asked_marco("(exit 1)")  # red on the base too: Euklides at once
     assert "é" in merge.read_record(paths.run_dir("demo", SLUG), "shell", "integrate")["tail"]
 
 
