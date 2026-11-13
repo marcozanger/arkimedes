@@ -68,7 +68,7 @@ def test_a_control_center_replay_fixes_the_base_without_asking(feature, monkeypa
     repo, _ = feature(m)
     loop.cycle()
     git("checkout", "-q", f"ark/{SLUG}", cwd=repo)
-    (repo / "bad.txt").write_text("más\n")
+    (repo / "bad.txt").write_text("broken\n")
     git("add", "-A", cwd=repo)
     git("commit", "-q", "-m", "an earlier merge left a bad word", cwd=repo)
     git("push", "-q", "origin", f"ark/{SLUG}", cwd=repo)
