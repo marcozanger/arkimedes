@@ -16,6 +16,7 @@ from . import paths
 MAX_EVENTS = 200
 TERMINAL = {"merged", "blocked"}
 NOT_STARTED = {"pending", "needs_worker"}
+FINISHED = ("done", "blocked", "aborted")  # a plan status the loop never steps: blocked may be reopened by `ark retry`
 
 
 def area(st: dict, job: str, mj: dict) -> list[str]:
@@ -25,7 +26,13 @@ def area(st: dict, job: str, mj: dict) -> list[str]:
 
 def stamp_times(st: dict) -> None:
     """`started` the first pass a job is past NOT_STARTED, `finished` the pass it reached TERMINAL.
-    A job that leaves blocked loses `finished` and keeps `started`. The control center reads both."""
+    A job that leaves blocked loses `finished` and keeps `started`. The control center reads both.
+    A run that was already finished when it first met this code has no real times to stamp: it is marked and left
+    alone, since "now" would put every one of its jobs at the moment of the upgrade."""
+    if not st.get("times_kept"):
+        st["times_kept"] = True
+        if st.get("closing") == "done" or st.get("status") in FINISHED:
+            return
     t = now()
     for j in st["jobs"].values():
         if j["status"] not in NOT_STARTED and not j.get("started"):
@@ -47,7 +54,7 @@ def new_state(approval: dict) -> dict:
         "plan_sha": approval["sha256"], "approved_at": approval["approved_at"],
         "status": "waiting", "reason": "", "default_branch": None, "base_sha": None,
         "started": now(), "updated": now(), "closing": None, "final_pr": None,
-        "events": [], "alerts": [], "jobs": {},
+        "events": [], "alerts": [], "jobs": {}, "times_kept": True,
     }
 
 

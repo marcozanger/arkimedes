@@ -16,7 +16,7 @@ def post(repo: str, slug: str, qid: str, text: str) -> dict:
     if "ARK_ROLE" in os.environ:
         raise AnswerError("role", "this command does not run inside a runner process.")
     st = run.load(repo, slug)
-    if not st or st.get("status") in ("done", "blocked"):
+    if not st or st.get("status") in run.FINISHED:
         raise AnswerError("no-run", f"no live run {repo}/{slug}")
     q = questions.find(st, qid)
     if q is None:

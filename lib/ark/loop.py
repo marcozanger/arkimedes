@@ -140,7 +140,7 @@ def _started_runs(st: dict, others: list[dict]) -> list[tuple[str, str, str, lis
     cycle's list leaves out two kinds that go on once repaired: a run with no approval, and one whose state cannot be
     read (jobs None). Only a state that says it finished is taken for finished. A waiting run has written no job
     branch, and it passes try_start before it writes anything, so it is the one that stops."""
-    idle = ("waiting", "done", "blocked")
+    idle = ("waiting", *run.FINISHED)
     out = [(o["repo"], o["slug"], o["status"], list(o["jobs"])) for o in others if o is not st and o["status"] not in idle]
     seen = {(o["repo"], o["slug"]) for o in others} | {(st["repo"], st["slug"])}
     root = paths.runs_dir()
@@ -216,7 +216,7 @@ def try_start(st: dict, others: list[dict], forge) -> bool:
         settled = st.setdefault("settled_prs", [])
         for o in others:
             pr = o.get("final_pr")
-            if o is st or o["repo"] != st["repo"] or o["status"] not in ("done", "blocked") or not pr \
+            if o is st or o["repo"] != st["repo"] or o["status"] not in run.FINISHED or not pr \
                     or pr["url"] in settled or not areas_overlap(area, o.get("area") or []):
                 continue
             try:
@@ -1560,7 +1560,7 @@ def reconcile(st: dict) -> None:
     """The state is saved at the end of a cycle and processes start and end during it, so a crash can
     leave them apart. A process the state does not know about is adopted, never started twice; a status
     waiting for a process that is gone goes back a step, or the job would wait forever."""
-    if st["status"] in ("done", "blocked"):
+    if st["status"] in run.FINISHED:
         return
     d = paths.run_dir(st["repo"], st["slug"])
     _reconcile_fixes(st, d)
@@ -1671,7 +1671,7 @@ def on_wake(slept: float, woke_at: float) -> list[str]:
             st = _load(a["repo"], a["slug"])
         except Exception:  # the cycle says so, once
             continue
-        if not st or st["status"] in ("done", "blocked"):
+        if not st or st["status"] in run.FINISHED:
             continue
         shift_run(st, slept, woke_at)
         try:
@@ -1904,6 +1904,59 @@ def _reopen(st: dict) -> None:
     run.event(st, "reopened by ark retry")
 
 
+def _rerecord(st: dict, forge) -> None:
+    """The history row of a run that closed already says how it ended then: write it again with how it ends now."""
+    try:
+        c = Ctx(st, forge)
+    except Exception as e:  # without its plan or its repo there is no row to correct, and the new status stands
+        return run.event(st, f"history not updated: {_clean(f'{type(e).__name__}: {e}')[:300]}")
+    _close_report(c, record=True)
+
+
+def _abort(st: dict, forge) -> None:
+    """`ark abort`: Marco ends a blocked or waiting run for good. It is never stepped again and `ark retry` cannot
+    reopen it; its history row says aborted."""
+    items = [i for i in inbox.pending(st["repo"], st["slug"]) if i["kind"] == "abort"]
+    if not items:
+        return
+    was = st["status"]
+    why = _clean(str(items[-1].get("why") or "")) or "ended by Marco"
+    for k in ("decisions_sha", "closing_wait", "closing_errors", "decisions_ticks"):
+        st.pop(k, None)
+    st.update(status="aborted", closing="done", reason=why, questions=[])
+    run.event(st, f"aborted by Marco: {why}")
+    if was == "blocked":
+        _rerecord(st, forge)
+
+
+FINAL_PR_EVERY = 600  # seconds between two looks at the final PR of a blocked run
+_final_pr_seen: dict[str, float] = {}
+
+
+def _settle_final_pr(st: dict, forge) -> None:
+    """A run closes `blocked` while any job is unmerged, even when the jobs that mattered merged and Marco merged the
+    final PR. Once that PR is merged the run is done: what was left blocked stays on record in its jobs."""
+    pr = st.get("final_pr")
+    if st.get("closing") != "done" or not pr:
+        return
+    key = str(paths.run_dir(st["repo"], st["slug"]))
+    if time.monotonic() - _final_pr_seen.get(key, -FINAL_PR_EVERY) < FINAL_PR_EVERY:
+        return
+    _final_pr_seen[key] = time.monotonic()
+    repo = paths.find_repo(st["repo"])
+    if repo is None:
+        return
+    try:
+        state = forge.view(repo, pr["number"])["state"]
+    except forge_mod.ForgeError:
+        return  # the next look is in ten minutes
+    if state != "MERGED":
+        return
+    st.update(status="done", reason="")
+    run.event(st, f"the final PR {pr['url']} is merged: the run is done")
+    _rerecord(st, forge)
+
+
 ANSWERS = {"worker": _answered_worker, "plan_changed": _answered_plan_changed, "cap_run": _answered_cap_run}
 INBOX = {"answer": _apply_answer, "stop": _apply_stop, "steer": _apply_steer,
          "attach": _apply_attach, "attach_done": _apply_attach_done, "retry": _apply_retry}
@@ -1931,7 +1984,11 @@ def apply_inbox(st: dict) -> None:
 def step(st: dict, states: list[dict], forge, slots: Slots, hold: bool = False) -> None:
     if st["status"] == "blocked":
         _reopen(st)
-    if st["status"] in ("done", "blocked"):
+    if st["status"] in ("blocked", "waiting"):
+        _abort(st, forge)
+    if st["status"] == "blocked":
+        _settle_final_pr(st, forge)
+    if st["status"] in run.FINISHED:
         inbox.drop_all(st["repo"], st["slug"])  # nobody will read them
         return
     if st["status"] == "waiting":
@@ -1982,7 +2039,7 @@ def _adopt_reapproval(st: dict, a: dict, states: list[dict], forge) -> None:
     and he hears why once."""
     if a["sha256"] == st["plan_sha"]:
         return
-    if st["status"] in ("done", "blocked"):  # only a plan with no run file runs: he must not wait for this one
+    if st["status"] in run.FINISHED:  # only a plan with no run file runs: he must not wait for this one
         if st.get("reapprove_refused") != a["sha256"]:
             st["reapprove_refused"] = a["sha256"]
             run.alert(st, f"this run already finished ({st['status']}): the new approval starts nothing. "
@@ -2040,7 +2097,7 @@ def _adopt_reapproval(st: dict, a: dict, states: list[dict], forge) -> None:
 
 
 def status_line(states: list[dict]) -> str:
-    live = [s for s in states if s["status"] not in ("done", "blocked")]
+    live = [s for s in states if s["status"] not in run.FINISHED]
     finished = len(states) - len(live)
     parts = []
     for s in live:
@@ -2119,7 +2176,7 @@ def _orphans(known, alerts: list[str]) -> None:
             continue
         try:
             st = _load(*key)
-            if st and st["status"] in ("done", "blocked"):
+            if st and st["status"] in run.FINISHED:
                 continue
         except Exception:
             pass
@@ -2149,7 +2206,7 @@ def _nothing_to_advance(states: list[dict], capped_accounts=frozenset()) -> bool
     held or waits for Marco. A pending job beside a waiting one only waits for it: this pass started all it could.
     A run on a capped account waits for Marco like a held one."""
     capped_accounts = capped_accounts or frozenset()
-    live = [st for st in states if st["status"] not in ("done", "blocked", "waiting")]
+    live = [st for st in states if st["status"] not in (*run.FINISHED, "waiting")]
     if not live or any(proc.active(paths.run_dir(st["repo"], st["slug"])) for st in live):
         return False
     for st in live:
@@ -2213,7 +2270,7 @@ def cycle(forge=None) -> tuple[str, list[str], bool]:
     net = net_hold()
     if net == "gave_up":
         for st in states.values():
-            if st["status"] not in ("done", "blocked"):
+            if st["status"] not in run.FINISHED:
                 run.event(st, "the network did not come back in 10 minutes; going on")
     home = str(paths.ark_home())
     for key, st in states.items():
@@ -2224,7 +2281,7 @@ def cycle(forge=None) -> tuple[str, list[str], bool]:
     origins = {}
     waiting = {}
     for st in states.values():
-        if st["status"] not in ("done", "blocked"):
+        if st["status"] not in run.FINISHED:
             waiting.setdefault(accounts.account_of(st["repo"]), []).append(f"{st['repo']}/{st['slug']}")
     for account in sorted(slots.capped_accounts):
         limit = caps.day_limit(limits, account) + caps.raised_today(account)

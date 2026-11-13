@@ -93,7 +93,7 @@ def _cost(p: dict, rows: list[dict]) -> dict:
             c["estimated_min"] = round((datetime.fromisoformat(t["estimated_end"])
                                         - datetime.fromisoformat(t["started"])).total_seconds() / 60)
         row = next((r for r in reversed(rows) if r.get("repo") == p["repo"] and r.get("plan") == p["slug"]), None)
-        if row is not None and p["status"] in ("done", "blocked"):
+        if row is not None and p["status"] in run.FINISHED:
             c.update(closed=True, wall_min=_minutes(row.get("wall_minutes")),
                      working_min=_minutes(row.get("working_minutes")), waiting_min=_minutes(row.get("waiting_minutes")))
             for k in ("usd", "budget_usd"):

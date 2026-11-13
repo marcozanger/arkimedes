@@ -30,7 +30,10 @@ const snap = (alerts = [], over = {}) => ({ version: 1, loop: { alive: true }, a
   assert.equal(r.notes[0].title, "r/s");
   assert.equal(r.notes[0].plan, "r/s");
   assert.equal(r.notes[0].body.length, 200);
-  assert.ok(titleFor(r.mem, snap(), ok).startsWith("(1) "));
+  const waits = snap([], { plans: [{ repo: "r", slug: "s", status: "blocked", jobs: [] }, { repo: "r", slug: "a", status: "aborted", jobs: [{ status: "blocked" }] },
+    { repo: "r", slug: "d", status: "done", progress: { merged: 1, total: 1 }, jobs: [{ status: "blocked" }] }, { repo: "r", slug: "q", status: "running", jobs: [] }] });
+  assert.ok(titleFor(r.mem, waits, ok).startsWith("(1) "));       // the title counts plans that wait for Marco, as the Home badge does
+  assert.ok(!titleFor(r.mem, snap(), ok).startsWith("("));        // unread alerts alone do not
   assert.equal(decide(r.mem, snap([alert(1), alert(2)]), ok).notes.length, 0);
 }
 

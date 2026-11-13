@@ -21,7 +21,7 @@ def plan_jobs(st: dict) -> dict:
 
 
 def closed(st: dict) -> bool:
-    return st.get("closing") == "done" and st.get("status") in ("done", "blocked")
+    return st.get("closing") == "done" and st.get("status") in run.FINISHED
 
 
 def generate(st: dict, mjobs: dict, repo_dir, *, record: bool) -> dict:
