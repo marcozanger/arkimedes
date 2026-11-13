@@ -44,7 +44,7 @@ form `<repo>/<slug>:<job>`.
 |---|---|---|
 | worker | Euklides asks (see below) | `ok` takes its proposal; any other text is the answer; `:stop` blocks the job |
 | plan_changed | the plan changed after its approval and the run is held | `stop` ends the run; restoring or re-approving the plan closes it |
-| cap_run | the run spent more than the sum of its budgets | `raise <usd>`, or `stop` to end the run |
+| cap_run | the run spent more than the sum of its budgets and raises, and Euklides could not raise it within his margin | `raise <usd>`, or `stop` to end the run |
 | cap_day | an account reached its daily cap (one per account and day) | `raise <usd>` adds to today's cap; `stop` waits until tomorrow |
 
 `questions.md` at the Arkimedes root lists them. It is rewritten by the loop and never read back.
@@ -76,8 +76,9 @@ blocked one, the run closes and blocks them with the reason.
 A run with an open question stays open, and the question is alerted again once a day until it is answered.
 
 The runner, not the model, decides which actions are open: `retry` (same tier, same session) and `escalate` (a fresh
-worker one tier up) after a failure, `answer` to a question, `unblock` after a fixable block, and always `ask`. A job
-over its budget, or with 4 decisions already taken without Marco, can only `ask`. An `answer` whose mistake would
+worker one tier up) after a failure, `answer` to a question, `unblock` after a fixable block, `raise` when the job is
+at or over its budget and margin is left (see "Raising budgets"), and always `ask`. A job over its budget (plus what
+was raised) cannot `retry`, `escalate` or `unblock`; with 4 decisions already taken without Marco it can only `ask`. An `answer` whose mistake would
 reach beyond the job (`undo: plan`) is asked instead, with that answer as the proposal. An answer Euklides cannot
 give in the agreed shape also asks.
 
@@ -104,11 +105,32 @@ keeps its default, and each key overrides only itself.
 
 `model` is `haiku`, `sonnet`, `opus` or a `claude-…` id; `usd_per_call` and `minutes_per_call` are positive numbers;
 `tools` and `denied_tools` are lists of non-empty strings with no tool in both; `budget_margin` is a number from 0 to
-1 (read, not used yet); `decisions_per_job` is an integer of 0 or more. A bad value or an unknown key raises a
+1 (the share of the plan Euklides may raise, see "Raising budgets"); `decisions_per_job` is an integer of 0 or more. A bad value or an unknown key raises a
 `ValueError` naming `euklides.<key>` and stops the cycle before any process starts.
 
 Not settings: the actions the runner opens (`allowed`), the 3 base fixes per run, the small-fix rule and the guards that
 protect main.
+
+### Raising budgets
+
+Euklides may raise a job's budget, and a run's total, by up to `budget_margin` (10% by default) of what was planned.
+The margin is a **total across his decisions**, not per decision: for a job, `budget_margin × its budget` minus what he
+already raised on it; for the run, `budget_margin × the planned total` minus `euklides_raised`. A question to Marco is
+the only way past it.
+
+- **A job.** `raise` (with `"usd": <positive number>`) opens when the job's spend is at or over its budget plus
+  `usd_raised`. Within the margin left it adds to the job's `usd_raised`, the decision is journaled with `raise_usd`,
+  and the job goes on with Euklides' note. Past it, it becomes a worker question with the raise as the proposal;
+  Marco's `ok` adds it to `usd_raised` (and to `marco_raised`, which never uses Euklides' margin). Every place that
+  compares a job's spend with its budget uses `budget + usd_raised`.
+- **A run.** When a run spends more than `planned + usd_raised + euklides_raised` and margin is left (and fewer than
+  `decisions_per_job` run-level raises were made), the run holds and one Euklides call starts first: process
+  `_run.euklides` in the run folder, cwd the ticks folder, read-only tools, no worktree, open replies `raise` and
+  `ask`. Its prompt shows spent, the planned total, Marco's raises, Euklides' raises and the margin left. A `raise`
+  within the margin adds to `st.euklides_raised` and the run goes on; a raise past it, an `ask`, or no usable answer
+  opens the `cap_run` question with Euklides' note and proposal. With no margin left the question opens directly.
+  Marco's `raise <usd>` adds to `st.usd_raised`, never to `euklides_raised`. Run-level decisions are journaled with
+  job `_run`, and `ark review` lists them with the run's outcome.
 
 ### What Euklides can fix
 
@@ -169,7 +191,8 @@ finished, the budget for what runs and what is left. Delay is forecast end minus
 
 ## Caps and anomalies
 
-- Per run: the sum of the plan's job budgets. Over it, running workers finish, nothing new starts, and a question asks.
+- Per run: the sum of the plan's job budgets, plus Marco's and Euklides' raises. Over it, running workers finish,
+  nothing new starts, Euklides decides first while his margin is left, and then a question asks.
 - Per day, per account: `accounts[].usd_per_day` for a rule's account, `limits.usd_per_day` for the personal one,
   against `runs/spend.jsonl` (each line carries its `account`). At the cap, only that account's runs wait: running work
   finishes, nothing new starts, and one `cap_day` question per account and day asks (`runs/daycap.json`, ids `c1`, `c2`…;
