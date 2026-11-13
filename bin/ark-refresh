@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# ark-refresh <repo>/<slug> <main-sha> — checks main merged into a run's base.
+set -euo pipefail
+CODE="$(cd "$(dirname "$(realpath "$0")")/.." && pwd)"
+cd "$CODE"   # `python -m` imports from the cwd first
+export PYTHONPATH="$CODE/lib${PYTHONPATH:+:$PYTHONPATH}"
+exec "$CODE/.venv/bin/python" -m ark.refresh "$@"
