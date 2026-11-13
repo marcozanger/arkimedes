@@ -8,7 +8,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import beat, desk, history, paths, run, timing
+from . import beat, desk, history, paths, proc, run, steps, timing
 from .plan import load_plan, task_texts
 
 VERSION = 1
@@ -124,6 +124,47 @@ def _job(jid: str, mj: dict, sj: dict, heads: dict) -> dict:
             "gate": mj.get("gate", ""), "heavy": bool(mj.get("heavy", False)), "area": list(mj.get("area") or [])}
 
 
+PHASE_OF = {"worker": "developing", "euklides": "developing", "gate": "testing", "integrate": "testing",
+            "review": "reviewing"}  # the process a job is running -> what the control center calls it
+
+
+def _usual_gate_min(repo: str, slug: str) -> float | None:
+    """The median minutes of this run's finished gates: how long a suite usually takes here. None before the first."""
+    try:
+        mins = []
+        for r, _log in steps._receipts({"repo": repo, "slug": slug}):
+            _job, kind = steps._name(r)
+            s, e = steps.num(r.get("start")), steps.num(r.get("end"))
+            if kind in ("gate", "integrate") and s is not None and e is not None and e >= s:
+                mins.append((e - s) / 60)
+        mins.sort()
+        return round(mins[len(mins) // 2], 1) if mins else None
+    except Exception:
+        return None
+
+
+def _phases(repo: str, slug: str, jobs: list[dict]) -> None:
+    """Each job gets `phase`: what it is doing now ({kind, since, usual_min}) or None. It comes from the process the
+    job has running (.proc), so a job between two steps has none."""
+    d = paths.run_dir(repo, slug)
+    usual = None
+    for j in jobs:
+        j["phase"] = None
+        if j["status"] in ("merged", "pending", "blocked"):
+            continue
+        try:
+            live = [i for i in proc.job_processes(d, j["id"]) if str(i.get("name", "")).rpartition(".")[2] in PHASE_OF]
+        except Exception:
+            continue
+        if not live:
+            continue
+        info = max(live, key=lambda i: steps.num(i.get("start")) or 0)
+        kind = PHASE_OF[str(info["name"]).rpartition(".")[2]]
+        if kind == "testing" and usual is None:
+            usual = _usual_gate_min(repo, slug) or False
+        j["phase"] = {"kind": kind, "since": steps.iso(info.get("start")), "usual_min": (usual or None) if kind == "testing" else None}
+
+
 def _plan(repo: str, slug: str, a: dict | None, now: datetime, rows: list[dict] | None = None) -> dict:
     p = _empty(repo, slug)
     plan_path = Path(a["plan"]) if a and isinstance(a.get("plan"), str) else paths.desk_dir() / repo / slug / "plan.md"
@@ -158,6 +199,7 @@ def _plan(repo: str, slug: str, a: dict | None, now: datetime, rows: list[dict] 
                          "started": j["started"], "finished": j["finished"]} for j in jobs], p["status"], now)
     for j in jobs:
         j.update({k: _iso(v) for k, v in t["jobs"][j["id"]].items()})
+    _phases(repo, slug, jobs)
     p["jobs"] = jobs
     p["progress"] = {"merged": sum(j["status"] == "merged" for j in jobs), "total": len(jobs)}
     p["times"] = {"started": _iso(t["origin"]), "estimated_end": _iso(t["estimated_end"]),

@@ -155,6 +155,10 @@ Its `version` field changes when the shape does. It reads:
   run. An alert's `id` is its line number.
 - `started` and `finished` on each job in `state.json`, stamped by the loop once per pass.
 
+- each job's `phase`, from the processes it has running: `developing` (worker, Euklides), `testing` (job or
+  integration gate) or `reviewing`, with `since` and, for a gate, `usual_min`, the median of that run's finished
+  gates. A job with no process running has none.
+
 Estimate: each job lasts its `budget.minutes` after its `after` jobs. Forecast: real times for what
 finished, the budget for what runs and what is left. Delay is forecast end minus estimated end.
 
