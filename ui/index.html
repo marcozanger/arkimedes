@@ -218,6 +218,43 @@ a.hrow:hover { background: var(--wait-soft); }
 .copyline { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .copyline code { font: 13px var(--mono); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; }
 
+/* dashboard */
+.dbar { display: grid; gap: 10px; background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; position: sticky; top: 0; z-index: 4; }
+.dgroup { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-width: 0; }
+.dgroup .label { min-width: 64px; }
+.chip { border: 1px solid var(--line); background: var(--raised); border-radius: 999px; padding: 3px 11px; font-size: 13px; font-weight: 500; }
+.chip[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.dbar select, .dbar input[type="search"] { border: 1px solid var(--line); background: var(--raised); border-radius: 6px; padding: 4px 8px; min-width: 0; }
+.dbar .reset { margin-left: auto; border: 0; background: none; color: var(--accent); font-weight: 600; }
+.dbar .reset[disabled] { color: var(--muted); cursor: default; }
+.dkpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.dkpi { background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; display: grid; gap: 2px; min-width: 0; align-content: start; }
+.dkpi strong { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.dkpi .dd { font-size: 12px; font-weight: 600; color: var(--muted); }
+.dkpi .dd.up { color: var(--ok); } .dkpi .dd.down { color: var(--bad); }
+.dgrid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 16px; }
+.dpanel { background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; display: grid; gap: 10px; align-content: start; min-width: 0; }
+.dpanel h2 { font-size: 15px; font-weight: 600; }
+.dpanel svg { display: block; width: 100%; height: auto; overflow: visible; }
+.dpanel svg text { fill: var(--muted); font: 11px var(--sans); }
+.dstack { display: flex; height: 16px; border-radius: 5px; overflow: hidden; background: var(--wait-soft); }
+.dstack span { display: block; height: 100%; }
+.dlegend { display: flex; flex-wrap: wrap; gap: 6px; }
+.dlegend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; }
+.dhbar { display: grid; grid-template-columns: 110px minmax(0, 1fr) 64px; align-items: center; gap: 8px; font-size: 13px; }
+.dhbar .dtrack { height: 10px; background: var(--wait-soft); border-radius: 5px; overflow: hidden; }
+.dhbar .dtrack span { display: block; height: 100%; background: var(--accent); border-radius: 5px; }
+.dhbar > span:first-child { overflow-wrap: anywhere; }
+.dtable { overflow-x: auto; }
+.dtable table { border-collapse: collapse; width: 100%; min-width: 700px; font-size: 13px; }
+.dtable th { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.dtable td { padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.dtable tr:last-child td { border-bottom: 0; }
+.dtable th.r, .dtable td.r { text-align: right; font-variant-numeric: tabular-nums; }
+.dtable td a { color: var(--fg); font-weight: 550; text-decoration: none; overflow-wrap: anywhere; }
+.dtable td a:hover { text-decoration: underline; }
+.dmore { justify-self: center; }
+
 /* floating commands */
 .fab { position: fixed; right: 18px; bottom: 18px; display: grid; justify-items: end; gap: 8px; z-index: 5; max-width: calc(100vw - 36px); }
 .fab-buttons { display: flex; gap: 8px; }
@@ -231,11 +268,17 @@ a.hrow:hover { background: var(--wait-soft); }
   .line { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .line .flag { justify-self: start; }
   .numbers { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dgrid { grid-template-columns: minmax(0, 1fr); }
   .docwrap { grid-template-columns: minmax(0, 1fr); }
   .docidx { position: static; display: flex; flex-wrap: wrap; }
   .docidx .label { width: 100%; }
 }
 @media (max-width: 720px) {
+  .dtable table { min-width: 0; table-layout: fixed; }
+  .dtable th { white-space: normal; padding: 6px 4px; }
+  .dtable td { padding: 8px 4px; overflow-wrap: anywhere; }
+  .dtable th:nth-child(n+3), .dtable td:nth-child(n+3) { display: none; }
+  .dtable th:nth-child(6), .dtable td:nth-child(6) { display: table-cell; }
   .app { grid-template-columns: minmax(0, 1fr); align-content: start; }
   .menu { position: static; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center; border-right: 0; border-bottom: 1px solid var(--line); padding: 8px 10px; }
   .brand { padding: 0 8px 0 2px; }
@@ -247,6 +290,8 @@ a.hrow:hover { background: var(--wait-soft); }
   .hrow .hplan { grid-column: 1 / -1; order: -1; font-weight: 550; }
   .hrow.head { display: none; }
   .row, .axis { grid-template-columns: 92px minmax(0, 1fr) 62px; gap: 6px; }
+  .dgroup .label { min-width: 100%; }
+  .dhbar { grid-template-columns: 90px minmax(0, 1fr) 56px; }
   .docbody { padding: 12px; }
   .dact { justify-items: start; }
   .dact .why { text-align: left; }
@@ -280,7 +325,7 @@ import { STRINGS } from "/vendor/spec-review/strings.mjs";
 
 const L = STRINGS.en;
 const S = { data: null, meta: { stale: false, error: "" }, drafts: null, history: null, euk: null,
-  route: { screen: "home" }, job: null, answers: {}, filter: { repo: "", status: "", text: "" }, copied: "",
+  route: { screen: "home" }, dash: null, job: null, answers: {}, filter: { repo: "", status: "", text: "" }, copied: "",
   draft: null, notes: {}, flash: "" };
 const NOTE_KINDS = [["alert", "Alerts from a run"], ["done", "A plan finished"], ["loop", "ark-loop stopped or the data went stale"]];
 const LIVE = ["waiting", "running", "held"];
@@ -400,7 +445,7 @@ function parseRoute(hash) {
   let h = "";
   try { h = decodeURIComponent(String(hash || "").replace(/^#\/?/, "")); } catch (e) { return { screen: "home" }; }
   const parts = h.split("/").filter(Boolean);
-  if (parts.length === 1 && (parts[0] === "history" || parts[0] === "euklides")) return { screen: parts[0] };
+  if (parts.length === 1 && (parts[0] === "history" || parts[0] === "euklides" || parts[0] === "dashboard")) return { screen: parts[0] };
   if (parts[0] === "plan" && parts.length >= 3) {
     const rest = parts.slice(1);
     const tab = rest.length >= 3 && TABS.includes(rest[rest.length - 1]) ? rest.pop() : "timeline";
@@ -481,6 +526,131 @@ function docSections(text) {
   sections.forEach(s => trim(s.lines));
   return { pre, sections };
 }
+// ---- dashboard: filters, numbers and chart data from the /api/runs plans (closed ones carry cost.closed_at, wall_min, tokens)
+const DAY_MS = 864e5;
+const DASH_STATUSES = ["done", "running", "waiting", "held", "blocked", "aborted"];
+const DASH_PERIODS = [7, 14, 30];
+const DASH_PAGE = 8;
+const dashFresh = () => ({ period: 30, repos: [], status: [], account: "", tier: "", euk: "", q: "", shown: DASH_PAGE });
+const TIER_RANK = { t0: 0, haiku: 0, t1: 1, sonnet: 1, t2: 2, opus: 2 };
+function topTier(p) {   // the highest tier any job of the plan used or climbed to: "T0".."T2", "" when unknown
+  let best = -1;
+  (p.jobs || []).forEach(j => [j.tier].concat(j.tier_path || []).forEach(t => {
+    const r = TIER_RANK[String(t || "").toLowerCase()];
+    if (r !== undefined && r > best) best = r;
+  }));
+  return best < 0 ? "" : `T${best}`;
+}
+function dashTime(p) {  // when the plan counts: closed, else started, else approved, else created; null when it has no date
+  const c = p.cost || {}, t = p.times || {};
+  for (const v of [c.closed_at, t.started, p.approved_at, p.created]) {
+    const m = v ? Date.parse(v) : NaN;
+    if (!Number.isNaN(m)) return m;
+  }
+  return null;
+}
+function dashMatch(p, f) {   // every filter but the period
+  const e = p.euklides || {}, q = String(f.q || "").trim().toLowerCase();
+  if (p.error) return false;
+  if (f.repos.length && !f.repos.includes(p.repo)) return false;
+  if (f.status.length && !f.status.includes(p.status)) return false;
+  if (f.account && p.account !== f.account) return false;
+  if (f.tier && topTier(p) !== f.tier) return false;
+  if (f.euk === "asked" && !(e.asked > 0)) return false;
+  if (f.euk === "none" && (e.decisions || 0) > 0) return false;
+  if (q && !`${p.repo}/${p.slug} ${p.title || ""}`.toLowerCase().includes(q)) return false;
+  return true;
+}
+// {rows, prev}: the matching plans of the last `period` days and of the same span before them, newest first
+function dashRows(plans, f, now) {
+  const span = f.period * DAY_MS, out = { rows: [], prev: [] };
+  plans.filter(p => dashMatch(p, f)).forEach(p => {
+    const t = dashTime(p);
+    if (t === null) return;
+    if (t > now - span) out.rows.push([t, p]);
+    else if (t > now - 2 * span) out.prev.push([t, p]);
+  });
+  const byNew = (a, b) => b[0] - a[0];
+  return { rows: out.rows.sort(byNew).map(x => x[1]), prev: out.prev.sort(byNew).map(x => x[1]) };
+}
+const dashSum = (rows, get) => rows.reduce((a, p) => a + (Number(get(p)) || 0), 0);
+function median(list) {
+  if (!list.length) return null;
+  const s = list.slice().sort((a, b) => a - b), m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+function dashStats(rows) {
+  const jobs = dashSum(rows, p => (p.progress || {}).total), merged = dashSum(rows, p => (p.progress || {}).merged);
+  const mins = rows.filter(p => p.status === "done" && p.cost && p.cost.wall_min != null).map(p => p.cost.wall_min);
+  return { plans: rows.length, jobs, merged, mergedPct: jobs ? merged / jobs * 100 : null, usd: dashSum(rows, p => (p.cost || {}).usd),
+    medianMin: median(mins), tokens: dashSum(rows, p => (p.cost || {}).tokens), euk: dashSum(rows, p => (p.euklides || {}).decisions) };
+}
+const usdText = n => `$${n >= 100 ? n.toFixed(0) : n.toFixed(2)}`;
+const tokText = n => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : `${Math.round(n / 1e3)}k`);
+// goodUp: true when a rise is good, false when a fall is, null when neither
+function dashDelta(cur, prev, goodUp, days) {
+  if (cur == null || !prev) return { cls: "flat", text: "no previous period" };
+  const d = (cur - prev) / prev * 100;
+  if (Math.abs(d) < 1) return { cls: "flat", text: `same as the previous ${days} days` };
+  const up = d > 0;
+  return { cls: goodUp === null ? "flat" : up === goodUp ? "up" : "down", text: `${up ? "▲" : "▼"} ${Math.abs(d).toFixed(0)}% vs previous ${days} days` };
+}
+function dashKpis(plans, f, now) {
+  const { rows, prev } = dashRows(plans, f, now), c = dashStats(rows), p = dashStats(prev);
+  const k = (label, value, cur, was, goodUp, note) => ({ label, value, note: note || "", ...dashDelta(cur, was, goodUp, f.period) });
+  return [
+    k("Plans", String(c.plans), c.plans, p.plans, true),
+    k("Jobs merged", c.mergedPct == null ? "–" : `${Math.round(c.mergedPct)}%`, c.mergedPct, p.mergedPct, true, c.jobs ? `${c.merged} of ${c.jobs} jobs` : ""),
+    k("Spend", usdText(c.usd), c.usd, p.usd, false, "API-equivalent"),
+    k("Median plan time", c.medianMin == null ? "–" : dur(c.medianMin), c.medianMin, p.medianMin, false, "finished plans"),
+    k("Tokens", tokText(c.tokens), c.tokens, p.tokens, false, "closed runs only"),
+    k("Euklides decisions", String(c.euk), c.euk, p.euk, false),
+  ];
+}
+// one bar per day, oldest first; a plan's spend counts on the day it closed (or started, while it runs)
+function dashSpendByDay(rows, period, now) {
+  const days = Array.from({ length: period }, (_, i) => ({ t: now - (period - 1 - i) * DAY_MS, usd: 0 }));
+  rows.forEach(p => {
+    const t = dashTime(p), back = Math.max(0, Math.floor((now - t) / DAY_MS));
+    if (back < period) days[period - 1 - back].usd += Number((p.cost || {}).usd) || 0;
+  });
+  return days;
+}
+function dashStatusCounts(rows) {
+  const n = {};
+  DASH_STATUSES.forEach(s => { n[s] = 0; });
+  rows.forEach(p => { n[p.status] = (n[p.status] || 0) + 1; });
+  return n;
+}
+function dashSpendByRepo(rows) {
+  const by = {};
+  rows.forEach(p => { by[p.repo] = (by[p.repo] || 0) + (Number((p.cost || {}).usd) || 0); });
+  return Object.keys(by).map(k => [k, by[k]]).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+}
+function dashChoices(plans) {
+  const uniq = key => [...new Set(plans.map(p => p[key]).filter(Boolean))].sort();
+  return { repos: uniq("repo"), accounts: uniq("account") };
+}
+function dashActive(f) {
+  const out = [];
+  if (f.repos.length) out.push(f.repos.join(", "));
+  if (f.status.length) out.push(f.status.join(", "));
+  if (f.account) out.push(`account ${f.account}`);
+  if (f.tier) out.push(`top tier ${f.tier}`);
+  if (f.euk) out.push(f.euk === "asked" ? "Euklides asked" : "Euklides never intervened");
+  if (f.q.trim()) out.push(`“${f.q.trim()}”`);
+  return out;
+}
+function dashSet(f, key, value) {   // a new filter state; any change shows the first page again
+  const next = { ...f, shown: DASH_PAGE };
+  if (key === "repos" || key === "status") next[key] = f[key].includes(value) ? f[key].filter(x => x !== value) : f[key].concat(value);
+  else if (key === "period") next.period = DASH_PERIODS.includes(Number(value)) ? Number(value) : f.period;
+  else if (key === "reset") return dashFresh();
+  else if (key === "more") return { ...f, shown: f.shown + DASH_PAGE };
+  else next[key] = String(value);
+  return next;
+}
+const dashIsFresh = f => !dashActive(f).length && f.period === dashFresh().period;
 // ---- logic: end ----
 
 async function api(path, opts = {}) {
@@ -551,6 +721,7 @@ function menu() {
     : '<span><i class="dot off"></i>Loop stopped</span>') : "<span>Loop: no data yet</span>";
   return `<span class="brand">Arkimedes</span>
     ${nav("#/", "Home", r === "home" || r === "plan" || r === "draft", n ? `<span class="count" title="${n} ${n === 1 ? "plan waits" : "plans wait"} for you: blocked, paused, or with a question">${n}</span>` : "")}
+    ${nav("#/dashboard", "Dashboard", r === "dashboard")}
     ${nav("#/history", "History", r === "history")}
     ${nav("#/euklides", "Euklides", r === "euklides")}
     <div class="foot">${loop}<span>Today: $${esc(todaySpend().toFixed(2))}</span></div>`;
@@ -967,7 +1138,73 @@ function euklidesScreen() {
     <div class="card"><span class="label">Browser notifications</span><div class="toggles">${toggles}</div>${permLine}</div>`;
 }
 
-const SCREENS = { home, plan: planScreen, draft: draftScreen, history: historyScreen, euklides: euklidesScreen };
+// ---- dashboard screen
+const DASH_COLOR = { done: "var(--ok)", running: "var(--accent)", waiting: "var(--line)", held: "var(--attn)", blocked: "var(--bad)", aborted: "var(--muted)" };
+function dashSpendChart(days, period) {
+  const W = 640, H = 170, LM = 38, B = 22, T = 8, max = Math.max(1, ...days.map(d => d.usd));
+  const nice = max <= 5 ? Math.ceil(max) : Math.ceil(max / 5) * 5, bw = (W - LM) / days.length;
+  let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Spend per day">`;
+  [0, .5, 1].forEach(fr => {
+    const y = T + (H - B - T) * (1 - fr);
+    s += `<line x1="${LM}" x2="${W}" y1="${y}" y2="${y}" stroke="var(--line)"/><text x="${LM - 6}" y="${y + 4}" text-anchor="end">$${esc((nice * fr).toFixed(nice < 6 ? 1 : 0))}</text>`;
+  });
+  days.forEach((d, i) => {
+    const h = (H - B - T) * d.usd / nice, dt = new Date(d.t);
+    s += `<rect x="${(LM + i * bw + bw * .15).toFixed(1)}" y="${(H - B - h).toFixed(1)}" width="${(bw * .7).toFixed(1)}" height="${h.toFixed(1)}" rx="2" fill="var(--accent)"><title>${esc(`${dt.toLocaleDateString([], { month: "short", day: "numeric" })}: ${usdText(d.usd)}`)}</title></rect>`;
+  });
+  const step = period <= 7 ? 1 : period <= 14 ? 2 : 5;
+  for (let i = days.length - 1; i >= 0; i -= step) {
+    const dt = new Date(days[i].t);
+    s += `<text x="${(LM + i * bw + bw / 2).toFixed(1)}" y="${H - 6}" text-anchor="middle">${dt.getDate()}/${dt.getMonth() + 1}</text>`;
+  }
+  return s + "</svg>";
+}
+function dashHbars(entries) {
+  const max = Math.max(.0001, ...entries.map(e => e[1]));
+  return entries.length ? entries.map(([k, v]) => `<div class="dhbar"><span>${esc(k)}</span><div class="dtrack"><span style="width:${(v / max * 100).toFixed(1)}%"></span></div><span class="mono" style="text-align:right">${esc(usdText(v))}</span></div>`).join("") : '<div class="empty">No spend in this view.</div>';
+}
+function dashboardScreen() {
+  if (!S.data) return `<div class="screen-head"><h1>Dashboard</h1></div><p class="muted">${S.meta.stale ? "ark did not answer yet: " + esc(S.meta.error) : "Waiting for ark…"}</p>`;
+  const f = S.dash = S.dash || dashFresh(), all = plans(), now = ms(S.data.generated) || NOW();   // the snapshot's own clock
+  const { rows } = dashRows(all, f, now), ch = dashChoices(all), active = dashActive(f);
+  const chip = (key, v, label, on) => `<button class="chip" type="button" data-d="${key}" data-v="${esc(v)}" aria-pressed="${on}">${esc(label)}</button>`;
+  const opts = (values, on, any) => [`<option value="">${any}</option>`].concat(values.map(v => `<option value="${esc(v)}"${v === on ? " selected" : ""}>${esc(v)}</option>`)).join("");
+  const bar = `<section class="dbar" aria-label="Filters">
+    <div class="dgroup"><span class="label">Period</span>${DASH_PERIODS.map(p => chip("period", p, `Last ${p} days`, f.period === p)).join("")}
+      <button class="reset" type="button" data-d="reset"${dashIsFresh(f) ? " disabled" : ""}>Reset filters</button></div>
+    <div class="dgroup"><span class="label">Project</span>${ch.repos.map(r => chip("repos", r, r, f.repos.includes(r))).join("") || '<span class="small muted">none yet</span>'}</div>
+    <div class="dgroup"><span class="label">Status</span>${DASH_STATUSES.map(s => chip("status", s, s, f.status.includes(s))).join("")}</div>
+    <div class="dgroup"><span class="label">More</span>
+      <select data-dsel="account" aria-label="Account">${opts(ch.accounts, f.account, "All accounts")}</select>
+      <select data-dsel="tier" aria-label="Top tier used">${opts(["T0", "T1", "T2"], f.tier, "Any top tier")}</select>
+      <select data-dsel="euk" aria-label="Euklides"><option value="">Euklides: any</option><option value="asked"${f.euk === "asked" ? " selected" : ""}>Euklides asked me</option><option value="none"${f.euk === "none" ? " selected" : ""}>Euklides never stepped in</option></select>
+      <input id="d-q" data-dq="1" type="search" placeholder="Search plan name" aria-label="Search plan name" value="${esc(f.q)}"></div>
+    <div class="small muted">${active.length ? `Filtering by: ${esc(active.join(" · "))}` : "No filters: every project and status."}</div></section>`;
+  const kpis = `<section class="dkpis" aria-label="Metrics">${dashKpis(all, f, now).map(k => `<div class="dkpi"><span class="label">${esc(k.label)}</span><strong>${esc(k.value)}</strong><span class="dd ${k.cls}">${esc(k.text)}</span>${k.note ? `<span class="small muted">${esc(k.note)}</span>` : ""}</div>`).join("")}</section>`;
+  const counts = dashStatusCounts(dashRows(all, { ...f, status: [] }, now).rows), total = DASH_STATUSES.reduce((a, s) => a + counts[s], 0);
+  const stack = total ? `<div class="dstack" role="img" aria-label="Plans by status">${DASH_STATUSES.filter(s => counts[s]).map(s => `<span style="width:${(counts[s] / total * 100).toFixed(1)}%;background:${DASH_COLOR[s]}" title="${s}: ${counts[s]}"></span>`).join("")}</div>` : '<div class="empty">No plans match.</div>';
+  const legend = `<div class="dlegend">${DASH_STATUSES.map(s => `<button class="chip" type="button" data-d="status" data-v="${s}" aria-pressed="${f.status.includes(s)}"><i style="background:${DASH_COLOR[s]}"></i>${s} ${counts[s]}</button>`).join("")}</div>`;
+  const usd = dashStats(rows).usd;
+  const charts = `<section class="dgrid"><div class="dpanel"><div><h2>Spend per day</h2><span class="small muted">${esc(usdText(usd))} in ${f.period} days, ${rows.length} plans. A plan's spend counts on the day it closed, or started while it runs.</span></div>${dashSpendChart(dashSpendByDay(rows, f.period, now), f.period)}</div>
+    <div class="dpanel"><div><h2>Plans by status</h2><span class="small muted">Click a status to filter by it</span></div>${stack}${legend}</div></section>
+    <section class="dpanel"><div><h2>Spend by project</h2><span class="small muted">USD, API-equivalent</span></div>${dashHbars(dashSpendByRepo(rows))}</section>`;
+  const shown = rows.slice(0, f.shown);
+  const line = p => {
+    const c = p.cost || {}, e = p.euklides || {}, t = dashTime(p), pr = p.progress || {};
+    return `<tr><td><a href="${planHref(p)}">${esc(p.title || p.slug)}</a><div class="small muted mono">${esc(keyOf(p))} · ${esc(when(t))}</div></td>
+      <td><span class="pill ${pillKind(p.status)}">${esc(p.status)}</span></td><td>${esc(p.account || "–")}</td>
+      <td class="r">${esc(pr.merged || 0)}/${esc(pr.total || 0)}</td><td class="r">${c.wall_min ? esc(dur(c.wall_min)) : "–"}</td>
+      <td class="r">${c.usd ? esc(usdText(c.usd)) : "–"}</td><td class="r">${c.tokens ? esc(tokText(c.tokens)) : "–"}</td>
+      <td class="r">${esc(e.decisions || 0)}${e.asked ? ` · asked ${esc(e.asked)}` : ""}</td></tr>`;
+  };
+  const table = `<section class="dpanel"><div><h2>Plans</h2><span class="small muted">Showing ${shown.length} of ${rows.length}, newest first</span></div>
+    <div class="dtable"><table><thead><tr><th>Plan</th><th>Status</th><th>Account</th><th class="r">Jobs merged</th><th class="r">Time</th><th class="r">Spend</th><th class="r">Tokens</th><th class="r">Euklides</th></tr></thead>
+    <tbody>${shown.map(line).join("") || '<tr><td colspan="8" class="muted">No plans match these filters. Try resetting them.</td></tr>'}</tbody></table></div>
+    ${rows.length > shown.length ? '<button class="btn dmore" type="button" data-d="more">Show more</button>' : ""}</section>`;
+  return `<div class="screen-head"><h1>Dashboard</h1><span class="small muted">every filter cuts every number, chart and row</span></div>${bar}${kpis}${charts}${table}`;
+}
+
+const SCREENS = { home, plan: planScreen, draft: draftScreen, history: historyScreen, euklides: euklidesScreen, dashboard: dashboardScreen };
 function render(force) {
   const b = banner(), el = document.getElementById("banner");
   el.hidden = !b;
@@ -1040,11 +1277,13 @@ document.addEventListener("visibilitychange", () => {
 });
 document.addEventListener("change", e => {
   const t = e.target;
+  if (t.dataset && t.dataset.dsel) { S.dash = dashSet(S.dash || dashFresh(), t.dataset.dsel, t.value); render(true); return; }
   if (t.dataset && t.dataset.pref) store.set("ark-ui-notify", { ...notePrefs(), [t.dataset.pref]: t.checked });
   if (t.dataset && t.dataset.note !== undefined && S.route.screen === "draft") saveNote(t.dataset.note, t.value);
 });
 document.addEventListener("input", e => {
   const t = e.target;
+  if (t.dataset && t.dataset.dq) { S.dash = dashSet(S.dash || dashFresh(), "q", t.value); render(true); return; }
   if (t.dataset && t.dataset.filter) { S.filter = { ...S.filter, [t.dataset.filter]: t.value }; render(true); return; }
   if (t.dataset && t.dataset.note !== undefined && S.draft && S.draft.data) { S.notes[`${draftDoc(S.draft.data)}#${t.dataset.note}`] = t.value; return; }
   if (!t.dataset || !t.dataset.q) return;
@@ -1069,8 +1308,9 @@ function copyCommand() {
   try { navigator.clipboard.writeText(c.text).then(() => done(true), () => done(false)); } catch (e) { done(false); }
 }
 document.addEventListener("click", e => {
-  const t = e.target.closest("[data-job],[data-answer],[data-goto],[data-cmd],[data-copy],[data-notify],[data-verdict],[data-draft-act],[data-approve-plan],[data-draft-cancel],[data-reopen],#cmd-copy,#cmd-close");
+  const t = e.target.closest("[data-d],[data-job],[data-answer],[data-goto],[data-cmd],[data-copy],[data-notify],[data-verdict],[data-draft-act],[data-approve-plan],[data-draft-cancel],[data-reopen],#cmd-copy,#cmd-close");
   if (!t) return;
+  if (t.dataset.d) { S.dash = dashSet(S.dash || dashFresh(), t.dataset.d, t.dataset.v); render(true); return; }
   if (t.dataset.notify) {
     try { Promise.resolve(Notification.requestPermission()).then(() => render(true), () => render(true)); } catch (err) { render(true); }
     return;

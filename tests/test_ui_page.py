@@ -43,7 +43,7 @@ def test_the_page_exposes_its_entry_points():
     assert "window.update = function" in html and "window.openPlan = function" in html
     assert 'document.body.dataset.rendered = "1"' in html and "document.body.dataset.screen =" in html
     assert "hashchange" in html and "data-link" not in html
-    for route in ('"#/"', '"#/history"', '"#/euklides"', "#/plan/"):
+    for route in ('"#/"', '"#/history"', '"#/euklides"', '"#/dashboard"', "#/plan/"):
         assert route in html, route
     assert 'const TABS = ["timeline", "questions", "events", "spec", "plan"]' in html
 
@@ -75,6 +75,9 @@ def test_the_sample_covers_every_screen_state():
     assert any(a["repo"] for a in d["alerts"])
     assert any(p["cost"]["closed"] for p in d["plans"])
     assert any(p["cost"]["usd"] > p["cost"]["budget_usd"] for p in d["plans"])
+    assert {"personal", "globallogic"} <= {p["account"] for p in d["plans"]}   # what the dashboard filters on
+    assert any(p["cost"]["closed_at"] and p["cost"]["tokens"] for p in d["plans"])
+    assert any(p["euklides"]["asked"] for p in d["plans"]) and "aborted" in statuses
 
 
 def test_the_sample_matches_the_real_snapshot(make_feature):

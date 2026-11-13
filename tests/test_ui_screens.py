@@ -148,7 +148,7 @@ REPLIES = {
     "POST /api/approve-plan?forbidden": {"status": 403, "body": {"error": "forbidden token"}},
 }
 ROUTES = [("home", "#/"), ("plan", "#/plan/arkimedes/ui-polish/questions"), ("history", "#/history"), ("euklides", "#/euklides"),
-          ("draft", "#/draft/arkimedes/draft-screen/spec")]
+          ("draft", "#/draft/arkimedes/draft-screen/spec"), ("dashboard", "#/dashboard")]
 SIZES = [(1360, 900), (390, 844)]
 
 STUB = """<script>
@@ -389,6 +389,10 @@ def test_every_screen_renders_and_fits(site, width, dark, profile):
     assert "Is 720 px the right break point?" in out["plan"]["text"]
     assert "api-cleanup" in out["history"]["text"] and "$7.40 of $9" in out["history"]["text"]
     assert "ark review" in out["euklides"]["text"] and "It should have asked first." in out["euklides"]["text"]
+    dash = out["dashboard"]["text"]
+    for want in ("Last 30 days", "Reset filters", "Jobs merged", "Median plan time", "Euklides decisions", "Spend per day",
+                 "Plans by status", "Spend by project", "API cleanup", "Mods API"):
+        assert want.lower() in dash.lower(), want   # labels are upper-cased by CSS
     draft = out["draft"]["text"]
     for want in ("Copy resume command", "1 of 3 ok", "1 to change", "Goal", "Screens", "Errors", "OK", "Change",
                  "review.json could not be read", "## not a section: inside a fence"):

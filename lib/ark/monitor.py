@@ -8,7 +8,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import beat, desk, history, paths, proc, run, steps, timing
+from . import accounts, beat, desk, euklides, history, paths, proc, run, steps, timing
 from .plan import load_plan, task_texts
 
 VERSION = 1
@@ -72,7 +72,7 @@ def _run_keys() -> set[tuple[str, str]]:
 
 def _cost_zero() -> dict:
     return {"usd": 0, "budget_usd": 0, "closed": False, "wall_min": None, "working_min": None,
-            "waiting_min": None, "estimated_min": None}
+            "waiting_min": None, "estimated_min": None, "closed_at": None, "tokens": None}
 
 
 def _is_num(v) -> bool:
@@ -94,7 +94,8 @@ def _cost(p: dict, rows: list[dict]) -> dict:
                                         - datetime.fromisoformat(t["started"])).total_seconds() / 60)
         row = next((r for r in reversed(rows) if r.get("repo") == p["repo"] and r.get("plan") == p["slug"]), None)
         if row is not None and p["status"] in run.FINISHED:
-            c.update(closed=True, wall_min=_minutes(row.get("wall_minutes")),
+            c.update(closed=True, closed_at=row.get("ended") if isinstance(row.get("ended"), str) else None,
+                     tokens=int(row["tokens"]) if _is_num(row.get("tokens")) else None, wall_min=_minutes(row.get("wall_minutes")),
                      working_min=_minutes(row.get("working_minutes")), waiting_min=_minutes(row.get("waiting_minutes")))
             for k in ("usd", "budget_usd"):
                 if _is_num(row.get(k)):
@@ -108,7 +109,7 @@ def _empty(repo: str, slug: str) -> dict:
     return {"repo": repo, "slug": slug, "title": slug, "status": "waiting", "reason": "", "error": None,
             "approval": "-", "approved_at": None, "plan_path": "", "plan_sha": None, "spec": None, "created": None,
             "progress": {"merged": 0, "total": 0}, "times": None, "jobs": [], "events": [], "final_pr": None,
-            "plan_file": "", "decisions": "", "questions": [], "answers": [], "spec_file": "", "cost": _cost_zero(), "manifest": {"setup": [], "integration_gate": "", "final_pr_title": ""}}
+            "plan_file": "", "decisions": "", "questions": [], "answers": [], "spec_file": "", "account": "", "euklides": {"decisions": 0, "asked": 0}, "cost": _cost_zero(), "manifest": {"setup": [], "integration_gate": "", "final_pr_title": ""}}
 
 
 def _job(jid: str, mj: dict, sj: dict, heads: dict) -> dict:
@@ -165,8 +166,28 @@ def _phases(repo: str, slug: str, jobs: list[dict]) -> None:
         j["phase"] = {"kind": kind, "since": steps.iso(info.get("start")), "usual_min": (usual or None) if kind == "testing" else None}
 
 
-def _plan(repo: str, slug: str, a: dict | None, now: datetime, rows: list[dict] | None = None) -> dict:
+def _euklides_counts() -> dict[tuple[str, str], dict]:
+    """Per plan: how many decisions Euklides took and how many of them were a question for Marco."""
+    out: dict[tuple[str, str], dict] = {}
+    try:
+        for d in euklides.decisions():
+            k = (str(d.get("repo") or ""), str(d.get("slug") or ""))
+            c = out.setdefault(k, {"decisions": 0, "asked": 0})
+            c["decisions"] += 1
+            c["asked"] += d.get("action") == "ask"
+    except Exception:  # the journal never breaks the feed
+        pass
+    return out
+
+
+def _plan(repo: str, slug: str, a: dict | None, now: datetime, rows: list[dict] | None = None,
+          euk: dict | None = None) -> dict:
     p = _empty(repo, slug)
+    p["euklides"] = (euk or {}).get((repo, slug)) or p["euklides"]
+    try:
+        p["account"] = accounts.account_of(repo)
+    except Exception:  # a broken workspace.json is reported elsewhere
+        pass
     plan_path = Path(a["plan"]) if a and isinstance(a.get("plan"), str) else paths.desk_dir() / repo / slug / "plan.md"
     text = _text(plan_path)
     p.update(title=_title(text, slug), plan_path=str(plan_path), plan_file=text,
@@ -208,9 +229,10 @@ def _plan(repo: str, slug: str, a: dict | None, now: datetime, rows: list[dict] 
     return p
 
 
-def _safe(repo: str, slug: str, a: dict | None, now: datetime, rows: list[dict] | None = None) -> dict:
+def _safe(repo: str, slug: str, a: dict | None, now: datetime, rows: list[dict] | None = None,
+          euk: dict | None = None) -> dict:
     try:
-        return _plan(repo, slug, a, now, rows)
+        return _plan(repo, slug, a, now, rows, euk)
     except Exception as e:  # one broken plan never hides the others
         p = _empty(repo, slug)
         p["error"] = str(e) if isinstance(e, run.StateCorrupt) else f"{type(e).__name__}: {e}"
@@ -225,8 +247,9 @@ def build(now: datetime | None = None) -> dict:
         rows = history._read("plans.jsonl")
     except Exception:
         rows = []
+    euk = _euklides_counts()
     return {"version": VERSION, "generated": _iso(now), "loop": beat.read(now.timestamp()), "alerts": _alerts(),
-            "plans": [_safe(r, s, approvals.get((r, s)), now, rows) for r, s in keys]}
+            "plans": [_safe(r, s, approvals.get((r, s)), now, rows, euk) for r, s in keys]}
 
 
 def cmd_runs(args) -> int:
