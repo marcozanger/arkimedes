@@ -8,7 +8,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from . import accounts, claude, daycap, desk, gitops, inbox, paths, proc, questions, run, usage
+from . import accounts, answers, claude, daycap, desk, gitops, inbox, paths, proc, questions, run, usage
 
 FOLLOW_POLL = 1.0   # seconds between looks at a log being followed
 ATTACH_WAIT = 60  # seconds for ark-loop to hand a job over
@@ -211,10 +211,10 @@ def _show(st: dict, q: dict) -> None:
 
 
 def _post_answer(st: dict, q: dict, text: str) -> None:
-    problem = questions.check_answer(q, text)
-    if problem:
-        raise CtlError(f"answer rejected: {problem}")
-    inbox.post(st["repo"], st["slug"], "answer", id=q["id"], text=text)
+    try:
+        answers.post(st["repo"], st["slug"], q["id"], text)
+    except answers.AnswerError as e:
+        raise CtlError(str(e))
     print(f"{q['id']} noted: ark-loop applies it on the next cycle")
 
 

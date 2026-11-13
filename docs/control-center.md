@@ -11,11 +11,64 @@ ark ui --open          # serve and open the browser tab
 ark ui --port 8800     # another port (default 8737)
 ```
 
-It listens on `127.0.0.1` only, answers `GET` only, rejects a foreign `Host` header, and never
-writes a file. If the port is busy it exits 2 and names `--port`. Ctrl-C stops it.
+It listens on `127.0.0.1` only and rejects a foreign `Host` header. `GET` reads; the only `POST`s
+are the four writes below. If the port is busy it exits 2 and names `--port`. Ctrl-C stops it.
 
 The page polls `/api/runs` every 10 seconds. The page file is read on every request, so a
 `git pull` shows up on reload.
+
+## Screens
+
+Home (every plan on one line), a plan screen (Timeline, Questions, Events, Spec, Plan), a draft
+screen (spec and plan reviewed per section and approved), History and Euklides.
+
+## Endpoints
+
+Reads (`GET`): `/api/runs`, `/api/drafts`, `/api/draft`, `/api/history`, `/api/euklides`, `/api/image`.
+
+The four writes (`POST`, JSON body), each through the same code the terminal commands use:
+
+| Endpoint | Write |
+|---|---|
+| `/api/review` | a section's verdict and note, into `review.json` |
+| `/api/approve-spec` | the spec's `status: approved` (every section must be `ok`) |
+| `/api/approve-plan` | the plan's approval, like the terminal command (valid plan, spec approved, every section `ok`, sha unchanged) |
+| `/api/answer` | an answer to an open question, like `ark answer` |
+
+## Token and Origin rule
+
+Every `POST` must carry a `Host` of `127.0.0.1:<port>` or `localhost:<port>`, an `Origin` of
+`http://127.0.0.1:<port>` or `http://localhost:<port>`, and an `X-Ark-Token` header equal to the
+token the server generated at start and put in the page it serves. Otherwise it answers 403. A
+process with `ARK_ROLE` set (a runner worker) cannot approve plans or answer.
+
+## What the server writes
+
+Only: `review.json` in a draft's folder, the `status` of a `spec.md`, the plan approval, and
+answers to a run's questions. Nothing else.
+
+## review.json
+
+```json
+{
+  "version": 1,
+  "docs": {
+    "spec": {
+      "sha256": "<hash of the whole file>",
+      "sections": {
+        "<key>": {"verdict": "ok", "note": "", "at": "2026-11-13T10:00:00+00:00", "hash": "<hash of the section>"}
+      }
+    },
+    "plan": {"sha256": "...", "sections": {}}
+  }
+}
+```
+
+A section is a `## ` block outside code fences; its `<key>` is the lowercased dashed title (`-2`
+for a repeat). `verdict` is `ok` or `change`; `note` (up to 4000 characters) says what to change. A
+verdict counts only while the section's `hash` is the current one: editing a section resets that
+section and no other. `ark-plan` resuming a slug reads this file and works the `change` sections
+first.
 
 ## Notifications
 
