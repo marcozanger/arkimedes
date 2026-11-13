@@ -26,6 +26,8 @@ def _outcome(d: dict) -> str:
         st = run.load(d["repo"], d["slug"])
     except Exception:
         st = None
+    if d["job"] == euklides.RUN and isinstance(st, dict):  # a run-level decision: the run's own outcome
+        return st.get("status") if st.get("status") in ("done", "blocked") else "still running"
     j = (st or {}).get("jobs", {}).get(d["job"]) if isinstance(st, dict) else None
     if not isinstance(j, dict):
         return "run gone"
@@ -44,6 +46,8 @@ def card(d: dict, outcome: str) -> str:
              f"run: {d['repo']}/{d['slug']} · job: {d['job']} · trigger: {d['trigger']} · outcome: {outcome}",
              f"situation: {d.get('situation', '')}",
              f"decided: {d['action']} — {d.get('note', '')}"]
+    if d.get("raise_usd") is not None:
+        lines.append(f"raised: ${d['raise_usd']:.2f}")
     if d.get("undo"):
         lines.append(f"undo: {d['undo']} — {d.get('why', '')}")
     if d.get("proposal"):

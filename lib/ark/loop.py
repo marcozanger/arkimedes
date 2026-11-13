@@ -571,11 +571,31 @@ def on_euklides(c: Ctx, job: str, r: dict) -> None:
         return _widen(c, job, e, d, decision)
     if d["action"] == "fix_base":
         return _fix_base(c, job, e, d, decision)
+    if d["action"] == "raise":
+        return _raise(c, job, e, d, decision)
     j["euklides_count"] = j.get("euklides_count", 0) + 1
     if d["action"] == "fixed":
         return _fixed(c, job, e, d, decision)
     if d["action"] == "escalate":
         _escalate(j)
+    _go_on(c.st, job, e, d["note"])
+
+
+def _raise(c: Ctx, job: str, e: dict, d: dict, decision) -> None:
+    """Within what is left of his margin (a total across his raises), the job's budget grows and it goes on;
+    past it, Marco decides, and his `ok` raises it without touching Euklides' margin."""
+    j, budget = c.st["jobs"][job], c.mjobs[job]["budget"]["usd"]
+    left = euklides.margin_left(j, budget, euklides.settings()["budget_margin"])
+    if d["usd"] > left + 1e-9:
+        proposal = f"raise {job}'s budget by ${d['usd']:.2f} (answer ok)"
+        _euklides_ask(c.st, job, {**e, "situation": f"{e['situation']}\n\nEuklides would raise the budget by "
+                                                    f"${d['usd']:.2f}, past the ${max(0, left):.2f} left of his margin"},
+                      {**d, "proposal": proposal}, decision)
+        j["euklides_ask"].update(raise_usd=d["usd"], note=d["note"])
+        return
+    j["usd_raised"] = round(j.get("usd_raised", 0) + d["usd"], 4)
+    j["euklides_count"] = j.get("euklides_count", 0) + 1
+    run.event(c.st, f"{job}: Euklides raised its budget by ${d['usd']:.2f} (${j['usd_raised']:.2f} raised in all)")
     _go_on(c.st, job, e, d["note"])
 
 
@@ -1041,6 +1061,14 @@ def _on_receipt(c: Ctx, name: str, r: dict) -> None:
         else:
             run.event(c.st, f"ignored the result of {name}: nothing was waiting for it")
         return
+    if name == RUN_EUKLIDES:
+        try:
+            return on_run_euklides(c, r)
+        except Exception as e:  # the receipt is gone: never leave the run holding for it without a question
+            run.event(c.st, f"runner error after {name}: {type(e).__name__}: {_clean(str(e))}")
+            spent, _, budget = _run_budget(c)
+            c.st["cap_hold"] = True
+            return _ask_cap_run(c.st, spent, budget) if spent > budget else None
     if name.startswith(FIX_PREFIX):
         try:
             return on_fix(c, name, r)
@@ -1255,9 +1283,10 @@ def _dependents(c: Ctx, job: str) -> list[str]:
 def start_euklides(c: Ctx, job: str) -> None:
     j = c.st["jobs"][job]
     e, mj = j["euklides"], c.mjobs[job]
-    e["allowed"] = euklides.allowed(e["trigger"], j, mj["budget"]["usd"], kind=e.get("kind"),  # fixed now: the
-                                    base_red=bool(e.get("base_red")),  # answer is checked against it
-                                    fixes_used=c.st.get("fix_base_count", 0))
+    cfg = euklides.settings()
+    e["allowed"] = euklides.allowed(e["trigger"], j, mj["budget"]["usd"], cfg["budget_margin"],  # fixed now: the
+                                    kind=e.get("kind"), base_red=bool(e.get("base_red")),  # answer is checked
+                                    fixes_used=c.st.get("fix_base_count", 0))  # against it
     wt = c.wt(job)
     commits, changed = _branch_lists(wt, f"origin/{c.base}")
     prompt = brief.euklides_prompt(c.st, job, j, mj, c.plan, trigger=e["trigger"], situation=e["situation"],
@@ -1266,8 +1295,9 @@ def start_euklides(c: Ctx, job: str) -> None:
                                    worktree=wt, log=c.dir / f"{job}.worker.log", lessons=euklides.lessons(),
                                    earlier=[d for d in euklides.decisions()
                                             if str(d.get("id", "")).startswith(f"{c.st['repo']}/{c.st['slug']}/{job}/")][-10:],
-                                   base_check=("red on " + c.base + " without the job too") if e.get("base_red") else None)
-    cfg = euklides.settings()
+                                   base_check=("red on " + c.base + " without the job too") if e.get("base_red") else None,
+                                   usd_raised=j.get("usd_raised", 0),
+                                   margin_left=euklides.margin_left(j, mj["budget"]["usd"], cfg["budget_margin"]))
     cmd = claude.agent_cmd("euklides", cfg["model"], prompt, session=str(uuid.uuid4()), usd=cfg["usd_per_call"],
                            tools=cfg["tools"], denied_tools=cfg["denied_tools"])
     # Bash and edits in the job's worktree: the push layer and merge-guard leave pushing and PRs to the runner
@@ -1639,6 +1669,10 @@ def reconcile(st: dict) -> None:
         return
     d = paths.run_dir(st["repo"], st["slug"])
     _reconcile_fixes(st, d)
+    if st.get("cap_euklides") and not (d / f"{RUN_EUKLIDES}.proc").exists():
+        st.pop("cap_euklides")
+        st.pop("cap_hold", None)  # the next cap check asks him again
+        run.event(st, "the run's Euklides call is gone without a result; asking again")
     if st.get("closing") == "decisions" and not (d / f"{DECISIONS}.proc").exists():
         st["closing"] = None
         run.event(st, "the decisions tick is gone without a result; starting it again")
@@ -1780,12 +1814,18 @@ def _answered_worker(st: dict, q: dict, text: str) -> None:
             euklides.set_marco(ask["decision"], text)
         except OSError as err:
             run.event(st, f"{job}: the Euklides journal could not be written: {err}")
-    if ask and text.strip().lower() == "ok" and ask.get("proposal") and not ask.get("grant"):
+    if ask and text.strip().lower() == "ok" and ask.get("proposal") and not ask.get("grant") and not ask.get("raise_usd"):
         text = ask["proposal"]
     if text == questions.STOP_JOB or text.startswith(questions.STOP_JOB + " "):
         return _block(st, job, f"stopped by Marco at question {q['id']}: {text}"[:600])
     if ask and ask.get("grant") and text.strip().lower() == "ok":
         return _grant(st, job, ask["grant"], ask.get("decision"), by="Marco")
+    if ask and ask.get("raise_usd") and text.strip().lower() == "ok":
+        usd = ask["raise_usd"]
+        j["usd_raised"] = round(j.get("usd_raised", 0) + usd, 4)
+        j["marco_raised"] = round(j.get("marco_raised", 0) + usd, 4)  # never against Euklides' margin
+        run.event(st, f"{job}: Marco raised its budget by ${usd:.2f}")
+        return _go_on(st, job, ask["ctx"], ask.get("note") or "go on: Marco raised the budget")
     if ask:
         return _go_on(st, job, ask["ctx"], text)
     _resume_with_answer(st, job, text)  # a question asked before Euklides
@@ -1848,6 +1888,12 @@ def _answered_plan_changed(st: dict, q: dict, text: str) -> None:
 
 
 def _answered_cap_run(st: dict, q: dict, text: str) -> None:
+    decision = st.pop("cap_decision", None)
+    if decision:
+        try:
+            euklides.set_marco(decision, text)
+        except OSError as err:
+            run.event(st, f"the Euklides journal could not be written: {err}")
     words = text.split()
     if words == ["stop"]:
         return _begin_end(st, ENDED)
@@ -1856,19 +1902,88 @@ def _answered_cap_run(st: dict, q: dict, text: str) -> None:
     run.event(st, f"budget raised by ${float(words[1]):.2f}")
 
 
+RUN_EUKLIDES = f"{euklides.RUN}.euklides"  # the run-level Euklides call, when a run is over its total
+RUN_TOOLS = ["Read", "Grep", "Glob"]  # no worktree in this call: it reads, never edits or runs
+
+
+def _run_budget(c: Ctx) -> tuple[float, float, float]:
+    """(spent, planned total, the total with Marco's and Euklides' raises)."""
+    st, planned = c.st, caps.run_budget(c.mjobs)
+    return caps.run_spent(st), planned, planned + st.get("usd_raised", 0) + st.get("euklides_raised", 0)
+
+
+def _ask_cap_run(st: dict, spent: float, budget: float, euk: str = "") -> None:
+    questions.ask(st, "cap_run", f"This run spent ${spent:.2f}, over the ${budget:.2f} of its budgets. Running "
+                                 "workers finish; nothing new starts. Answer `raise <usd>` to add budget, or "
+                                 f"`stop` to end the run.{euk}", critical=True)
+
+
 def _check_run_cap(c: Ctx) -> None:
-    """Over its budgets, a run holds: what runs finishes, nothing new starts, and Marco decides."""
+    """Over its budgets, a run holds: what runs finishes, nothing new starts. Euklides decides first while his
+    margin (a share of the planned total, a total across his raises) is left; then Marco decides."""
     st = c.st
-    spent = caps.run_spent(st)
-    budget = caps.run_budget(c.mjobs) + st.get("usd_raised", 0)
+    spent, planned, budget = _run_budget(c)
     if spent <= budget or all(j["status"] in run.TERMINAL for j in st["jobs"].values()):
         st.pop("cap_hold", None)
         questions.drop_kind(st, "cap_run")
     elif not st.get("cap_hold"):
         st["cap_hold"] = True
-        questions.ask(st, "cap_run", f"This run spent ${spent:.2f}, over the ${budget:.2f} of its budgets. Running "
-                                     "workers finish; nothing new starts. Answer `raise <usd>` to add budget, or "
-                                     "`stop` to end the run.", critical=True)
+        cfg = euklides.settings()
+        left = euklides.run_margin_left(st, planned, cfg["budget_margin"])
+        if left > 1e-9 and st.get("euklides_run_count", 0) < cfg["decisions_per_job"]:
+            return _start_run_euklides(c, spent, planned, left, cfg)
+        _ask_cap_run(st, spent, budget)
+
+
+def _start_run_euklides(c: Ctx, spent: float, planned: float, left: float, cfg: dict) -> None:
+    st = c.st
+    situation = f"the run spent ${spent:.2f}, over its planned total of ${planned:.2f} and its raises"
+    prompt = brief.euklides_run_prompt(st, spent=spent, planned=planned, usd_raised=st.get("usd_raised", 0),
+                                       euklides_raised=st.get("euklides_raised", 0), margin_left=left,
+                                       allowed=euklides.RUN_ACTIONS, lessons=euklides.lessons(),
+                                       earlier=[d for d in euklides.decisions() if str(d.get("id", "")).startswith(
+                                           f"{st['repo']}/{st['slug']}/{euklides.RUN}/")][-10:])
+    cmd = claude.agent_cmd("euklides", cfg["model"], prompt, session=str(uuid.uuid4()), usd=cfg["usd_per_call"],
+                           tools=[t for t in RUN_TOOLS if t not in cfg["denied_tools"]],
+                           denied_tools=sorted(set(cfg["denied_tools"]) | {"Bash", "Edit", "Write"}))
+    env = claude.runner_env("euklides", repo_name=st["repo"])
+    proc.start(c.dir, RUN_EUKLIDES, cmd, cwd=ticks_dir(), env=env, minutes=cfg["minutes_per_call"])
+    st["cap_euklides"] = {"situation": situation}
+    run.event(st, f"{situation}: Euklides decides first")
+
+
+def on_run_euklides(c: Ctx, r: dict) -> None:
+    """Euklides' answer on a run over its total: a raise within his margin lets the run go on; past it, an
+    `ask` or no usable answer opens Marco's budget question with his note and proposal."""
+    st = c.st
+    e = st.pop("cap_euklides", None)
+    if e is None:
+        return run.event(st, f"ignored the result of {RUN_EUKLIDES}: nothing was waiting for it")
+    d = euklides.parse(_answer(r) if _clean_exit(r) else None, euklides.RUN_ACTIONS)
+    valid = d is not None
+    d = d or NO_ANSWER
+    try:
+        decision = euklides.record(st, euklides.RUN, {"trigger": "cap_run", **e}, d, valid=valid, usd=_usd(r.get("usd")))
+    except OSError as err:
+        decision = None
+        run.event(st, f"the Euklides journal could not be written: {err}")
+    run.event(st, f"run euklides: {d['action']} — {_clean(d['note'])[:300]}")
+    spent, planned, budget = _run_budget(c)
+    left = euklides.run_margin_left(st, planned, euklides.settings()["budget_margin"])
+    if d["action"] == "raise" and d["usd"] <= left + 1e-9:
+        st["euklides_raised"] = round(st.get("euklides_raised", 0) + d["usd"], 4)
+        st["euklides_run_count"] = st.get("euklides_run_count", 0) + 1
+        st.pop("cap_hold", None)
+        return run.event(st, f"Euklides raised the run's budget by ${d['usd']:.2f} "
+                             f"(${st['euklides_raised']:.2f} raised by him in all)")
+    st["cap_hold"] = True
+    if spent <= budget:
+        return
+    proposal = f"raise {d['usd']:g}" if d["action"] == "raise" else (d["proposal"] or "stop")
+    past = f" (a raise of ${d['usd']:.2f}, past the ${max(0, left):.2f} left of his margin)" \
+        if d["action"] == "raise" else ""
+    st["cap_decision"] = decision
+    _ask_cap_run(st, spent, budget, f"\n\nEuklides{past}: {_clean(d['note'])}\n\nProposal: {_clean(proposal)}")
 
 
 def _retry_stops(st: dict) -> None:

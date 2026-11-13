@@ -3545,3 +3545,82 @@ def test_a_workers_non_fast_forward_still_blocks(runner, tmp_path):
     assert j["status"] == "needs_push" and j["push_tries"] == 1
     assert gitops.remote_sha(c.repo, f"ark/{SLUG}-page") == old
     assert gitops.remote_sha(c.repo, f"ark/backup/{SLUG}-page-{old[:8]}") is None
+
+
+# ---- raise: Euklides adds budget to a job, up to its margin --------------------------------------
+
+def margin(ark_home, value):
+    f = ark_home / "workspace.json"
+    f.write_text(json.dumps({**json.loads(f.read_text()), "euklides": {"budget_margin": value}}))
+
+
+def over_budget(tmp_path, **over):
+    c = at_euklides(tmp_path, allowed=("raise", "fixed", "ask"), session="s1", usd=1.2, **over)
+    c.mjobs["shell"]["budget"]["usd"] = 1
+    return c
+
+
+def test_a_raise_within_the_margin_raises_the_job_and_it_goes_on(tmp_path, ark_home):
+    margin(ark_home, 0.5)
+    c = over_budget(tmp_path)
+    loop.on_euklides(c, "shell", euk_answer(action="raise", usd=0.4, note="one more attempt fixes the import"))
+    j = c.st["jobs"]["shell"]
+    assert j["usd_raised"] == 0.4 and j["status"] == "needs_worker" and j["euklides_count"] == 1
+    assert "one more attempt fixes the import" in j["resume_msg"]
+    assert any("raised" in e and "$0.40" in e for e in c.st["events"])
+    [row] = euklides_mod.decisions()
+    assert row["action"] == "raise" and row["raise_usd"] == 0.4 and row["usd"] == 0.4
+    assert not c.st.get("questions")
+
+
+def test_a_raise_past_the_margin_left_asks_marco_with_the_raise_as_proposal(tmp_path, ark_home):
+    margin(ark_home, 0.5)
+    c = over_budget(tmp_path)
+    loop.on_euklides(c, "shell", euk_answer(action="raise", usd=0.6, note="it needs more"))
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "waiting_answer" and j.get("usd_raised", 0) == 0
+    [q] = c.st["questions"]
+    assert "raise" in q["text"] and "$0.60" in q["text"] and "$0.50" in q["text"]
+    assert j["euklides_ask"]["raise_usd"] == 0.6
+
+
+def test_the_margin_is_a_total_across_decisions(tmp_path, ark_home):
+    margin(ark_home, 0.5)
+    c = over_budget(tmp_path)
+    loop.on_euklides(c, "shell", euk_answer(action="raise", usd=0.25, note="a little more"))
+    j = c.st["jobs"]["shell"]
+    assert j["usd_raised"] == 0.25
+    j.update(status="euklides", usd=1.3,
+             euklides={"trigger": "failure", "situation": "red", "kind": None, "allowed": ["raise", "fixed", "ask"]})
+    loop.on_euklides(c, "shell", euk_answer(action="raise", usd=0.3, note="a little more again"))
+    assert j["usd_raised"] == 0.25 and j["status"] == "waiting_answer"
+    assert j["euklides_ask"]["raise_usd"] == 0.3
+
+
+def test_marcos_ok_to_a_raise_adds_to_the_job_but_not_to_the_margin(tmp_path, ark_home):
+    margin(ark_home, 0.5)
+    c = over_budget(tmp_path)
+    loop.on_euklides(c, "shell", euk_answer(action="raise", usd=0.6, note="it needs more"))
+    loop._apply_answer(c.st, {"id": "q1", "text": "ok"})
+    j = c.st["jobs"]["shell"]
+    assert j["usd_raised"] == 0.6 and j["marco_raised"] == 0.6 and j["status"] == "needs_worker"
+    assert j["note"].endswith("Note: it needs more")
+    assert euklides_mod.margin_left(j, 1, 0.5) == 0.5
+
+
+def test_start_euklides_opens_raise_with_the_margin_and_states_it(tmp_path, ark_home, monkeypatch):
+    margin(ark_home, 0.5)
+    c = at_euklides(tmp_path, usd=1.2)
+    c.mjobs["shell"]["budget"]["usd"] = 1
+    j = c.st["jobs"]["shell"]
+    j["status"] = "needs_euklides"
+    seen = {}
+    monkeypatch.setattr(loop.brief, "euklides_prompt", lambda *a, **kw: seen.update(kw) or "prompt")
+    monkeypatch.setattr(loop.proc, "start", lambda *a, **kw: None)
+    monkeypatch.setattr(loop, "_branch_lists", lambda wt, base: ([], []))
+    monkeypatch.setattr(loop, "_dependents", lambda c, job: [])
+    monkeypatch.setattr(loop.gitops, "origin_url", lambda repo: "file:///x")
+    c.read_report = lambda job: None
+    c.plan = None
+    loop.start_euklides(c, "shell")
+    assert "raise" in j["euklides"]["allowed"] and seen["margin_left"] == 0.5
