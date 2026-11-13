@@ -384,17 +384,34 @@ def on_worker(c: Ctx, job: str, r: dict) -> None:
         return to_euklides(c, job, "question", j["question"])
     if status != "DONE":
         return fail(c, job, f"the worker ended {status}: {detail}")
-    wt = c.wt(job)
+    bad = done_check(c, job)
+    if bad and bad[0] == "outside":
+        return to_euklides(c, job, "blocked", bad[1], "area")
+    if bad:
+        return fail(c, job, {"dirty": "the worker ended DONE with uncommitted changes",
+                             "empty": "the worker ended DONE without any change"}.get(bad[0],
+                                                                                       f"the worker ended DONE, but {bad[1]}"))
+    j.update(status="needs_push", head=gitops.rev(c.wt(job), "HEAD"))
+    run.event(c.st, f"{job}: worker done, head {j['head'][:8]}")
+
+
+def done_check(c: Ctx, job: str) -> tuple[str, str] | None:
+    """What a job's worktree must hold before its head is pushed, after a worker's DONE or Euklides' `fixed`:
+    a clean tree, on the job's branch, with changes against the base, all inside the area. None when it does;
+    otherwise (kind, why): dirty, branch, empty or outside."""
+    wt, branch = c.wt(job), c.branch(job)
     if not gitops.is_clean(wt):
-        return fail(c, job, "the worker ended DONE with uncommitted changes")
+        return "dirty", "the tree has uncommitted changes"
+    on = gitops.current_branch(wt)
+    if on != branch:
+        return "branch", f"the worktree is on {_printable(on) if on else 'a detached HEAD'}, not {branch}"
     files = gitops.changed_files(wt, f"origin/{c.base}", "HEAD")
     if not files:
-        return fail(c, job, "the worker ended DONE without any change")
+        return "empty", f"nothing changed against origin/{c.base}"
     outside = [_printable(f) for f in files if not match_any(f, run.area(c.st, job, c.mjobs[job]))]
     if outside:
-        return to_euklides(c, job, "blocked", "changed files outside its area: " + ", ".join(outside[:5]), "area")
-    j.update(status="needs_push", head=gitops.rev(wt, "HEAD"))
-    run.event(c.st, f"{job}: worker done, head {j['head'][:8]}")
+        return "outside", "changed files outside its area: " + ", ".join(outside[:5])
+    return None
 
 
 def on_gate(c: Ctx, job: str, r: dict) -> None:
@@ -555,9 +572,29 @@ def on_euklides(c: Ctx, job: str, r: dict) -> None:
     if d["action"] == "fix_base":
         return _fix_base(c, job, e, d, decision)
     j["euklides_count"] = j.get("euklides_count", 0) + 1
+    if d["action"] == "fixed":
+        return _fixed(c, job, e, d, decision)
     if d["action"] == "escalate":
         _escalate(j)
     _go_on(c.st, job, e, d["note"])
+
+
+FIXED_PROPOSAL = ":stop, or say what the job should do"
+
+
+def _fixed(c: Ctx, job: str, e: dict, d: dict, decision) -> None:
+    """Euklides repaired the branch himself. Checked like a worker's DONE; then pushed (a rewrite with a backup
+    and a lease) and gated, with no new worker attempt. A failed check asks Marco and pushes nothing."""
+    j = c.st["jobs"][job]
+    bad = done_check(c, job) if c.wt(job).is_dir() else ("worktree", "the job has no worktree")
+    if bad:
+        return _euklides_ask(c.st, job, e, {**d, "note": f"it replied fixed, but {bad[1]}",
+                                            "proposal": FIXED_PROPOSAL}, decision)
+    for k in ("question", "not_before", "push_tries", "step_tries"):
+        j.pop(k, None)
+    j.update(status="needs_push", head=gitops.rev(c.wt(job), "HEAD"), rewrite_ok=True, integrate_fails=0,
+             review_errors=0)
+    run.event(c.st, f"{job}: Euklides fixed the branch, head {j['head'][:8]}")
 
 
 # ---- what Euklides can fix: widen a job's area, fix the base ----------------------------------
@@ -1105,21 +1142,43 @@ def start_worker(c: Ctx, job: str) -> bool:
 
 def push_job(c: Ctx, job: str) -> None:
     """The worker's result is saved and paid for, so a failed push retries through _error. Only a branch
-    on origin that this head does not descend from can never heal: Marco decides what to do with it."""
+    on origin that this head does not descend from can never heal: Marco decides what to do with it. Unless
+    Euklides rewrote the branch (`rewrite_ok`): the old head is kept on ark/backup/<slug>-<job>-<sha8>, and the
+    new one replaces it with a lease on the old."""
     j, branch = c.st["jobs"][job], c.branch(job)
     try:
         gitops.push_ref(c.repo, j["head"], branch)
     except gitops.GitError:
         remote = gitops.remote_sha(c.repo, branch)
         if remote and remote != j["head"] and not gitops.is_ancestor(c.repo, remote, j["head"]):
+            if j.get("rewrite_ok"):
+                return _push_rewrite(c, job, branch, remote)
             return _passing(c, job, "push_tries",
                             f"non-fast-forward: {branch} on origin holds {remote[:8]}, which this head does "
                             "not descend from: the worker amended or rebased, or someone else pushed there. "
                             "Delete that branch or look at it", "needs_push")
         raise
+    _pushed(c, job)
+
+
+def _pushed(c: Ctx, job: str) -> None:
+    j = c.st["jobs"][job]
     j.pop("push_tries", None)
+    j.pop("rewrite_ok", None)
     j["status"] = "needs_gate"
     run.event(c.st, f"{job}: head {j['head'][:8]} pushed")
+
+
+def _push_rewrite(c: Ctx, job: str, branch: str, remote: str) -> None:
+    """Euklides' rebuilt head over the one on origin: the old head first goes to a backup branch."""
+    j = c.st["jobs"][job]
+    backup = f"ark/backup/{c.st['slug']}-{job}-{remote[:8]}"
+    if gitops.remote_sha(c.repo, backup) != remote:
+        gitops.fetch(c.repo)  # the old head may only be on origin
+        gitops.push_ref(c.repo, remote, backup)
+    gitops.push_ref_lease(c.repo, j["head"], branch, remote)
+    run.alert(c.st, f"{job}: Euklides rewrote {branch}; its old head {remote[:8]} is kept on {backup}")
+    _pushed(c, job)
 
 
 def start_gate(c: Ctx, job: str) -> None:
@@ -1200,7 +1259,9 @@ def start_euklides(c: Ctx, job: str) -> None:
                                     base_red=bool(e.get("base_red")),  # answer is checked against it
                                     fixes_used=c.st.get("fix_base_count", 0))
     wt = c.wt(job)
+    commits, changed = _branch_lists(wt, f"origin/{c.base}")
     prompt = brief.euklides_prompt(c.st, job, j, mj, c.plan, trigger=e["trigger"], situation=e["situation"],
+                                   base=c.base, commits=commits, changed=changed,
                                    allowed=e["allowed"], report=c.read_report(job), dependents=_dependents(c, job),
                                    worktree=wt, log=c.dir / f"{job}.worker.log", lessons=euklides.lessons(),
                                    earlier=[d for d in euklides.decisions()
@@ -1209,9 +1270,21 @@ def start_euklides(c: Ctx, job: str) -> None:
     cfg = euklides.settings()
     cmd = claude.agent_cmd("euklides", cfg["model"], prompt, session=str(uuid.uuid4()), usd=cfg["usd_per_call"],
                            tools=cfg["tools"], denied_tools=cfg["denied_tools"])
-    proc.start(c.dir, f"{job}.euklides", cmd, cwd=wt if wt.is_dir() else ticks_dir(),
-               env=claude.runner_env("euklides", repo_name=c.st["repo"]), minutes=cfg["minutes_per_call"])
+    # Bash and edits in the job's worktree: the push layer and merge-guard leave pushing and PRs to the runner
+    env = claude.runner_env("euklides", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo))
+    proc.start(c.dir, f"{job}.euklides", cmd, cwd=wt if wt.is_dir() else ticks_dir(), env=env,
+               minutes=cfg["minutes_per_call"])
     j["status"] = "euklides"
+
+
+def _branch_lists(wt: Path, base: str) -> tuple[list, list]:
+    """The job's commits and changed files against the base, for Euklides' prompt; empty without a worktree."""
+    if not wt.is_dir():
+        return [], []
+    try:
+        return gitops.branch_commits(wt, base), gitops.branch_changes(wt, base)
+    except gitops.GitError:
+        return [], []
 
 
 # ---- closing ----------------------------------------------------------------------------------

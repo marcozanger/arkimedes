@@ -111,12 +111,19 @@ def test_outside_area_blocks_the_job_and_its_dependents(feature, monkeypatch):
 
 def test_a_failed_attempt_goes_to_euklides_and_is_retried(feature, monkeypatch, tmp_path):
     monkeypatch.setenv("FAKE_FAIL", "shell:1")
-    feature()
+    repo, _ = feature()
     drive(jobs_settled)
     j = state()["jobs"]["shell"]
     assert j["status"] == "merged" and j["attempts"] == 2 and j["tier_path"] == ["T1"]
     assert any("euklides: retry" in e for e in state()["events"])
     assert (tmp_path / "fake" / "euklides.count").read_text() == "1"
+    env = json.loads((tmp_path / "fake" / "euklides.1.env").read_text())  # Euklides has Bash: the push layer too
+    assert env["ARK_ROLE"] == "euklides"
+    n = int(env["GIT_CONFIG_COUNT"]) - 1  # the last entry: the one runner_env added
+    assert env[f"GIT_CONFIG_KEY_{n}"] == f"url.{claude.DEAD_PUSH_URL}.pushInsteadOf"
+    assert env[f"GIT_CONFIG_VALUE_{n}"] == gitops.origin_url(repo)
+    prompt = (tmp_path / "fake" / "euklides.1.prompt").read_text()
+    assert f"## The branch against the run's base (origin/ark/{SLUG})" in prompt and "(no commits)" in prompt
 
 
 def test_review_fix_resumes_the_worker(feature, monkeypatch):
@@ -374,6 +381,7 @@ def test_setup_counts_as_done_only_when_the_process_got_through_it(tmp_path, r, 
 def test_a_file_name_that_is_not_utf8_cannot_break_the_state(tmp_path, monkeypatch):
     c = bare(tmp_path)
     monkeypatch.setattr(gitops, "is_clean", lambda wt: True)
+    monkeypatch.setattr(gitops, "current_branch", lambda wt: f"ark/{SLUG}-shell")
     monkeypatch.setattr(gitops, "changed_files", lambda *a: ["bad\udcff.txt"])
     loop.on_worker(c, "shell", receipt("STATUS: DONE"))
     j = c.st["jobs"]["shell"]
@@ -385,7 +393,7 @@ def test_a_file_name_that_is_not_utf8_cannot_break_the_state(tmp_path, monkeypat
 
 def test_a_retry_past_the_budget_is_not_open_and_asks_marco(tmp_path, ark_home):
     c = bare(tmp_path, status="needs_euklides", usd=5.0, euklides={"trigger": "failure", "situation": "red", "kind": None})
-    assert euklides_mod.allowed("failure", c.st["jobs"]["shell"], 2) == ["ask"]
+    assert euklides_mod.allowed("failure", c.st["jobs"]["shell"], 2) == ["fixed", "ask"]  # fixed pays no worker
 
 
 def test_retries_are_capped_by_euklides_decisions_not_by_the_tier(feature, monkeypatch):
@@ -3227,7 +3235,8 @@ def test_a_check_lost_again_and_again_goes_to_euklides_not_to_a_block(tmp_path):
     assert j["status"] == "needs_euklides" and j["euklides"]["back"] == "needs_integrate"
 
 
-def test_start_euklides_runs_read_only_in_the_worktree(tmp_path, monkeypatch):
+def test_start_euklides_runs_with_its_hands_in_the_worktree(tmp_path, monkeypatch):
+    monkeypatch.setattr(gitops, "origin_url", lambda repo: "git@example.com:o/r.git")
     c = bare(tmp_path, status="needs_euklides", euklides={"trigger": "failure", "situation": "red", "kind": None})
     (tmp_path / "shell").mkdir()
     c.plan = SimpleNamespace(manifest={"jobs": [c.mjobs["shell"], job("ui", ["T2"], ["src/ui/**"], after=["shell"])]},
@@ -3238,14 +3247,20 @@ def test_start_euklides_runs_read_only_in_the_worktree(tmp_path, monkeypatch):
     monkeypatch.setattr(loop.brief, "task_texts", lambda plan: {}, raising=False)
     loop.start_euklides(c, "shell")
     j = c.st["jobs"]["shell"]
-    assert j["status"] == "euklides" and j["euklides"]["allowed"] == ["retry", "escalate", "ask"]
+    assert j["status"] == "euklides" and j["euklides"]["allowed"] == ["retry", "escalate", "fixed", "ask"]
     assert started["name"] == "shell.euklides" and started["cwd"] == tmp_path / "shell"
-    assert started["minutes"] == 20 and started["env"]["ARK_ROLE"] == "euklides"
-    assert started["cmd"][started["cmd"].index("--allowedTools") + 1] == "Read,Grep,Glob"
+    assert started["minutes"] == 30 and started["env"]["ARK_ROLE"] == "euklides"
+    assert started["cmd"][started["cmd"].index("--allowedTools") + 1] == "Read,Grep,Glob,Bash,Edit,Write"
+    env = started["env"]
+    n = int(env["GIT_CONFIG_COUNT"]) - 1  # the last entry: the one runner_env added
+    assert env[f"GIT_CONFIG_KEY_{n}"] == f"url.{claude.DEAD_PUSH_URL}.pushInsteadOf"
+    assert env[f"GIT_CONFIG_VALUE_{n}"] == "git@example.com:o/r.git"
+    assert "(no commits)" in started["cmd"][started["cmd"].index("-p") + 1]  # not a repo: empty lists
     assert "Jobs that build on this one: ui" in started["cmd"][started["cmd"].index("-p") + 1]
 
 
 def test_start_euklides_takes_its_settings_from_the_workspace(tmp_path, monkeypatch, ark_home):
+    monkeypatch.setattr(gitops, "origin_url", lambda repo: "git@example.com:o/r.git")
     set_workspace(ark_home, euklides={"model": "sonnet", "usd_per_call": 2, "minutes_per_call": 7, "tools": ["Read"]})
     c = bare(tmp_path, status="needs_euklides", euklides={"trigger": "failure", "situation": "red", "kind": None})
     c.plan = SimpleNamespace(manifest={"jobs": [c.mjobs["shell"]]}, sections={"Goal": "g"})
@@ -3267,6 +3282,7 @@ def test_a_bad_euklides_setting_stops_the_cycle_before_any_process(ark_home, mon
 
 
 def test_start_euklides_without_a_worktree_runs_in_the_ticks_folder(tmp_path, monkeypatch):
+    monkeypatch.setattr(gitops, "origin_url", lambda repo: "git@example.com:o/r.git")
     c = bare(tmp_path, status="needs_euklides", euklides={"trigger": "question", "situation": "q", "kind": None})
     c.plan = SimpleNamespace(manifest={"jobs": [c.mjobs["shell"]]}, sections={"Goal": "g"})
     c.read_report = lambda j: None
@@ -3408,3 +3424,124 @@ def test_a_new_approval_that_only_widens_the_area_keeps_the_merged_jobs(feature,
     assert not [a for a in alerts if "cannot take the new approval" in a]
     assert st["status"] == "running" and st["plan_sha"] == sha256_file(p) and "extra/**" in st["area"]
     assert st["jobs"]["shell"]["status"] == "merged"
+
+
+# -- Euklides repairs the branch himself: `fixed`
+
+FIX_INTO_AREA = ("git reset -q --hard HEAD~1 && mkdir -p src/shell && echo fixed > src/shell/shell.txt "
+                 "&& git add -A && git commit -q -m 'shell: moved into the area'")
+
+
+def test_a_fixed_branch_is_pushed_and_gated_without_a_new_worker(feature, monkeypatch, tmp_path):
+    monkeypatch.setenv("FAKE_OUTSIDE", "shell")
+    monkeypatch.setenv("FAKE_EUKLIDES_RUN", FIX_INTO_AREA)
+    monkeypatch.setenv("FAKE_EUKLIDES", '{"action": "fixed", "note": "moved the file into the area"}')
+    repo, _ = feature()
+    drive(jobs_settled)
+    st = state()
+    j = st["jobs"]["shell"]
+    assert j["status"] == "merged" and j["attempts"] == 1 and j["euklides_count"] == 1
+    assert (tmp_path / "fake" / "shell.worker.count").read_text() == "1"      # no new worker attempt
+    assert [r["action"] for r in euklides_mod.decisions()] == ["fixed"]
+    assert "rewrite_ok" not in j
+    fixed = next(i for i, e in enumerate(st["events"]) if "shell euklides: fixed" in e)
+    pushed = next(i for i, e in enumerate(st["events"]) if "shell: head" in e and "pushed" in e)
+    gate = next(i for i, e in enumerate(st["events"]) if "shell: job gate green" in e)
+    assert fixed < pushed < gate
+    gitops.fetch(repo)
+    assert "outside/shell.txt" not in gitops.changed_files(repo, st["base_sha"], f"origin/ark/{SLUG}")
+
+
+@pytest.mark.parametrize("cmd, why", [
+    ("echo x > loose.txt", "uncommitted changes"),
+    ("git checkout -q -b elsewhere", f"not ark/{SLUG}-shell"),
+    (f"git reset -q --hard origin/ark/{SLUG}", "nothing changed against"),
+    ("true", "outside its area: outside/shell.txt"),
+])
+def test_a_fixed_that_fails_a_check_asks_marco_and_pushes_nothing(feature, monkeypatch, cmd, why):
+    monkeypatch.setenv("FAKE_OUTSIDE", "shell")
+    monkeypatch.setenv("FAKE_EUKLIDES_RUN", cmd)
+    monkeypatch.setenv("FAKE_EUKLIDES", '{"action": "fixed", "note": "all good"}')
+    repo, _ = feature()
+    drive(waits_for_marco)
+    [q] = [q for q in state()["questions"] if q["job"] == "shell"]
+    assert why in q["text"] and "Proposal: :stop, or say what the job should do" in q["text"]
+    assert gitops.remote_sha(repo, f"ark/{SLUG}-shell") is None
+    j = state()["jobs"]["shell"]
+    assert j["attempts"] == 1 and "rewrite_ok" not in j
+
+
+def test_a_fixed_without_a_worktree_asks_marco(tmp_path, ark_home):
+    c = at_euklides(tmp_path, allowed=("retry", "escalate", "fixed", "ask"))  # tmp_path/shell does not exist
+    loop.on_euklides(c, "shell", euk_answer(action="fixed", note="repaired"))
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "waiting_answer" and "rewrite_ok" not in j
+    [q] = [q for q in c.st["questions"] if q["job"] == "shell"]
+    assert "it replied fixed, but the job has no worktree" in q["text"]
+    assert f"Proposal: {loop.FIXED_PROPOSAL}" in q["text"]
+
+
+def _g(cwd, *args):
+    subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True)
+
+
+def _commit_in(wt, rel, text, msg):
+    (wt / rel).parent.mkdir(parents=True, exist_ok=True)
+    (wt / rel).write_text(text)
+    _g(wt, "add", "-A")
+    _g(wt, "commit", "-q", "-m", msg)
+    return gitops.rev(wt, "HEAD")
+
+
+def rewritten_page(runner, tmp_path):
+    """The page job's case: on origin its branch is real commit, then the base taken in, then that undone;
+    Euklides rebuilt it as the base plus the real commit. Returns the context and the old head."""
+    repo, base = runner(), f"ark/{SLUG}"
+    gitops.push_ref(repo, gitops.rev(repo, "HEAD"), base)
+    gitops.fetch(repo)
+    wt = tmp_path / "wt" / "page"
+    gitops.add_worktree(repo, wt, f"ark/{SLUG}-page", f"origin/{base}")
+    real = _commit_in(wt, "src/page/page.txt", "page\n", "feat: page")
+    other = tmp_path / "wt" / "mover"
+    gitops.add_worktree(repo, other, "ark/mover", f"origin/{base}")
+    gitops.push_ref(repo, _commit_in(other, "moved.txt", "m\n", "base moves"), base)
+    gitops.fetch(repo)
+    _g(wt, "merge", "--no-ff", "-q", "-m", "take the base", f"origin/{base}")
+    _g(wt, "revert", "--no-edit", "-m", "1", "HEAD")
+    old = gitops.rev(wt, "HEAD")
+    gitops.push_ref(repo, old, f"ark/{SLUG}-page")
+    _g(wt, "reset", "-q", "--hard", f"origin/{base}")
+    _g(wt, "cherry-pick", real)
+    st = run.new_state({"repo": "demo", "slug": SLUG, "plan": "/nowhere", "sha256": "0" * 64, "approved_at": "t"})
+    mj = job("page", ["T1"], ["src/page/**"])
+    st["jobs"]["page"] = {**run.new_job(mj), "status": "euklides", "attempts": 1,
+                          "euklides": {"trigger": "blocked", "situation": "non-fast-forward", "kind": "step",
+                                       "back": "needs_push", "allowed": ["fixed", "ask"]}}
+    c = SimpleNamespace(st=st, dir=tmp_path, base=base, mjobs={"page": mj}, repo=repo, wt=lambda j: wt,
+                        branch=lambda j: f"ark/{SLUG}-{j}")
+    return c, old
+
+
+def test_a_rewritten_branch_is_pushed_with_a_lease_after_a_backup(runner, tmp_path):
+    c, old = rewritten_page(runner, tmp_path)
+    loop.on_euklides(c, "page", euk_answer(action="fixed", note="rebuilt as the base plus the real commit"))
+    j = c.st["jobs"]["page"]
+    new = gitops.rev(c.wt("page"), "HEAD")
+    assert j["status"] == "needs_push" and j["head"] == new and j["rewrite_ok"] is True
+    loop.push_job(c, "page")
+    backup = f"ark/backup/{SLUG}-page-{old[:8]}"
+    assert gitops.remote_sha(c.repo, backup) == old
+    assert gitops.remote_sha(c.repo, f"ark/{SLUG}-page") == new
+    assert j["status"] == "needs_gate" and "rewrite_ok" not in j
+    assert any(backup in e for e in c.st["events"])
+
+
+def test_a_workers_non_fast_forward_still_blocks(runner, tmp_path):
+    c, old = rewritten_page(runner, tmp_path)
+    j = c.st["jobs"]["page"]
+    j.update(status="needs_push", head=gitops.rev(c.wt("page"), "HEAD"))
+    j.pop("euklides")
+    loop.push_job(c, "page")
+    assert j["status"] == "needs_push" and j["push_tries"] == 1
+    assert gitops.remote_sha(c.repo, f"ark/{SLUG}-page") == old
+    assert gitops.remote_sha(c.repo, f"ark/backup/{SLUG}-page-{old[:8]}") is None

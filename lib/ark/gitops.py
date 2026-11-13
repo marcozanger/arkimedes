@@ -136,6 +136,45 @@ def push_ref(repo, sha: str, branch: str) -> None:
     git(repo, "push", "-q", "origin", f"{sha}:refs/heads/{branch}")
 
 
+def push_ref_lease(repo, sha: str, branch: str, expect: str) -> None:
+    """Rewrite `branch` on origin to `sha`, only while origin still holds `expect` there. For a branch
+    Euklides rebuilt; the old head must be saved first (a backup branch)."""
+    _ark_only(branch)
+    if not re.fullmatch(r"[0-9a-f]{40,64}", sha or "") or rev(repo, sha) != sha:
+        raise GitError(f"push_ref_lease needs the full sha of a commit, not {sha!r}")
+    if not re.fullmatch(r"[0-9a-f]{40,64}", expect or ""):
+        raise GitError(f"push_ref_lease needs the full sha origin is expected to hold, not {expect!r}")
+    git(repo, "push", "-q", f"--force-with-lease=refs/heads/{branch}:{expect}", "origin",
+        f"{sha}:refs/heads/{branch}")
+
+
+def branch_commits(worktree, base: str) -> list[dict]:
+    """The commits of HEAD not in `base`, newest first: sha, subject and number of parents. Read-only."""
+    out = _checked(worktree, "log", "--format=%H%x09%P%x09%s", "--end-of-options", f"{base}..HEAD")
+    commits = []
+    for line in out.splitlines():
+        if line:
+            sha, parents, subject = (line.split("\t", 2) + ["", ""])[:3]
+            commits.append({"sha": sha, "subject": subject, "parents": len(parents.split())})
+    return commits
+
+
+def branch_changes(worktree, base: str) -> list[tuple[str, int | None, int | None]]:
+    """(path, added, removed) for every file HEAD changed since it left `base`; None counts for a binary file."""
+    out = _checked(worktree, "diff", "--no-renames", "--numstat", "-z", "--end-of-options", f"{base}...HEAD")
+    changes = []
+    for entry in out.split("\0"):
+        if entry:
+            added, removed, path = entry.split("\t", 2)
+            changes.append((path, None, None) if added == "-" else (path, int(added), int(removed)))
+    return changes
+
+
+def current_branch(worktree) -> str | None:
+    """The branch the worktree is on; None for a detached HEAD."""
+    return git(worktree, "symbolic-ref", "--short", "-q", "HEAD", check=False) or None
+
+
 def push_branch(worktree, branch: str) -> None:
     _ark_only(branch)
     git(worktree, "push", "-q", "origin", f"HEAD:refs/heads/{branch}")

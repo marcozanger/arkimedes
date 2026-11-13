@@ -127,6 +127,16 @@ def test_merge_guard():
     assert m("gh pr merge 3", role=None) == "allow"        # Marco's sessions: untouched
 
 
+def test_merge_guard_denies_euklides_its_push_and_pr_commands():
+    m = lambda c: decision(hook("merge-guard.py", {"tool_name": "Bash", "tool_input": {"command": c}},
+                                ARK_ROLE="euklides"))
+    for c in ["git push origin HEAD", "git push --force-with-lease origin ark/x", "gh pr merge 3 --squash",
+              "gh pr create --fill", "gh api repos/x/pulls"]:
+        assert m(c) == "deny", c
+    for c in ["git status", "git reset --hard HEAD~1", "git log --oneline"]:
+        assert m(c) == "allow", c
+
+
 def test_merge_guard_option_forms_and_nesting():
     m = lambda c, role="worker": decision(hook("merge-guard.py", {"tool_name": "Bash", "tool_input": {"command": c}},
                                                ARK_ROLE=role))
