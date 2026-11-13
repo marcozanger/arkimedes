@@ -316,6 +316,28 @@ def squash_keep(repo, base_ref: str, head_ref: str, message: str, scratch: Path)
     return rev(scratch, "HEAD")
 
 
+def merge_keep(repo, base_ref: str, main_ref: str, message: str, scratch: Path) -> tuple[str | None, list[str]]:
+    """Merge `main_ref` into `base_ref` (two parents, never a fast-forward of the base onto main) in a detached
+    scratch worktree: (new sha, []) or (None, conflicting paths). When main is already in the base, the base
+    itself. Any other merge failure raises GitError. The scratch worktree stays: the caller removes it."""
+    scratch = Path(scratch)
+    remove_worktree(repo, scratch)
+    scratch.parent.mkdir(parents=True, exist_ok=True)
+    git(repo, *_NO_HOOKS, "worktree", "add", "-q", "--detach", str(scratch), base_ref)
+    if is_ancestor(repo, main_ref, base_ref):
+        return rev(scratch, "HEAD"), []
+    # commit.gpgsign is read by the merge commit too, so _NO_SIGN covers it.
+    r = _run(scratch, *_NO_HOOKS, *_NO_SIGN, "merge", "--no-ff", "--no-edit", "-m", message, main_ref)
+    if r.returncode:
+        unmerged = sorted({line.split("\t", 1)[1] for line in git(scratch, "ls-files", "-u").splitlines()
+                           if "\t" in line})
+        if unmerged:
+            _run(scratch, "merge", "--abort")
+            return None, unmerged
+        raise GitError(f"git merge {main_ref}: {(r.stderr or r.stdout).strip()}")
+    return rev(scratch, "HEAD"), []
+
+
 def squash(repo, base_ref: str, head_ref: str, message: str, scratch: Path) -> str | None:
     """squash_keep, then remove the scratch worktree; nothing is pushed."""
     try:
