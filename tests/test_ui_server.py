@@ -11,7 +11,7 @@ from ark import monitor, ui
 @pytest.fixture
 def server(ark_home, tmp_path, monkeypatch):
     page = tmp_path / "index.html"
-    page.write_text("<!doctype html><title>Arkimedes</title>")
+    page.write_text('<!doctype html><title>Arkimedes</title><meta name="ark-token" content="{{ARK_TOKEN}}">')
     monkeypatch.setattr(ui, "page_file", lambda: page)
     srv = ui.make_server(0)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -39,6 +39,17 @@ def test_root_serves_the_page(server):
     assert status == 200 and ctype.startswith("text/html") and b"<title>Arkimedes</title>" in body
 
 
+def test_root_carries_a_fresh_token(server, ark_home):
+    _, _, body = get(server, "/")
+    assert b"{{ARK_TOKEN}}" not in body and f'content="{server.token}"'.encode() in body and len(server.token) >= 43
+    assert ui.TOKEN == server.token
+    other = ui.make_server(0)
+    try:
+        assert other.token != server.token
+    finally:
+        other.server_close()
+
+
 def test_api_runs_is_the_snapshot(server):
     status, ctype, body = get(server, "/api/runs")
     got, want = json.loads(body), monitor.build()
@@ -49,7 +60,8 @@ def test_api_runs_is_the_snapshot(server):
 def test_other_paths_methods_and_hosts(server):
     port = server.server_address[1]
     assert get(server, "/index.html")[0] == 404
-    assert get(server, "/api/runs", method="POST")[0] == 405
+    assert get(server, "/api/runs", method="PUT")[0] == 405
+    assert get(server, "/api/runs", method="POST")[0] == 403
     assert get(server, "/api/runs", host="evil.example")[0] == 403
     assert get(server, "/", host=f"localhost:{port}")[0] == 200
 
