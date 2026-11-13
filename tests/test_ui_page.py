@@ -21,19 +21,36 @@ def test_the_page_loads_nothing_from_outside():
     assert not re.search(r"""(src|href)\s*=\s*["']?(https?:)?//""", html)
     for banned in ("@import", "XMLHttpRequest", "WebSocket", "eval(", "new Function", "messageHandlers", "window.webkit"):
         assert banned not in html, banned
-    assert html.count("fetch(") == 1 and 'fetch("/api/runs"' in html
+    scripts = re.findall(r"<script\b[^>]*>", html)
+    assert scripts and all(s == '<script type="module">' for s in scripts), scripts
+    imports = re.findall(r"""^\s*import\b[^;]*?from\s+["']([^"']+)["']""", html, re.M)
+    assert imports and all(i.startswith("/vendor/spec-review/") for i in imports), imports
+    assert html.count("fetch(") == 1 and "async function api(" in html
+
+
+def test_every_post_sends_the_token_from_the_page():
+    html = PAGE.read_text()
+    assert '<meta name="ark-token" content="{{ARK_TOKEN}}">' in html
+    m = re.search(r"async function api\(.*?\n\}", html, re.S)
+    assert m and '"X-Ark-Token": TOKEN' in m.group(0)
+    assert "const TOKEN = document.querySelector('meta[name=\"ark-token\"]').content" in html
+    assert re.findall(r'api\("(/api/[a-z-]+)", \{ method: "POST"', html) == ["/api/answer"]
+    assert html.count('method: "POST"') == 1
 
 
 def test_the_page_exposes_its_entry_points():
     html = PAGE.read_text()
     assert "window.update = function" in html and "window.openPlan = function" in html
-    assert 'document.body.dataset.rendered = "1"' in html
+    assert 'document.body.dataset.rendered = "1"' in html and "document.body.dataset.screen =" in html
     assert "hashchange" in html and "data-link" not in html
+    for route in ('"#/"', '"#/history"', '"#/euklides"', "#/plan/"):
+        assert route in html, route
+    assert 'const TABS = ["timeline", "questions", "events", "spec", "plan"]' in html
 
 
 def test_html_is_built_only_through_render():
     html = PAGE.read_text()
-    assert html.count(".innerHTML =") == 3        # banner, sidebar, main: all in render()
+    assert html.count(".innerHTML =") == 3        # banner, menu, main: all in render()
     assert "insertAdjacentHTML" not in html and "document.write" not in html
 
 
@@ -48,9 +65,13 @@ def test_the_sample_covers_every_screen_state():
     d = json.loads(SAMPLE.read_text())
     assert d["version"] == 1 and d["loop"]["alive"] is True
     statuses = {p["status"] for p in d["plans"]}
-    assert {"running", "done", "blocked"} <= statuses
+    assert {"running", "done", "blocked", "waiting"} <= statuses
     assert any(p["error"] for p in d["plans"])
     assert any(j["status"] == "blocked" for p in d["plans"] for j in p["jobs"])
+    assert any(j["status"] == "waiting_answer" for p in d["plans"] for j in p["jobs"])
+    assert any(p["status"] == "waiting" and p["approval"] == "ok" and not p["events"] for p in d["plans"])
+    assert any(p["questions"] and p["answers"] and p["repo"] == "arkimedes" for p in d["plans"])
+    assert any(p["spec_file"].count("\n## ") >= 2 for p in d["plans"])
     assert any(a["repo"] for a in d["alerts"])
     assert any(p["cost"]["closed"] for p in d["plans"])
     assert any(p["cost"]["usd"] > p["cost"]["budget_usd"] for p in d["plans"])

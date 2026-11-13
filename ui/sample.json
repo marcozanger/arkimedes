@@ -287,6 +287,160 @@
       }
     },
     {
+      "repo": "arkimedes",
+      "slug": "ui-polish",
+      "title": "UI polish",
+      "status": "running",
+      "reason": "",
+      "error": "",
+      "progress": {
+        "merged": 1,
+        "total": 2
+      },
+      "times": {
+        "delay_min": 15,
+        "left_min": 80,
+        "estimated_end": "2026-11-07T11:09:00+00:00",
+        "forecast_end": "2026-11-07T11:24:00+00:00",
+        "started": "2026-11-07T08:00:00+00:00"
+      },
+      "approved_at": "2026-11-07T08:00:00+00:00",
+      "created": "2026-11-07",
+      "approval": "ok",
+      "plan_sha": "4c1b9e0d7a2f63e81b55",
+      "plan_path": "arkimedes/ui-polish/plan.md",
+      "spec": "spec.md",
+      "plan_file": "---\ntitle: UI polish\nspec: spec.md\n---\n\n# UI polish\n\n## Goal\n\nMake the control center easier to read on a phone.\n\n## Tasks\n\n### T1 - layout\n\n1. Failing test.\n2. One column under 720 px.\n\n### T2 - copy\n\nShorter labels.\n",
+      "decisions": "",
+      "questions": [
+        {
+          "id": "q2",
+          "kind": "worker",
+          "job": "copy",
+          "text": "Keep the old labels as tooltips?",
+          "asked": "2026-11-07T09:30:00+00:00"
+        }
+      ],
+      "answers": [
+        {
+          "id": "q1",
+          "kind": "worker",
+          "job": "layout",
+          "question": "Is 720 px the right break point?",
+          "answer": "Yes, 720 px.",
+          "asked": "2026-11-07T08:20:00+00:00",
+          "at": "2026-11-07T08:25:00+00:00",
+          "by": "ark answer"
+        }
+      ],
+      "spec_file": "---\nstatus: approved\n---\n\n# UI polish\n\n## 1. Goal\n\nMake the control center easier to read on a phone.\n\n## 2. Design\n<!-- fold -->\n\nHow the page changes.\n\n### Layout\n\n- **One column under 720 px** Alternatives: a horizontal scroll. Pros: nothing hides. Cons: longer pages. Why: Marco reads it on the phone.\n\n### Colors\n\nTokens only, light and dark.\n\n## 3. Out of scope\n\nThe draft screen.\n",
+      "events": [
+        "2026-11-07T08:00:00+00:00 job layout started",
+        "2026-11-07T08:40:00+00:00 job layout merged",
+        "2026-11-07T08:41:00+00:00 job copy started",
+        "2026-11-07T09:30:00+00:00 question q2: Keep the old labels as tooltips?"
+      ],
+      "final_pr": null,
+      "jobs": [
+        {
+          "id": "layout",
+          "status": "merged",
+          "pr_title": "feat(ui): one column under 720 px",
+          "budget": {
+            "minutes": 40,
+            "usd": 4
+          },
+          "plan_start": "2026-11-07T08:00:00+00:00",
+          "plan_end": "2026-11-07T08:40:00+00:00",
+          "started": "2026-11-07T08:00:00+00:00",
+          "finished": "2026-11-07T08:40:00+00:00",
+          "fc_start": null,
+          "fc_end": null,
+          "usd": 1.9,
+          "tier": "sonnet",
+          "tier_path": [
+            "sonnet"
+          ],
+          "attempts": 1,
+          "pr": {
+            "url": "https://github.com/example/arkimedes/pull/70"
+          },
+          "after": [],
+          "reason": "",
+          "question": "",
+          "tasks": [
+            "T1 layout"
+          ],
+          "done": [
+            "tests pass"
+          ],
+          "includes": "src/model",
+          "excludes": "ui",
+          "gate": "pytest -q",
+          "heavy": false,
+          "area": [
+            "src/**"
+          ]
+        },
+        {
+          "id": "copy",
+          "status": "waiting_answer",
+          "pr_title": "feat(ui): shorter labels",
+          "budget": {
+            "minutes": 50,
+            "usd": 5
+          },
+          "plan_start": "2026-11-07T08:40:00+00:00",
+          "plan_end": "2026-11-07T09:30:00+00:00",
+          "started": "2026-11-07T08:41:00+00:00",
+          "finished": null,
+          "fc_start": null,
+          "fc_end": "2026-11-07T11:24:00+00:00",
+          "usd": 1.2,
+          "tier": "sonnet",
+          "tier_path": [
+            "sonnet",
+            "opus"
+          ],
+          "attempts": 2,
+          "pr": null,
+          "after": [
+            "layout"
+          ],
+          "reason": "",
+          "question": "Keep the old labels as tooltips?",
+          "tasks": [
+            "T2 copy"
+          ],
+          "done": [
+            "edit view renders",
+            "autosave works"
+          ],
+          "includes": "app/ui",
+          "excludes": "the api",
+          "gate": "pytest -q",
+          "heavy": false,
+          "area": [
+            "src/**"
+          ]
+        }
+      ],
+      "cost": {
+        "usd": 3.1,
+        "budget_usd": 9,
+        "closed": false,
+        "wall_min": null,
+        "working_min": null,
+        "waiting_min": null,
+        "estimated_min": 90
+      },
+      "manifest": {
+        "setup": [],
+        "integration_gate": "",
+        "final_pr_title": ""
+      }
+    },
+    {
       "repo": "muscleapp",
       "slug": "mobile/onboarding-copy",
       "title": "Onboarding copy",
@@ -447,6 +601,130 @@
         "working_min": null,
         "waiting_min": null,
         "estimated_min": 140
+      },
+      "manifest": {
+        "setup": [],
+        "integration_gate": "",
+        "final_pr_title": ""
+      }
+    },
+    {
+      "repo": "socrates",
+      "slug": "search",
+      "title": "Full-text search",
+      "status": "waiting",
+      "reason": "",
+      "error": "",
+      "progress": {
+        "merged": 0,
+        "total": 2
+      },
+      "times": {
+        "delay_min": 0,
+        "left_min": 95,
+        "estimated_end": null,
+        "forecast_end": null,
+        "started": null
+      },
+      "approved_at": "2026-11-07T09:50:00+00:00",
+      "created": "2026-11-07",
+      "approval": "ok",
+      "plan_sha": "77ad01c3e9b2f4a6d810",
+      "plan_path": "socrates/search/plan.md",
+      "spec": "none",
+      "plan_file": "# Full-text search\n\n## Goal\n\nSearch notes.\n",
+      "decisions": "",
+      "questions": [],
+      "answers": [],
+      "spec_file": "",
+      "events": [],
+      "final_pr": null,
+      "jobs": [
+        {
+          "id": "index",
+          "status": "pending",
+          "pr_title": "docs: notes editing",
+          "budget": {
+            "minutes": 45,
+            "usd": 5
+          },
+          "plan_start": null,
+          "plan_end": null,
+          "started": null,
+          "finished": null,
+          "fc_start": null,
+          "fc_end": null,
+          "usd": 0,
+          "tier": "sonnet",
+          "tier_path": [
+            "sonnet"
+          ],
+          "attempts": 1,
+          "pr": null,
+          "after": [],
+          "reason": "",
+          "question": "",
+          "tasks": [
+            "T index"
+          ],
+          "done": [
+            "README updated"
+          ],
+          "includes": "",
+          "excludes": "",
+          "gate": "pytest -q",
+          "heavy": false,
+          "area": [
+            "src/**"
+          ]
+        },
+        {
+          "id": "api",
+          "status": "pending",
+          "pr_title": "docs: notes editing",
+          "budget": {
+            "minutes": 50,
+            "usd": 5
+          },
+          "plan_start": null,
+          "plan_end": null,
+          "started": null,
+          "finished": null,
+          "fc_start": null,
+          "fc_end": null,
+          "usd": 0,
+          "tier": "sonnet",
+          "tier_path": [
+            "sonnet"
+          ],
+          "attempts": 1,
+          "pr": null,
+          "after": [],
+          "reason": "",
+          "question": "",
+          "tasks": [
+            "T api"
+          ],
+          "done": [
+            "README updated"
+          ],
+          "includes": "",
+          "excludes": "",
+          "gate": "pytest -q",
+          "heavy": false,
+          "area": [
+            "src/**"
+          ]
+        }
+      ],
+      "cost": {
+        "usd": 0,
+        "budget_usd": 11,
+        "closed": false,
+        "wall_min": null,
+        "working_min": null,
+        "waiting_min": null,
+        "estimated_min": 95
       },
       "manifest": {
         "setup": [],
