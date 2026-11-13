@@ -5,8 +5,8 @@ import { readFileSync } from "node:fs";
 const html = readFileSync(process.argv[2], "utf8");
 const START = "// ---- logic: start ----", END = "// ---- logic: end ----";
 const code = html.split(START)[1].split(END)[0];
-const { decide, titleFor, readPlan, segments, etaText, spendText, flagOf, parseRoute, dur } =
-  new Function(code + "; return {decide, titleFor, readPlan, segments, etaText, spendText, flagOf, parseRoute, dur};")();
+const { decide, titleFor, readPlan, segments, etaText, spendText, flagOf, parseRoute, dur, draftHeader, docSections, jobCount } =
+  new Function(code + "; return {decide, titleFor, readPlan, segments, etaText, spendText, flagOf, parseRoute, dur, draftHeader, docSections, jobCount};")();
 
 const fresh = () => ({ lastAlert: null, loopDown: false, stale: false, done: [], unread: [] });
 const ok = { stale: false, error: "" };
@@ -148,9 +148,89 @@ const snap = (alerts = [], over = {}) => ({ version: 1, loop: { alive: true }, a
   assert.deepEqual(parseRoute("#/plan/arkimedes/ui-polish/questions"), { screen: "plan", repo: "arkimedes", slug: "ui-polish", tab: "questions" });
   assert.deepEqual(parseRoute("#/plan/muscleapp/mobile/onboarding-copy/spec"), { screen: "plan", repo: "muscleapp", slug: "mobile/onboarding-copy", tab: "spec" });
   assert.deepEqual(parseRoute("#/plan/r/s"), { screen: "plan", repo: "r", slug: "s", tab: "timeline" });
-  assert.deepEqual(parseRoute("#/draft/r/s"), { screen: "draft", repo: "r", slug: "s" });
+  assert.deepEqual(parseRoute("#/draft/r/s"), { screen: "draft", repo: "r", slug: "s", doc: null });
+  assert.deepEqual(parseRoute("#/draft/arkimedes/draft-screen/plan"), { screen: "draft", repo: "arkimedes", slug: "draft-screen", doc: "plan" });
+  assert.deepEqual(parseRoute("#/draft/muscleapp/mobile/onboarding/spec"), { screen: "draft", repo: "muscleapp", slug: "mobile/onboarding", doc: "spec" });
   assert.deepEqual(parseRoute("#/nowhere"), { screen: "home" });
   assert.deepEqual(parseRoute("#/plan/r%2"), { screen: "home" });
+}
+
+// 13. the draft header: its numbers and its one button
+{
+  const secs = (...verdicts) => ({ sections: verdicts.map((v, i) => ({ key: `s${i}`, title: `S${i}`, verdict: v, note: "" })), warning: null });
+  const draft = (spec, plan, over = {}) => ({ repo: "arkimedes", slug: "draft-screen", spec, plan, ...over });
+  const est = { total_usd: 18.5, total_minutes: 210, end_to_end_minutes: 150 };
+  const planDoc = (review, problems = []) => ({ status: "draft", review, problems, estimate: problems.length ? null : est,
+    text: "# P\n## Run manifest\n```yaml\njobs:\n  - id: a\n  - id: b\n```\n" });
+
+  let h = draftHeader(draft({ status: "draft", review: secs("ok", "change", null) }, planDoc(secs(null))));
+  assert.equal(h.button.label, "Copy resume command");
+  assert.equal(h.button.action, "copy");
+  assert.equal(h.button.command, "/ark-plan arkimedes/draft-screen");
+  assert.equal(h.numbers[0].label, "Spec");
+  assert.equal(h.numbers[0].value, "1 of 3 ok");
+  assert.equal(h.numbers[0].sub, "1 to change");
+
+  h = draftHeader(draft({ status: "draft", review: secs("ok", "ok") }, planDoc(secs(null))));
+  assert.equal(h.button.label, "Approve spec");
+  assert.equal(h.button.action, "approve-spec");
+  assert.equal(h.button.disabled, false);
+
+  h = draftHeader(draft({ status: "draft", review: secs("ok", null) }, planDoc(secs(null))));
+  assert.equal(h.button.label, "Approve spec");
+  assert.equal(h.button.disabled, true);
+
+  h = draftHeader(draft({ status: "approved", review: secs("ok", "ok") }, planDoc(secs("ok", "ok", "ok"))));
+  assert.equal(h.button.label, "Approve plan…");
+  assert.equal(h.button.action, "approve-plan");
+  assert.equal(h.button.disabled, false);
+  assert.deepEqual(h.button.problems, []);
+  assert.equal(h.numbers[0].value, "Approved");
+  assert.equal(h.numbers[0].reopen, true);
+  assert.equal(h.numbers[1].value, "3 of 3 ok");
+  assert.equal(h.numbers[2].label, "Budget");
+  assert.equal(h.numbers[2].value, "$18.50");
+  assert.equal(h.numbers[2].sub, "~2h30m end to end");
+  assert.equal(h.numbers[3].label, "Jobs");
+  assert.equal(h.numbers[3].value, "2");
+
+  h = draftHeader(draft({ status: "approved", review: secs("ok") }, planDoc(secs("ok"), ["jobs: a has no gate", "tasks: T3 is in no job"])));
+  assert.equal(h.button.label, "Approve plan…");
+  assert.equal(h.button.disabled, true);
+  assert.deepEqual(h.button.problems, ["jobs: a has no gate", "tasks: T3 is in no job"]);
+  assert.equal(h.numbers[2].value, "–");
+
+  h = draftHeader(draft({ status: "approved", review: secs("ok") }, planDoc(secs("ok", "change"))));
+  assert.equal(h.button.label, "Copy resume command");
+
+  h = draftHeader(draft({ status: "approved", review: secs("ok") }, planDoc(secs("ok", null))));
+  assert.equal(h.button.label, "Approve plan…");
+  assert.equal(h.button.disabled, true);
+
+  h = draftHeader(draft(null, planDoc(secs("ok"))));
+  assert.equal(h.numbers[0].value, "No spec");
+  assert.equal(h.button.label, "Approve plan…");
+  assert.equal(h.button.disabled, false);
+
+  h = draftHeader(draft({ status: "approved", review: secs("ok") }, null));
+  assert.equal(h.button.label, "Copy resume command");
+  assert.equal(h.numbers[1].value, "Not written");
+
+  // the list form of /api/drafts (counts, not sections) reads the same
+  h = draftHeader(draft({ status: "draft", review: { ok: 2, change: 0, total: 2 } }, null));
+  assert.equal(h.button.label, "Approve spec");
+}
+
+// 14. a document's ## sections, like review.json's, and the jobs of a plan
+{
+  const text = "---\nstatus: draft\n---\n# Title\nintro\n## Goal\ngoal text\n```\n## not a section\n```\n### sub\n## Goal\nagain\n## A, b & c!\nx\n";
+  const { pre, sections } = docSections(text);
+  assert.deepEqual(pre, ["# Title", "intro"]);
+  assert.deepEqual(sections.map(s => s.key), ["goal", "goal-2", "a-b-c"]);
+  assert.deepEqual(sections.map(s => s.title), ["Goal", "Goal", "A, b & c!"]);
+  assert.deepEqual(sections[0].lines, ["goal text", "```", "## not a section", "```", "### sub"]);
+  assert.equal(jobCount("## Run manifest\n```yaml\njobs:\n  - id: one\n    tasks: [T1]\n  - id: two\n```\n"), 2);
+  assert.equal(jobCount("no manifest"), 0);
 }
 
 console.log("ui logic ok");
