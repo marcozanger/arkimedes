@@ -150,6 +150,8 @@ const snap = (alerts = [], over = {}) => ({ version: 1, loop: { alive: true }, a
   assert.deepEqual(parseRoute("#/euklides"), { screen: "euklides" });
   assert.deepEqual(parseRoute("#/plan/arkimedes/ui-polish/questions"), { screen: "plan", repo: "arkimedes", slug: "ui-polish", tab: "questions" });
   assert.deepEqual(parseRoute("#/plan/muscleapp/mobile/onboarding-copy/spec"), { screen: "plan", repo: "muscleapp", slug: "mobile/onboarding-copy", tab: "spec" });
+  assert.deepEqual(parseRoute("#/plan/r/s/decisions"), { screen: "plan", repo: "r", slug: "s", tab: "decisions" });
+  assert.deepEqual(parseRoute("#/plan/muscleapp/mobile/x/decisions"), { screen: "plan", repo: "muscleapp", slug: "mobile/x", tab: "decisions" });
   assert.deepEqual(parseRoute("#/plan/r/s"), { screen: "plan", repo: "r", slug: "s", tab: "timeline" });
   assert.deepEqual(parseRoute("#/draft/r/s"), { screen: "draft", repo: "r", slug: "s", doc: null });
   assert.deepEqual(parseRoute("#/draft/arkimedes/draft-screen/plan"), { screen: "draft", repo: "arkimedes", slug: "draft-screen", doc: "plan" });

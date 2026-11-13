@@ -191,6 +191,9 @@ h1, h2, h3 { margin: 0; }
 .verdicts { display: flex; gap: 6px; }
 .verdicts .btn[aria-pressed="true"][data-verdict="ok"] { background: var(--ok-soft); border-color: var(--ok); color: var(--ok); }
 .verdicts .btn[aria-pressed="true"][data-verdict="change"] { background: var(--attn-soft); border-color: var(--attn); color: var(--attn-ink); }
+.verdicts .btn[aria-pressed="true"][data-dv="ok"], .verdicts .btn[aria-pressed="true"][data-dv="none"] { background: var(--ok-soft); border-color: var(--ok); color: var(--ok); }
+.verdicts .btn[aria-pressed="true"][data-dv="change"], .verdicts .btn[aria-pressed="true"][data-dv="fix"], .verdicts .btn[aria-pressed="true"][data-dv="more"] { background: var(--attn-soft); border-color: var(--attn); color: var(--attn-ink); }
+.dv-more { margin-top: 4px; overflow-wrap: anywhere; }
 .sec textarea { width: 100%; min-height: 54px; resize: vertical; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
 .sec .verdict { font: 500 12px var(--mono); }
 .idx .mark { font: 11px var(--mono); margin-right: 4px; }
@@ -281,7 +284,7 @@ import { STRINGS } from "/vendor/spec-review/strings.mjs";
 const L = STRINGS.en;
 const S = { data: null, meta: { stale: false, error: "" }, drafts: null, history: null, euk: null,
   route: { screen: "home" }, job: null, answers: {}, filter: { repo: "", status: "", text: "" }, copied: "",
-  draft: null, notes: {}, flash: "" };
+  draft: null, notes: {}, flash: "", dec: null, dpend: {}, dnotes: {} };
 const NOTE_KINDS = [["alert", "Alerts from a run"], ["done", "A plan finished"], ["loop", "ark-loop stopped or the data went stale"]];
 const LIVE = ["waiting", "running", "held"];
 const COMMANDS = {
@@ -404,7 +407,7 @@ function flagOf(p) {
   if (p.status === "held" || (p.questions || []).length || jobs.some(j => WAITS_FOR_YOU.includes(j.status))) return "Waits for you";
   return "";
 }
-const TABS = ["timeline", "questions", "events", "spec", "plan"];
+const TABS = ["timeline", "questions", "events", "decisions", "spec", "plan"];
 function parseRoute(hash) {
   let h = "";
   try { h = decodeURIComponent(String(hash || "").replace(/^#\/?/, "")); } catch (e) { return { screen: "home" }; }
@@ -624,7 +627,7 @@ function planScreen() {
   const qs = (p.questions || []).length;
   const alerts = recentAlerts(p).length;
   const tabs = TABS.map(t => `<a class="tab" role="tab" href="${planHref(p, t)}" aria-selected="${r.tab === t}">${t[0].toUpperCase() + t.slice(1)}${t === "questions" && qs ? `<span class="count">${qs}</span>` : ""}${t === "events" && alerts ? `<span class="count">${alerts}</span>` : ""}</a>`).join("");
-  const body = { timeline, questions, events, spec: specTab, plan: planTab }[r.tab](p);
+  const body = { timeline, questions, events, decisions: decisionsTab, spec: specTab, plan: planTab }[r.tab](p);
   return head + numbers(p) + `<div class="tabs" role="tablist">${tabs}</div>` + body;
 }
 function recentAlerts(p) {
@@ -716,7 +719,71 @@ async function sendAnswer(qid) {
 // ---- events, spec and plan
 function events(p) {
   const ev = p.events.length ? `<ul class="events">${p.events.slice().reverse().map(e => `<li>${esc(e)}</li>`).join("")}</ul>` : '<p class="hint">No events yet.</p>';
-  return notices(p) + ev + (p.decisions ? `<span class="label">Run decisions</span><pre class="raw">${esc(p.decisions)}</pre>` : "");
+  return notices(p) + ev;
+}
+// ---- decisions tab: Marco's verdicts on the closed run's decisions file
+const dvKey = p => `${keyOf(p)}`;
+const dvLine = t => { const [first, ...rest] = String(t).split("\n"); return `<div>${inline(first)}</div>${rest.length ? `<div class="small muted dv-more">${rest.map(esc).join("<br>")}</div>` : ""}`; };
+function decisionsTab(p) {
+  if (!p.decisions) return `<div class="empty">${p.status === "done" || p.status === "blocked" ? "This run wrote no decisions file." : "The decisions file is written when the run closes."}</div>`;
+  const dv = S.dec && S.dec.key === dvKey(p) ? S.dec : null;
+  if (!dv || !dv.data) return `<p class="muted">${dv && dv.error ? esc(dv.error) : "Loading…"}</p>`;
+  const items = dv.data.items, done = items.filter(i => i.verdict).length, f = dv.data.followup;
+  const note = (id, saved) => (S.dnotes[`${dvKey(p)}#${id}`] !== undefined ? S.dnotes[`${dvKey(p)}#${id}`] : saved);
+  const rows = items.map(i => {
+    const changing = i.verdict === "change" || S.dpend[`${dvKey(p)}#${i.id}`];
+    const btn = (v, label, on) => `<button class="btn" type="button" data-dv="${v}" data-dkey="${esc(i.id)}" aria-pressed="${on}">${label}</button>`;
+    return `<section class="sec"><div class="sec-head"><h2>${esc(i.id)} <span class="small muted">${esc(i.job)}</span></h2><span class="verdicts">${btn("ok", "OK", i.verdict === "ok")}${btn("change", "Change", !!changing)}</span></div>
+      <div class="md">${dvLine(i.text)}</div>
+      ${changing ? `<textarea data-dnote="${esc(i.id)}" aria-label="What is wrong with ${esc(i.id)}" placeholder="What is wrong… (saved when you leave the box)">${esc(note(i.id, i.comment))}</textarea>` : ""}</section>`;
+  }).join("");
+  const fbtn = (k, label) => `<button class="btn" type="button" data-dv="${k}" data-dkey="followup" aria-pressed="${!!f && f.kind === k}">${label}</button>`;
+  const follow = `<section class="sec"><div class="sec-head"><h2>Does this run need more?</h2><span class="verdicts">${fbtn("none", "Nothing")}${fbtn("fix", "A fix")}${fbtn("more", "More work")}</span></div>
+    <textarea data-dnote="followup" aria-label="What is still needed" placeholder="What is still needed… (saved when you leave the box)">${esc(note("followup", f ? f.comment : ""))}</textarea></section>`;
+  return `<p class="small muted">${done} of ${items.length} reviewed. Your verdicts reach Euklides through <code>ark review</code>: they are distilled into his lessons.</p>`
+    + (dv.msg ? `<p class="bad small">${esc(dv.msg)}</p>` : "") + (rows || '<div class="empty">The file lists no decisions.</div>') + follow;
+}
+async function loadDecisions() {
+  const p = currentPlan();
+  if (!p || !p.decisions) return;
+  const key = dvKey(p), keep = S.dec && S.dec.key === key ? S.dec : {};
+  const r = await api(`/api/decision-review?repo=${encodeURIComponent(p.repo)}&slug=${encodeURIComponent(p.slug)}`);
+  if (S.route.screen !== "plan" || S.route.repo !== p.repo || S.route.slug !== p.slug) return;
+  S.dec = r.ok && r.body && Array.isArray(r.body.items) ? { key, data: r.body, msg: keep.msg } : { key, data: keep.data || null, error: r.body.error || `ark ui answered ${r.status}` };
+  render();
+}
+async function saveDecision(id, verdict, comment) {
+  const p = currentPlan(), dv = S.dec;
+  if (!p || !dv || !dv.data) return;
+  const r = await write("/api/decision-review", { repo: p.repo, slug: p.slug, key: id, verdict, comment });
+  if (!r.ok) {
+    dv.msg = r.status === 403 && r.body.kind !== "role" ? "Reload the page: ark ui restarted" : r.body.error || `ark ui answered ${r.status}`;
+  } else {
+    S.dec = { key: dv.key, data: r.body, msg: "" };
+    delete S.dpend[`${dv.key}#${id}`];
+    delete S.dnotes[`${dv.key}#${id}`];
+  }
+  render(true);
+}
+function pickDecision(id, verdict) {
+  const p = currentPlan(), dv = S.dec;
+  if (!p || !dv || !dv.data) return;
+  const k = `${dv.key}#${id}`;
+  const item = id === "followup" ? { comment: (dv.data.followup || {}).comment || "" } : dv.data.items.find(i => i.id === id);
+  const text = S.dnotes[k] !== undefined ? S.dnotes[k] : item ? item.comment : "";
+  if (verdict === "change") {   // a Change needs its comment: show the box, save when it is filled
+    S.dpend[k] = true;
+    if (text.trim()) saveDecision(id, verdict, text); else render(true);
+    return;
+  }
+  saveDecision(id, verdict, id === "followup" ? text : "");
+}
+function noteDecision(id, text) {
+  const dv = S.dec;
+  if (!dv || !dv.data) return;
+  if (id === "followup") { const f = dv.data.followup; if (f && f.comment !== text) saveDecision(id, f.kind, text); return; }
+  const i = dv.data.items.find(x => x.id === id);
+  if (i && text.trim() && (i.verdict !== "change" || i.comment !== text)) saveDecision(id, "change", text);
 }
 const DOCS = new Map();
 function docView(text, name) {
@@ -1044,10 +1111,12 @@ document.addEventListener("change", e => {
   const t = e.target;
   if (t.dataset && t.dataset.pref) store.set("ark-ui-notify", { ...notePrefs(), [t.dataset.pref]: t.checked });
   if (t.dataset && t.dataset.note !== undefined && S.route.screen === "draft") saveNote(t.dataset.note, t.value);
+  if (t.dataset && t.dataset.dnote !== undefined) noteDecision(t.dataset.dnote, t.value);
 });
 document.addEventListener("input", e => {
   const t = e.target;
   if (t.dataset && t.dataset.filter) { S.filter = { ...S.filter, [t.dataset.filter]: t.value }; render(true); return; }
+  if (t.dataset && t.dataset.dnote !== undefined && S.dec) { S.dnotes[`${S.dec.key}#${t.dataset.dnote}`] = t.value; return; }
   if (t.dataset && t.dataset.note !== undefined && S.draft && S.draft.data) { S.notes[`${draftDoc(S.draft.data)}#${t.dataset.note}`] = t.value; return; }
   if (!t.dataset || !t.dataset.q) return;
   const p = currentPlan();
@@ -1071,7 +1140,7 @@ function copyCommand() {
   try { navigator.clipboard.writeText(c.text).then(() => done(true), () => done(false)); } catch (e) { done(false); }
 }
 document.addEventListener("click", e => {
-  const t = e.target.closest("[data-job],[data-answer],[data-goto],[data-cmd],[data-copy],[data-notify],[data-verdict],[data-draft-act],[data-approve-plan],[data-draft-cancel],[data-reopen],#cmd-copy,#cmd-close");
+  const t = e.target.closest("[data-job],[data-answer],[data-goto],[data-cmd],[data-copy],[data-notify],[data-verdict],[data-dv],[data-draft-act],[data-approve-plan],[data-draft-cancel],[data-reopen],#cmd-copy,#cmd-close");
   if (!t) return;
   if (t.dataset.notify) {
     try { Promise.resolve(Notification.requestPermission()).then(() => render(true), () => render(true)); } catch (err) { render(true); }
@@ -1086,6 +1155,7 @@ document.addEventListener("click", e => {
   if (t.id === "cmd-close") { document.getElementById("cmd").hidden = true; return; }
   if (t.dataset.cmd) { openCommand(t.dataset.cmd); return; }
   if (t.dataset.answer) { sendAnswer(t.dataset.answer); return; }
+  if (t.dataset.dv) { pickDecision(t.dataset.dkey, t.dataset.dv); return; }
   if (t.dataset.verdict) { setVerdict(t.dataset.key, t.dataset.verdict); return; }
   if (t.dataset.draftAct) { draftAction(t.dataset.draftAct); return; }
   if (t.dataset.approvePlan) { approvePlan(); return; }
@@ -1121,6 +1191,7 @@ async function load() {
     if (r.ok && Array.isArray(r.body)) { S.history = r.body; render(); }
   }
   if (s === "draft" && !S.draft) await loadDraft();
+  if (s === "plan" && S.route.tab === "decisions") await loadDecisions();
   if (s === "euklides") {
     const r = await api("/api/euklides");
     if (r.ok && r.body && typeof r.body === "object") { S.euk = r.body; render(); }

@@ -9,7 +9,7 @@ from test_ui_server import server  # noqa: F401  (the fixture)
 from ark import questions, reviews, run
 
 SPEC = "---\nstatus: draft\nrepo: r\nslug: s\ncreated: 2026-11-05\n---\n# S\n\n## Problem\n\nx\n\n## Goal\n\ny\n"
-PATHS = ("/api/review", "/api/approve-spec", "/api/approve-plan", "/api/answer")
+PATHS = ("/api/review", "/api/approve-spec", "/api/approve-plan", "/api/answer", "/api/decision-review")
 
 
 def post(srv, path, body, token="ok", origin="ok", host=None, raw=None):
