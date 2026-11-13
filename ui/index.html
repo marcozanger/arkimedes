@@ -74,6 +74,12 @@ h1, h2, h3 { margin: 0; }
 .pill.stuck { background: var(--attn-soft); color: var(--attn-ink); }
 .pill.blocked { background: var(--bad-soft); color: var(--bad); }
 .pill.merged { background: var(--ok-soft); color: var(--ok); }
+.pill.phase { display: inline-flex; align-items: center; gap: 5px; margin-top: 3px; }
+.pill.phase i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.pill.phase.developing { background: var(--accent-soft); color: var(--accent); }
+.pill.phase.testing { background: var(--attn-soft); color: var(--attn-ink); }
+.pill.phase.slow { background: var(--bad-soft); color: var(--bad); }
+.phases { display: flex; flex-wrap: wrap; gap: 4px; }
 .over { color: var(--attn-ink); font-weight: 600; }
 .empty { padding: 12px 14px; color: var(--muted); font-size: 13px; background: var(--raised); border: 1px dashed var(--line); border-radius: 8px; }
 
@@ -502,6 +508,23 @@ const segs = p => `<span class="segs" aria-hidden="true">${segments(p).map(k => 
 const plans = () => (S.data && S.data.plans) || [];
 const planHref = (p, tab = "timeline") => `#/plan/${esc(p.repo)}/${esc(p.slug)}/${tab}`;
 const pillKind = s => ({ done: "merged", blocked: "blocked", held: "stuck", running: "active", Blocked: "blocked", "Waits for you": "stuck" })[s] || "";
+// What a job is doing right now (developing, testing, reviewing), with the time in that phase. A suite running
+// more than twice its usual time shows as slow.
+const PHASE_LABEL = { developing: "Developing", testing: "Testing", reviewing: "Reviewing" };
+function phaseChip(j) {
+  const ph = j.phase && PHASE_LABEL[j.phase.kind] ? j.phase : null;
+  if (!ph) return "";
+  const m = ph.since ? Math.max(0, (NOW() - ms(ph.since)) / 60e3) : null;
+  const usual = ph.kind === "testing" && ph.usual_min ? ph.usual_min : null;
+  const slow = usual != null && m != null && m > usual * 2;
+  const tip = `${PHASE_LABEL[ph.kind]}${m != null ? ` for ${dur(m)}` : ""}${usual ? `, usually about ${dur(usual)}` : ""}`;
+  return `<span class="pill phase ${ph.kind}${slow ? " slow" : ""}" title="${esc(tip)}"><i></i>${esc(PHASE_LABEL[ph.kind])}${m != null ? ` · ${esc(dur(m))}` : ""}${slow ? " · slow" : ""}</span>`;
+}
+function phaseSummary(p) {
+  const n = {};
+  (p.jobs || []).forEach(j => { if (j.phase && PHASE_LABEL[j.phase.kind]) n[j.phase.kind] = (n[j.phase.kind] || 0) + 1; });
+  return Object.keys(PHASE_LABEL).filter(k => n[k]).map(k => `<span class="pill phase ${k}"><i></i>${PHASE_LABEL[k]}${n[k] > 1 ? ` ×${n[k]}` : ""}</span>`).join("");
+}
 const flagPill = p => { const f = flagOf(p); return f ? `<span class="pill ${pillKind(f)}">${esc(f)}</span>` : ""; };
 const spend = c => (c ? `<span class="${c.budget_usd > 0 && c.usd > c.budget_usd ? "over" : ""}">${esc(spendText(c))}</span>` : "");
 function todaySpend() {
@@ -537,7 +560,7 @@ function menu() {
 function planLine(p) {
   const nums = p.error ? '<span class="num" style="color:var(--bad)">cannot be read</span><span></span>'
     : `<span class="num">${esc(etaText(p))}</span><span class="num">${spend(p.cost)}</span>`;
-  return `<a class="line" href="${planHref(p)}"><span class="who"><b>${esc(p.title || p.slug)}</b><small>${esc(keyOf(p))}</small></span>
+  return `<a class="line" href="${planHref(p)}"><span class="who"><b>${esc(p.title || p.slug)}</b><small>${esc(keyOf(p))}</small>${phaseSummary(p) ? `<span class="phases">${phaseSummary(p)}</span>` : ""}</span>
     <span class="num">${p.progress.merged} of ${p.progress.total} jobs${segs(p)}</span>${nums}<span class="flag">${flagPill(p) || `<span class="pill ${pillKind(p.status)}">${esc(p.status)}</span>`}</span></a>`;
 }
 function draftLine(d) {
@@ -629,7 +652,7 @@ function timeline(p) {
     }
     const line = live && now <= t0 + T ? `<span class="now-line" style="left:${pct(now)}"></span>` : "";
     const d = fe != null && pe != null ? Math.round((fe - pe) / 60e3) : null;
-    return `<button class="row" data-job="${esc(j.id)}" aria-pressed="${S.job === j.id}" type="button"><span class="job-cell"><span class="mono">${esc(j.id)}</span><small>${esc(j.status)}</small></span><span class="track">${bars}${line}</span><span class="delta ${d > 2 ? "late" : ""}">${esc(lateText(d) || "–")}</span></button>`;
+    return `<button class="row" data-job="${esc(j.id)}" aria-pressed="${S.job === j.id}" type="button"><span class="job-cell"><span class="mono">${esc(j.id)}</span><small>${esc(j.status)}</small>${phaseChip(j)}</span><span class="track">${bars}${line}</span><span class="delta ${d > 2 ? "late" : ""}">${esc(lateText(d) || "–")}</span></button>`;
   }).join("");
   const axis = `<div class="axis"><span></span><div class="ticks"><span style="left:0">${esc(clock(t0))}</span><span class="last" style="left:100%">${esc(clock(t0 + T))}</span></div><span></span></div>`;
   const job = p.jobs.find(j => j.id === S.job);
@@ -644,7 +667,7 @@ function detail(j) {
   const list = (label, items) => `<div><div class="label">${label}</div>${Array.isArray(items) ? `<ul>${items.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : esc(items)}</div>`;
   const pr = j.pr && j.pr.url ? link(j.pr.url, "PR") : "no PR";
   const spent = j.started ? `${Math.round(((ms(j.finished) ?? NOW()) - ms(j.started)) / 60e3)} of ${j.budget.minutes} min` : "not started";
-  return `<div class="card"><div class="card-top"><strong>${esc(j.pr_title || j.id)}</strong><span class="pill ${kind(j)}">${esc(j.status)}</span></div>
+  return `<div class="card"><div class="card-top"><strong>${esc(j.pr_title || j.id)}</strong><span class="pill ${kind(j)}">${esc(j.status)}</span>${phaseChip(j)}</div>
     ${j.reason ? `<div class="reason">${esc(j.reason)}</div>` : ""}${j.question ? `<div class="reason">Question: ${esc(j.question)}</div>` : ""}
     <div class="metrics"><span>${esc(spent)}</span><span>usd ${esc(Number(j.usd || 0).toFixed(2))} of ${esc(j.budget.usd)}</span><span>tier ${esc((j.tier_path || [j.tier]).join(" → "))}</span><span>${esc(j.attempts)} attempts</span><span>${pr}</span><span>after: ${esc((j.after || []).join(", ") || "none")}</span></div>
     <div class="facts">${list("Tasks", j.tasks || [])}${list("Done", j.done || [])}${list("Includes", j.includes || "")}${list("Excludes", j.excludes || "")}</div></div>`;
