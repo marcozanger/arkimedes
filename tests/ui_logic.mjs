@@ -5,8 +5,8 @@ import { readFileSync } from "node:fs";
 const html = readFileSync(process.argv[2], "utf8");
 const START = "// ---- logic: start ----", END = "// ---- logic: end ----";
 const code = html.split(START)[1].split(END)[0];
-const { decide, titleFor, readPlan, segments, etaText, spendText, flagOf, parseRoute, dur, draftHeader, docSections, jobCount } =
-  new Function(code + "; return {decide, titleFor, readPlan, segments, etaText, spendText, flagOf, parseRoute, dur, draftHeader, docSections, jobCount};")();
+const { decide, titleFor, readPlan, segments, etaText, spendText, flagOf, parseRoute, dur, draftHeader, docSections, jobCount, homeGroups } =
+  new Function(code + "; return {decide, titleFor, readPlan, segments, etaText, spendText, flagOf, parseRoute, dur, draftHeader, docSections, jobCount, homeGroups};")();
 
 const fresh = () => ({ lastAlert: null, loopDown: false, stale: false, done: [], unread: [] });
 const ok = { stale: false, error: "" };
@@ -30,8 +30,8 @@ const snap = (alerts = [], over = {}) => ({ version: 1, loop: { alive: true }, a
   assert.equal(r.notes[0].title, "r/s");
   assert.equal(r.notes[0].plan, "r/s");
   assert.equal(r.notes[0].body.length, 200);
-  const waits = snap([], { plans: [{ repo: "r", slug: "s", status: "blocked", jobs: [] }, { repo: "r", slug: "a", status: "aborted", jobs: [{ status: "blocked" }] },
-    { repo: "r", slug: "d", status: "done", progress: { merged: 1, total: 1 }, jobs: [{ status: "blocked" }] }, { repo: "r", slug: "q", status: "running", jobs: [] }] });
+  const waits = snap([], { plans: [{ repo: "r", slug: "s", status: "blocked", jobs: [{ status: "blocked" }] }, { repo: "r", slug: "a", status: "aborted", jobs: [{ status: "blocked" }] },
+    { repo: "r", slug: "d", status: "done", progress: { merged: 1, total: 1 }, jobs: [{ status: "blocked" }] }, { repo: "r", slug: "q", status: "running", jobs: [{ status: "waiting_answer" }] }] });
   assert.ok(titleFor(r.mem, waits, ok).startsWith("(1) "));       // the title counts plans that wait for Marco, as the Home badge does
   assert.ok(!titleFor(r.mem, snap(), ok).startsWith("("));        // unread alerts alone do not
   assert.equal(decide(r.mem, snap([alert(1), alert(2)]), ok).notes.length, 0);
@@ -138,7 +138,7 @@ const snap = (alerts = [], over = {}) => ({ version: 1, loop: { alive: true }, a
   assert.equal(flagOf({ status: "running", jobs: [job("working")], questions: [{ id: "q1" }] }), "Waits for you");
   assert.equal(flagOf({ status: "held", jobs: [], questions: [] }), "Waits for you");
   assert.equal(flagOf({ status: "running", jobs: [job("blocked"), job("waiting_answer")], questions: [] }), "Blocked");
-  assert.equal(flagOf({ status: "blocked", jobs: [], questions: [] }), "Blocked");
+  assert.equal(flagOf({ status: "blocked", jobs: [], questions: [] }), "");  // finished: History only
   assert.equal(flagOf({ status: "done", jobs: [job("merged")], questions: [] }), "");
 }
 
@@ -237,3 +237,19 @@ const snap = (alerts = [], over = {}) => ({ version: 1, loop: { alive: true }, a
 }
 
 console.log("ui logic ok");
+
+// Home shows only what is in progress; finished plans (done, blocked, aborted) are in History only,
+// and the title count and the Home badge count exactly the plans Home shows.
+{
+  const P = (slug, status, over = {}) => ({ repo: "r", slug, status, jobs: [], approved_at: "2026-01-01", ...over });
+  const all = [P("run", "running"), P("held", "held"), P("wait", "waiting"), P("d", "done"), P("b", "blocked", { questions: [{}], jobs: [{ status: "blocked" }] }),
+    P("a", "aborted", { jobs: [{ status: "blocked" }] }), P("runq", "running", { questions: [{}] })];
+  const g = homeGroups(all);
+  assert.deepEqual(g.flight.map(p => p.slug).sort(), ["held", "run", "runq"]);
+  assert.deepEqual(g.queued.map(p => p.slug), ["wait"]);
+  for (const p of ["d", "b", "a"]) assert.equal(flagOf(all.find(x => x.slug === p)), "");
+  assert.equal(flagOf(P("x", "running", { jobs: [{ status: "blocked" }] })), "Blocked");   // a running plan with a blocked job still needs Marco
+  const shown = g.flight.concat(g.queued).filter(p => flagOf(p));
+  assert.deepEqual(shown.map(p => p.slug).sort(), ["held", "runq"]);
+  assert.ok(titleFor(fresh(), snap([], { plans: all }), ok).startsWith("(2) "));
+}

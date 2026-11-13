@@ -339,7 +339,7 @@ function decide(mem, snap, meta) {
   return { notes, mem: m };
 }
 function titleFor(mem, snap, meta) {
-  const n = ((snap && snap.plans) || []).filter(p => flagOf(p)).length;  // the same plans as the badge on Home: those that wait for Marco
+  const h = homeGroups((snap && snap.plans) || []), n = h.flight.concat(h.queued).filter(p => flagOf(p)).length;  // the same plans as the badge on Home: those that wait for Marco
   const down = mem.loopDown || (snap && snap.loop && !snap.loop.alive);
   return (n > 0 ? `(${n}) ` : "") + (meta && meta.stale ? "Stale · " : down ? "Loop down · " : "") + "Arkimedes";
 }
@@ -388,10 +388,19 @@ function spendText(c) {
   const over = c.budget_usd > 0 && c.usd > c.budget_usd;
   return `$${Number(c.usd || 0).toFixed(2)} of $${money(c.budget_usd)}${over ? " · over" : ""}`;
 }
+const FINISHED = ["done", "blocked", "aborted"];  // as run.FINISHED: these never show on Home
+function homeGroups(plans) {
+  const recent = (a, b) => String(b.approved_at || "").localeCompare(String(a.approved_at || ""));
+  const urgent = p => (flagOf(p) === "Blocked" ? 0 : flagOf(p) ? 1 : 2);
+  return {
+    flight: plans.filter(p => ["running", "held"].includes(p.status)).sort(recent).sort((a, b) => urgent(a) - urgent(b)),
+    queued: plans.filter(p => p.status === "waiting").sort(recent),
+  };
+}
 function flagOf(p) {
   const jobs = p.jobs || [];
-  if (p.status === "aborted" || p.status === "done") return "";  // what was left blocked in them is on record, not a call for Marco
-  if (p.status === "blocked" || jobs.some(j => j.status === "blocked")) return "Blocked";
+  if (FINISHED.includes(p.status)) return "";  // finished plans are in History only; what was left blocked in them is on record, not a call for Marco
+  if (jobs.some(j => j.status === "blocked")) return "Blocked";
   if (p.status === "held" || (p.questions || []).length || jobs.some(j => WAITS_FOR_YOU.includes(j.status))) return "Waits for you";
   return "";
 }
@@ -532,7 +541,7 @@ function todaySpend() {
   const isToday = iso => iso && new Date(iso).toDateString() === today;
   return plans().flatMap(p => p.jobs || []).filter(j => isToday(j.started) || isToday(j.finished)).reduce((a, j) => a + Number(j.usd || 0), 0);
 }
-const waitsCount = () => plans().filter(p => flagOf(p)).length;
+const waitsCount = () => { const h = homeGroups(plans()); return h.flight.concat(h.queued).filter(p => flagOf(p)).length; };  // only what Home shows
 
 function banner() {
   if (S.meta.stale) return { cls: "bad", text: `Stale data: ${S.meta.error || "ark did not answer"}. Showing what ark returned at ${clock(ms(S.meta.updated))}.` };
@@ -575,20 +584,13 @@ function group(label, items, line, empty) {
 }
 function home() {
   if (!S.data) return `<p class="muted">${S.meta.stale ? "ark did not answer yet: " + esc(S.meta.error) : "Waiting for ark…"}</p>`;
-  const recent = (a, b) => String(b.approved_at || "").localeCompare(String(a.approved_at || ""));
-  const urgent = p => (flagOf(p) === "Blocked" ? 0 : flagOf(p) ? 1 : 2);
-  const flight = plans().filter(p => ["running", "held"].includes(p.status)).sort(recent).sort((a, b) => urgent(a) - urgent(b));
-  const stopped = plans().filter(p => p.status === "blocked").sort(recent);  // closed and waiting for a retry or an `ark abort`; aborted plans are in History only
-  const queued = plans().filter(p => p.status === "waiting").sort(recent);
-  const done = plans().filter(p => p.status === "done").sort(recent);
+  const { flight, queued } = homeGroups(plans());  // finished plans (done, blocked, aborted) are in History only
   const drafts = S.drafts || [];
-  return `<div class="screen-head"><h1>Plans</h1><span class="small muted">${flight.length} in flight${stopped.length ? ` · ${stopped.length} blocked` : ""} · ${queued.length} approved · ${drafts.length} drafts</span></div>
+  return `<div class="screen-head"><h1>Plans</h1><span class="small muted">${flight.length} in flight · ${queued.length} approved · ${drafts.length} drafts</span></div>
     ${S.flash ? `<div class="msg ok">${esc(S.flash)}</div>` : ""}
     ${group("In flight", flight, planLine, "Nothing is running.")}
     ${group("Approved, not started", queued, planLine, "No approved plan is waiting to start.")}
-    ${stopped.length ? group("Blocked", stopped, planLine, "") : ""}
-    ${group("Drafts", drafts, draftLine, S.drafts === null ? "Loading drafts…" : "No drafts. Start one with New plan.")}
-    ${done.length ? group("Finished", done, planLine, "") : ""}`;
+    ${group("Drafts", drafts, draftLine, S.drafts === null ? "Loading drafts…" : "No drafts. Start one with New plan.")}`;
 }
 
 // ---- plan screen
