@@ -47,6 +47,11 @@ Files, steps, test first, done check.
 setup: [pnpm install]                 # what a fresh worktree needs
 integration_gate: pnpm test           # runs on ark/<slug> before every merge
 final_pr_title: "feat(notes): edit and delete notes"
+# merge:                                # only when the plan overlaps plans in flight (parallel-plans)
+#   against: [humanharness/other-plan]  # the plans it overlaps with
+#   overlap: [packages/shell/src/**]    # what they share
+#   tier: T2                            # the refresh worker's model
+#   budget: { minutes: 30, usd: 4 }     # spent across the run's refreshes
 jobs:
   - id: shell-ipc                     # one job = one PR = one squash-merge
     pr_title: "feat(shell): notes.delete IPC"   # also the squash commit message

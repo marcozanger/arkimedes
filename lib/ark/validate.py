@@ -140,6 +140,32 @@ def _positive(v) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0
 
 
+MERGE_KEYS = ("tier", "budget", "against", "overlap")
+
+
+def _check_merge(m, add):
+    if "merge" not in m:
+        return
+    g = m["merge"]
+    if not isinstance(g, dict):
+        return add("manifest", "`merge` must be a mapping")
+    for k in g:
+        if k not in MERGE_KEYS:
+            add("manifest", f"merge: unknown key `{k}`")
+    for k in ("tier", "budget"):
+        if _missing(g, k):
+            add("manifest", f"merge: missing `{k}`")
+    if not _missing(g, "tier") and (not isinstance(g["tier"], str) or g["tier"] not in TIERS):
+        add("manifest", f"merge: tier must be T0, T1 or T2, not {g['tier']!r}")
+    b = g.get("budget")
+    if not _missing(g, "budget") and not (isinstance(b, dict) and _positive(b.get("minutes"))
+                                          and _positive(b.get("usd"))):
+        add("manifest", "merge: budget needs positive numeric `minutes` and `usd`")
+    for k in ("against", "overlap"):
+        if k in g and not _str_list(g[k]):
+            add("manifest", f"merge: `{k}` must be a list of non-empty strings")
+
+
 def _check_manifest(m, tasks, add):
     for key in ("integration_gate", "final_pr_title"):
         if m.get(key) in (None, "", [], {}):
@@ -148,6 +174,7 @@ def _check_manifest(m, tasks, add):
             add("manifest", f"`{key}` must be a non-empty string")
     if "setup" in m and not (isinstance(m["setup"], list) and all(_non_empty_str(c) for c in m["setup"])):
         add("manifest", "`setup` must be a list of non-empty strings (commands)")
+    _check_merge(m, add)
     jobs = m.get("jobs")
     if not isinstance(jobs, list) or not jobs:
         add("manifest", "`jobs` must be a non-empty list")

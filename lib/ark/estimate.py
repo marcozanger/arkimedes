@@ -43,7 +43,17 @@ def estimate(manifest: dict, writers: int) -> dict:
              "minutes": _minutes(j), "usd": _num(((j.get("budget") or {}).get("usd")))} for j in jobs]
     mins = [r["minutes"] for r in rows]
     usds = [r["usd"] for r in rows]
-    return {"jobs": rows, "writers": writers,
-            "total_minutes": sum(mins) if rows and None not in mins else None,
-            "total_usd": sum(usds) if rows and None not in usds else None,
-            "end_to_end_minutes": end_to_end(jobs, writers)}
+    g = (manifest or {}).get("merge")
+    extra = None
+    if isinstance(g, dict):
+        b = g.get("budget") or {}
+        extra = {"tier": g.get("tier"), "minutes": _num(b.get("minutes")), "usd": _num(b.get("usd"))}
+    total_m = sum(mins) if rows and None not in mins else None
+    total_u = sum(usds) if rows and None not in usds else None
+    e2e = end_to_end(jobs, writers)
+    if extra:  # it runs while the run is open; counting it after the last job is the cautious figure
+        total_m = total_m + extra["minutes"] if None not in (total_m, extra["minutes"]) else None
+        total_u = total_u + extra["usd"] if None not in (total_u, extra["usd"]) else None
+        e2e = e2e + extra["minutes"] if None not in (e2e, extra["minutes"]) else None
+    return {"jobs": rows, "merge": extra, "writers": writers,
+            "total_minutes": total_m, "total_usd": total_u, "end_to_end_minutes": e2e}
