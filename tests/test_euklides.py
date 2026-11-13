@@ -24,6 +24,12 @@ def test_allowed_actions(trigger, j, budget, expected):
     assert euklides.allowed(trigger, j, budget) == expected
 
 
+def test_decisions_per_job_comes_from_the_settings(ark_home):
+    (ark_home / "workspace.json").write_text(json.dumps({"roots": [], "euklides": {"decisions_per_job": 1}}))
+    assert euklides.allowed("failure", job(euklides_count=1), 2) == ["ask"]
+    assert euklides.allowed("failure", job(euklides_count=0), 2) == ["retry", "escalate", "ask"]
+
+
 def test_a_job_without_a_count_has_made_no_decision():
     assert euklides.allowed("failure", {"tier": "T0", "usd": 0.0}, 1) == ["retry", "escalate", "ask"]
 

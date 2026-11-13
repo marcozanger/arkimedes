@@ -1206,9 +1206,11 @@ def start_euklides(c: Ctx, job: str) -> None:
                                    earlier=[d for d in euklides.decisions()
                                             if str(d.get("id", "")).startswith(f"{c.st['repo']}/{c.st['slug']}/{job}/")][-10:],
                                    base_check=("red on " + c.base + " without the job too") if e.get("base_red") else None)
-    cmd = claude.agent_cmd("euklides", claude.EUKLIDES_MODEL, prompt, session=str(uuid.uuid4()), usd=claude.EUKLIDES_USD)
+    cfg = euklides.settings()
+    cmd = claude.agent_cmd("euklides", cfg["model"], prompt, session=str(uuid.uuid4()), usd=cfg["usd_per_call"],
+                           tools=cfg["tools"], denied_tools=cfg["denied_tools"])
     proc.start(c.dir, f"{job}.euklides", cmd, cwd=wt if wt.is_dir() else ticks_dir(),
-               env=claude.runner_env("euklides", repo_name=c.st["repo"]), minutes=claude.EUKLIDES_MINUTES)
+               env=claude.runner_env("euklides", repo_name=c.st["repo"]), minutes=cfg["minutes_per_call"])
     j["status"] = "euklides"
 
 
@@ -2177,6 +2179,7 @@ def cycle(forge=None) -> tuple[str, list[str], bool]:
     """One pass. Returns (status line, alerts to show, whether any run state changed)."""
     forge = forge or forge_mod.get()
     limits = paths.load_workspace()["limits"]  # first: if it raises, no alert was consumed and lost
+    euklides.settings()  # a bad euklides value raises here too, before any process starts
     caps.check_limits(limits)  # a bad cap, personal or on a rule, raises here too: before any alert is consumed
     states, before, alerts, approved = {}, {}, [], {}
     changed, critical = False, []

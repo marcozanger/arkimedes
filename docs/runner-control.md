@@ -90,6 +90,26 @@ every call. A journal that cannot be written is an event; the decision still app
 
 A run saved before Euklides, with a job in `needs_judge` or `judging`, loads as `needs_euklides`.
 
+### Euklides settings
+
+The `euklides` block of `workspace.json` sets how Euklides is called. Every key is optional; a missing block or key
+keeps its default, and each key overrides only itself.
+
+```json
+"euklides": {"model": "opus", "usd_per_call": 3, "minutes_per_call": 20,
+             "tools": ["Read", "Grep", "Glob"],
+             "denied_tools": ["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch", "WebSearch", "Task", "Agent"],
+             "budget_margin": 0.10, "decisions_per_job": 4}
+```
+
+`model` is `haiku`, `sonnet`, `opus` or a `claude-…` id; `usd_per_call` and `minutes_per_call` are positive numbers;
+`tools` and `denied_tools` are lists of non-empty strings with no tool in both; `budget_margin` is a number from 0 to
+1 (read, not used yet); `decisions_per_job` is an integer of 0 or more. A bad value or an unknown key raises a
+`ValueError` naming `euklides.<key>` and stops the cycle before any process starts.
+
+Not settings: the actions the runner opens (`allowed`), the 3 base fixes per run, the small-fix rule and the guards that
+protect main.
+
 ### What Euklides can fix
 
 Two more actions let Euklides fix small things himself, inside the **small-fix rule** the runner checks: at most 3
