@@ -171,12 +171,12 @@ export function renderBlocks(lines, labels, minHeading = 3) {
       continue;
     }
 
-    const para = [];
-    while (i < lines.length && !blank(lines[i]) && !(para.length && (isBlockStart(lines[i]) || LI.test(lines[i])))) {
-      para.push(lines[i].replace(/^\s+/, ""));
+    const paraLines = [];
+    while (i < lines.length && !blank(lines[i]) && !(paraLines.length && (isBlockStart(lines[i]) || LI.test(lines[i])))) {
+      paraLines.push(lines[i].replace(/^\s+/, ""));
       i++;
     }
-    out.push(`<p>${inline(para.join("\n"))}</p>`);
+    out.push(`<p>${inline(paraLines.join("\n"))}</p>`);
   }
   return out.join("\n");
 }
