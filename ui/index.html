@@ -172,6 +172,26 @@ h1, h2, h3 { margin: 0; }
 .md li.dcard dd { margin: 0; }
 .md .mmd-out { display: none; }
 
+/* draft screen */
+.dhead { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: flex-start; justify-content: space-between; }
+.dhead .who { display: grid; gap: 2px; min-width: 0; }
+.dhead h1 { font-size: 20px; font-weight: 650; overflow-wrap: anywhere; }
+.dact { display: grid; gap: 4px; justify-items: end; max-width: 100%; min-width: 0; }
+.dact .why { font-size: 12.5px; color: var(--muted); text-align: right; overflow-wrap: anywhere; }
+.dact code { font: 12.5px var(--mono); overflow-wrap: anywhere; }
+.linkbtn { border: 0; background: none; padding: 0; color: var(--accent); text-decoration: underline; font-size: 12.5px; justify-self: start; }
+.sec-head { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; justify-content: space-between; padding-top: 8px; border-top: 1px solid var(--line); }
+.sec-head h2 { font-size: 16px; overflow-wrap: anywhere; min-width: 0; }
+.verdicts { display: flex; gap: 6px; }
+.verdicts .btn[aria-pressed="true"][data-verdict="ok"] { background: var(--ok-soft); border-color: var(--ok); color: var(--ok); }
+.verdicts .btn[aria-pressed="true"][data-verdict="change"] { background: var(--attn-soft); border-color: var(--attn); color: var(--attn-ink); }
+.sec textarea { width: 100%; min-height: 54px; resize: vertical; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
+.sec .verdict { font: 500 12px var(--mono); }
+.idx .mark { font: 11px var(--mono); margin-right: 4px; }
+.idx .mark.ok { color: var(--ok); } .idx .mark.change { color: var(--attn-ink); }
+.problems { margin: 0; padding-left: 18px; font: 12.5px/1.45 var(--mono); overflow-wrap: anywhere; }
+.confirm { border: 1px solid var(--accent); }
+
 /* history and Euklides */
 .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .filters select, .filters input { border: 1px solid var(--line); background: var(--raised); border-radius: 6px; padding: 5px 8px; min-width: 0; }
@@ -222,6 +242,8 @@ a.hrow:hover { background: var(--wait-soft); }
   .hrow.head { display: none; }
   .row, .axis { grid-template-columns: 92px minmax(0, 1fr) 62px; gap: 6px; }
   .docbody { padding: 12px; }
+  .dact { justify-items: start; }
+  .dact .why { text-align: left; }
   .fab { right: 12px; bottom: 12px; max-width: calc(100vw - 24px); }
 }
 </style>
@@ -252,7 +274,8 @@ import { STRINGS } from "/vendor/spec-review/strings.mjs";
 
 const L = STRINGS.en;
 const S = { data: null, meta: { stale: false, error: "" }, drafts: null, history: null, euk: null,
-  route: { screen: "home" }, job: null, answers: {}, filter: { repo: "", status: "", text: "" }, copied: "" };
+  route: { screen: "home" }, job: null, answers: {}, filter: { repo: "", status: "", text: "" }, copied: "",
+  draft: null, notes: {}, flash: "" };
 const NOTE_KINDS = [["alert", "Alerts from a run"], ["done", "A plan finished"], ["loop", "ark-loop stopped or the data went stale"]];
 const LIVE = ["waiting", "running", "held"];
 const COMMANDS = {
@@ -375,8 +398,80 @@ function parseRoute(hash) {
     const tab = rest.length >= 3 && TABS.includes(rest[rest.length - 1]) ? rest.pop() : "timeline";
     return { screen: "plan", repo: rest[0], slug: rest.slice(1).join("/"), tab };
   }
-  if (parts[0] === "draft" && parts.length >= 3) return { screen: "draft", repo: parts[1], slug: parts.slice(2).join("/") };
+  if (parts[0] === "draft" && parts.length >= 3) {
+    const rest = parts.slice(1);
+    const doc = rest.length >= 3 && DRAFT_DOCS.includes(rest[rest.length - 1]) ? rest.pop() : null;
+    return { screen: "draft", repo: rest[0], slug: rest.slice(1).join("/"), doc };
+  }
   return { screen: "home" };
+}
+const DRAFT_DOCS = ["spec", "plan"];
+// review: the full form ({sections: [{verdict}]}) or the list form ({ok, change, total})
+function tally(review) {
+  if (!review) return { ok: 0, change: 0, total: 0 };
+  if (Array.isArray(review.sections)) {
+    const v = review.sections.map(s => s.verdict);
+    return { ok: v.filter(x => x === "ok").length, change: v.filter(x => x === "change").length, total: v.length };
+  }
+  return { ok: review.ok || 0, change: review.change || 0, total: review.total || 0 };
+}
+function jobCount(planText) {
+  const m = String(planText || "").split(/^## Run manifest\s*$/m)[1];
+  return m ? (m.match(/^\s*- id:\s*\S/gm) || []).length : 0;
+}
+// d: the /api/draft data; returns {numbers: [{label, value, sub, reopen}], button: {label, action, command, disabled, problems, why}}
+function draftHeader(d) {
+  const spec = d.spec, plan = d.plan, command = `/ark-plan ${d.repo}/${d.slug}`;
+  const st = tally(spec && spec.review), pt = tally(plan && plan.review);
+  const counted = t => ({ value: `${t.ok} of ${t.total} ok`, sub: t.change ? `${t.change} to change` : t.ok < t.total ? `${t.total - t.ok} to review` : "every section ok" });
+  const specOk = !spec || spec.status === "approved";
+  const e = plan && plan.estimate;
+  const numbers = [
+    { label: "Spec", ...(!spec ? { value: "No spec", sub: "this plan has none" } : spec.status === "approved" ? { value: "Approved", sub: st.change ? `${st.change} to change` : "", reopen: true } : counted(st)) },
+    { label: "Plan", ...(plan ? counted(pt) : { value: "Not written", sub: "ark-plan writes it" }) },
+    { label: "Budget", value: e ? `$${money(e.total_usd)}` : "–", sub: e ? `~${dur(e.end_to_end_minutes)} end to end` : "after the plan is valid" },
+    { label: "Jobs", value: plan ? String(jobCount(plan.text)) : "–", sub: e ? `${dur(e.total_minutes)} of work` : "" },
+  ];
+  const copy = why => ({ label: "Copy resume command", action: "copy", command, disabled: false, problems: [], why });
+  let button;
+  if (st.change || (specOk && pt.change)) button = copy("ark-plan resumes this draft and works the sections marked Change first.");
+  else if (!specOk) {
+    const left = st.total - st.ok;
+    button = { label: "Approve spec", action: "approve-spec", disabled: !st.total || left > 0, problems: [],
+      why: left > 0 ? `Review every section first: ${left} left.` : !st.total ? "The spec has no ## sections to review." : "" };
+  } else if (!plan) button = copy("The spec is approved: ark-plan writes the plan next.");
+  else {
+    const problems = (plan.problems || []).map(String), left = pt.total - pt.ok;
+    button = { label: "Approve plan…", action: "approve-plan", disabled: problems.length > 0 || left > 0 || !pt.total, problems,
+      why: problems.length ? "The plan does not meet the contract yet:" : left > 0 ? `Review every section first: ${left} left.` : !pt.total ? "The plan has no ## sections to review." : "" };
+  }
+  return { numbers, button };
+}
+// the ## sections of a spec or plan text outside code fences, keyed like review.json
+function docSections(text) {
+  const body = String(text || "").replace(/^---\n[\s\S]*?\n---\n/, "");
+  const pre = [], sections = [], seen = {};
+  let fence = null;
+  for (const line of body.split("\n")) {
+    const f = line.match(/^ {0,3}(`{3,}|~{3,})/);
+    if (f) {
+      if (fence === null) fence = f[1];
+      else if (f[1][0] === fence[0] && f[1].length >= fence.length && line.trim() === f[1]) fence = null;
+    } else if (fence === null) {
+      const h = line.match(/^## (.+)$/);
+      if (h) {
+        const title = h[1].trim(), base = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+        seen[base] = (seen[base] || 0) + 1;
+        sections.push({ key: seen[base] === 1 ? base : `${base}-${seen[base]}`, title, lines: [] });
+        continue;
+      }
+    }
+    (sections.length ? sections[sections.length - 1].lines : pre).push(line);
+  }
+  const trim = a => { while (a.length && !a[a.length - 1].trim()) a.length -= 1; };
+  trim(pre);
+  sections.forEach(s => trim(s.lines));
+  return { pre, sections };
 }
 // ---- logic: end ----
 
@@ -462,6 +557,7 @@ function home() {
   const done = plans().filter(p => p.status === "done").sort(recent);
   const drafts = S.drafts || [];
   return `<div class="screen-head"><h1>Plans</h1><span class="small muted">${flight.length} in flight · ${queued.length} approved · ${drafts.length} drafts</span></div>
+    ${S.flash ? `<div class="msg ok">${esc(S.flash)}</div>` : ""}
     ${group("In flight", flight, planLine, "Nothing is running.")}
     ${group("Approved, not started", queued, planLine, "No approved plan is waiting to start.")}
     ${group("Drafts", drafts, draftLine, S.drafts === null ? "Loading drafts…" : "No drafts. Start one with New plan.")}
@@ -614,10 +710,170 @@ function planTab(p) {
 }
 
 // ---- other screens
+// ---- draft screen
+const draftKey = () => `${S.route.repo}/${S.route.slug}`;
+function draftDoc(d) {
+  const want = S.route.doc;
+  if (want && d[want]) return want;
+  if (d.spec && (d.spec.status !== "approved" || !d.plan)) return "spec";
+  return d.plan ? "plan" : "spec";
+}
+const MDS = new Map();
+function sectionsHtml(text, doc) {
+  const key = `${doc}\n${text}`;
+  if (MDS.has(key)) return MDS.get(key);
+  const { pre, sections } = docSections(text);
+  const h1 = pre.findIndex(l => /^# /.test(l));
+  const title = h1 === -1 ? "" : pre[h1].slice(2).trim();
+  const intro = renderBlocks(pre.filter((_, i) => i !== h1), L);
+  const out = { title, intro, sections: sections.map(s => ({ key: s.key, title: s.title, html: renderFoldable(s.lines, 2, L) })) };
+  MDS.set(key, out);
+  return out;
+}
+function draftSection(doc, s, rev, editable) {
+  const v = rev ? rev.verdict : null, nk = `${doc}#${s.key}`;
+  const note = S.notes[nk] !== undefined ? S.notes[nk] : rev ? rev.note : "";
+  const btn = (verdict, label) => `<button class="btn" type="button" data-verdict="${verdict}" data-key="${esc(s.key)}" aria-pressed="${v === verdict}"${editable ? "" : " disabled"}>${label}</button>`;
+  const controls = editable ? `<span class="verdicts">${btn("ok", "OK")}${btn("change", "Change")}</span>`
+    : `<span class="verdict muted">${esc(v || "not reviewed")}</span>`;
+  const noteBox = editable ? `<textarea data-note="${esc(s.key)}" aria-label="What to change in ${esc(s.title)}" placeholder="What to change… (saved when you leave the box)">${esc(note)}</textarea>`
+    : note ? `<div class="small">Note: ${esc(note)}</div>` : "";
+  return `<section class="sec" id="draft-${doc}-${esc(s.key)}"><div class="sec-head"><h2>${inline(s.title)}</h2>${controls}</div>
+    <div class="md">${s.html}</div>${noteBox}</section>`;
+}
+function draftBody(d, doc) {
+  const x = d[doc];
+  if (!x) return `<div class="empty">${doc === "spec" ? "This draft has no spec." : "No plan yet: ark-plan writes it after the spec is approved."}</div>`;
+  const view = sectionsHtml(x.text || "", doc), revs = (x.review && x.review.sections) || [];
+  const editable = doc === "plan" || x.status !== "approved" || S.draft.reopen;
+  const mark = v => (v === "ok" ? '<span class="mark ok">✓</span>' : v === "change" ? '<span class="mark change">✎</span>' : '<span class="mark">·</span>');
+  const revOf = k => revs.find(r => r.key === k) || null;
+  const idx = view.sections.map(s => `<button class="idx" type="button" data-goto="draft-${doc}-${esc(s.key)}">${mark((revOf(s.key) || {}).verdict)}${esc(s.title)}</button>`).join("");
+  const secs = view.sections.map(s => draftSection(doc, s, revOf(s.key), editable)).join("");
+  const reopened = doc === "spec" && x.status === "approved" && S.draft.reopen
+    ? '<div class="problem">The spec is approved. Mark what to change: the header then gives you the command that resumes ark-plan.</div>' : "";
+  return reopened + `<div class="docwrap"><nav class="docidx" aria-label="Sections"><span class="label">${esc(L.sections)}</span>${idx}</nav>
+    <article class="docbody">${view.title ? `<h1>${inline(view.title)}</h1>` : ""}${view.intro ? `<div class="md">${view.intro}</div>` : ""}${secs || '<p class="hint">No ## sections to review.</p>'}</article></div>`;
+}
+function draftConfirm(d) {
+  const e = d.plan.estimate, jobs = jobCount(d.plan.text);
+  const fact = (label, value) => `<div><span class="label">${label}</span><span class="mono">${esc(value)}</span></div>`;
+  return `<div class="card confirm" role="dialog" aria-label="Approve the plan" data-confirm="1"><strong>Approve ${esc(d.repo)}/${esc(d.slug)} and queue it?</strong>
+    <div class="plan-facts">${fact("Jobs", `${jobs} job${jobs === 1 ? "" : "s"}`)}${fact("Budget", e ? `$${money(e.total_usd)}` : "–")}${fact("End to end", e ? `~${dur(e.end_to_end_minutes)}` : "–")}${fact("Work", e ? dur(e.total_minutes) : "–")}${fact("sha256", String(d.plan.sha256 || "").slice(0, 12))}</div>
+    <span class="small muted">ark-loop starts it on its next beat. Only this version of the plan is approved.</span>
+    <div class="q"><div class="actions"><button class="btn" type="button" data-draft-cancel="1">Cancel</button>
+    <button class="btn primary" type="button" data-approve-plan="1"${S.draft.busy ? " disabled" : ""}>${S.draft.busy ? "Approving…" : "Approve and queue"}</button></div></div></div>`;
+}
 function draftScreen() {
-  const r = S.route;
-  return `<a class="back" href="#/">← Back</a><div class="screen-head"><h1>${esc(r.repo)}/${esc(r.slug)}</h1></div>
-    <div class="empty">Review this draft with <span class="mono">/spec-review</span> in a session; the page does not review drafts yet.</div>`;
+  const back = '<a class="back" href="#/">← Back</a>', dv = S.draft;
+  if (!dv || dv.key !== draftKey() || (!dv.data && !dv.error)) return back + '<p class="muted">Loading the draft…</p>';
+  if (!dv.data) return back + `<div class="problem crit"><strong>This draft cannot be read</strong><div class="reason">${esc(dv.error)}</div></div>`;
+  const d = dv.data, h = draftHeader(d), doc = draftDoc(d), b = h.button;
+  const button = b.action === "copy"
+    ? `<button class="btn primary" type="button" data-draft-act="copy" data-copy="${esc(b.command)}">${S.copied === b.command ? "Copied" : esc(b.label)}</button><code>${esc(b.command)}</code>`
+    : `<button class="btn primary" type="button" data-draft-act="${b.action}"${b.disabled || dv.busy ? " disabled" : ""}>${esc(b.label)}</button>`;
+  const why = b.why ? `<span class="why">${esc(b.why)}</span>` : "";
+  const problems = b.problems.length ? `<ul class="problems">${b.problems.map(p => `<li>${esc(p)}</li>`).join("")}</ul>` : "";
+  const head = `${back}<div class="dhead"><div class="who"><h1>${esc(d.title || d.slug)}</h1><span class="mono small muted">${esc(d.repo)}/${esc(d.slug)}${d.approval === "stale" ? " · approval stale: the plan changed after it was approved" : ""}</span></div>
+    <div class="dact">${button}${why}${problems}</div></div>`;
+  const box = n => `<div class="number"><span class="label">${esc(n.label)}</span><strong>${esc(n.value)}</strong>${n.sub ? `<span class="small muted">${esc(n.sub)}</span>` : ""}${n.reopen && !dv.reopen ? '<button class="linkbtn" type="button" data-reopen="1">Reopen</button>' : ""}</div>`;
+  const warning = ["spec", "plan"].map(k => d[k] && d[k].review && d[k].review.warning).find(Boolean);
+  const msg = dv.msg ? `<div class="msg draft-msg ${dv.cls || ""}">${esc(dv.msg)}${(dv.problems || []).length ? `<ul class="problems">${dv.problems.map(p => `<li>${esc(p)}</li>`).join("")}</ul>` : ""}</div>` : "";
+  const tabs = DRAFT_DOCS.filter(k => d[k]).map(k => `<a class="tab" role="tab" href="#/draft/${esc(d.repo)}/${esc(d.slug)}/${k}" aria-selected="${doc === k}">${k === "spec" ? "Spec" : "Plan"}</a>`).join("");
+  return head + `<div class="numbers">${h.numbers.map(box).join("")}</div>`
+    + (warning ? `<div class="problem"><strong>${esc(warning)}</strong></div>` : "") + msg
+    + (dv.confirm && d.plan ? draftConfirm(d) : "")
+    + `<div class="tabs" role="tablist">${tabs}</div>` + draftBody(d, doc);
+}
+// every write but the answer goes through here; POST, with the token, like api()
+const WRITE = "POST";
+const write = (path, body) => api(path, { method: WRITE, body });
+async function loadDraft(msg, cls) {
+  const key = draftKey(), [repo, slug] = [S.route.repo, S.route.slug];
+  const keep = S.draft && S.draft.key === key ? S.draft : {};
+  S.draft = { key, data: keep.data || null, reopen: !!keep.reopen, loading: true };
+  const r = await api(`/api/draft?repo=${encodeURIComponent(repo)}&slug=${encodeURIComponent(slug)}`);
+  if (!S.draft || S.draft.key !== key) return;
+  if (r.ok && r.body && typeof r.body === "object") S.draft = { ...S.draft, data: r.body, loading: false, error: "", msg: msg || "", cls: cls || "" };
+  else S.draft = { ...S.draft, loading: false, error: r.body.error || `ark ui answered ${r.status}`, msg: msg || "", cls: cls || "" };
+  S.notes = {};
+  render(true);
+}
+const docName = doc => (doc === "spec" ? "spec" : "plan");
+async function refused(r, doc) {
+  const dv = S.draft;
+  dv.busy = false;
+  if (r.status === 403 && r.body.kind !== "role") Object.assign(dv, { msg: "Reload the page: ark ui restarted", cls: "bad", problems: [] });
+  else if (r.status === 409 && r.body.kind === "changed") {
+    dv.confirm = false;
+    await loadDraft(`The ${docName(doc)} changed while you were reading it; look again`, "bad");
+    return;
+  } else if (r.status === 422 && r.body.kind === "invalid") Object.assign(dv, { msg: r.body.error || "The plan does not meet the contract.", cls: "bad", problems: r.body.problems || [] });
+  else Object.assign(dv, { msg: r.body.error || `ark ui answered ${r.status}`, cls: "bad", problems: [] });
+  dv.confirm = false;
+  render(true);
+}
+async function saveReview(doc, key, verdict, note) {
+  const dv = S.draft, d = dv && dv.data;
+  if (!d || !d[doc]) return;
+  const r = await write("/api/review", { repo: d.repo, slug: d.slug, doc, key, verdict, note });
+  if (S.draft !== dv) return;
+  if (!r.ok) { await refused(r, doc); return; }
+  if (r.body.sha256 && d[doc].sha256 && r.body.sha256 !== d[doc].sha256) {
+    await loadDraft(`The ${docName(doc)} changed while you were reading it; look again`, "bad");
+    return;
+  }
+  d[doc].review = r.body;
+  Object.assign(dv, { msg: "", cls: "", problems: [] });
+  render();
+}
+function sectionOf(doc, key) {
+  const x = S.draft && S.draft.data && S.draft.data[doc];
+  return ((x && x.review && x.review.sections) || []).find(s => s.key === key) || null;
+}
+function setVerdict(key, verdict) {
+  const doc = draftDoc(S.draft.data), s = sectionOf(doc, key), nk = `${doc}#${key}`;
+  const v = s && s.verdict === verdict ? null : verdict;
+  const note = S.notes[nk] !== undefined ? S.notes[nk] : s ? s.note : "";
+  if (s) { s.verdict = v; s.note = v ? note : ""; }
+  render(true);
+  saveReview(doc, key, v, v ? note : "");
+}
+function saveNote(key, text) {
+  const doc = draftDoc(S.draft.data), s = sectionOf(doc, key);
+  if (s && s.note === text) return;
+  const v = (s && s.verdict) || "change";   // a note without a verdict says something must change
+  if (s) { s.verdict = v; s.note = text; }
+  saveReview(doc, key, v, text);
+}
+async function approveSpec() {
+  const dv = S.draft, d = dv.data;
+  dv.busy = true;
+  render(true);
+  const r = await write("/api/approve-spec", { repo: d.repo, slug: d.slug, sha256: d.spec.sha256 });
+  if (!r.ok) { await refused(r, "spec"); return; }
+  dv.busy = false;
+  dv.reopen = false;
+  location.hash = `#/draft/${d.repo}/${d.slug}/plan`;
+  await loadDraft("Spec approved. Review the plan next.", "ok");
+}
+async function approvePlan() {
+  const dv = S.draft, d = dv.data;
+  dv.busy = true;
+  render(true);
+  const r = await write("/api/approve-plan", { repo: d.repo, slug: d.slug, sha256: d.plan.sha256 });
+  if (!r.ok) { await refused(r, "plan"); return; }
+  S.flash = `Approved ${d.repo}/${d.slug}: it waits under Approved, not started, until ark-loop starts it.`;
+  S.drafts = (S.drafts || []).filter(x => `${x.repo}/${x.slug}` !== `${d.repo}/${d.slug}`);
+  S.draft = null;
+  location.hash = "#/";
+  poll();
+}
+function draftAction(name) {
+  const dv = S.draft;
+  if (!dv || !dv.data) return;
+  if (name === "approve-spec") approveSpec();
+  else if (name === "approve-plan") { Object.assign(dv, { confirm: true, msg: "", problems: [] }); render(true); }
 }
 function historyRows() {
   const f = S.filter, q = f.text.trim().toLowerCase();
@@ -723,7 +979,12 @@ function readNow() {
 }
 function route() {
   const r = parseRoute(location.hash);
-  if (r.screen !== S.route.screen || r.repo !== S.route.repo || r.slug !== S.route.slug) S.job = null;
+  if (r.screen !== S.route.screen || r.repo !== S.route.repo || r.slug !== S.route.slug) {
+    S.job = null;
+    S.draft = null;
+    S.notes = {};
+  }
+  if (r.screen !== "home") S.flash = "";
   S.route = r;
   render(true);
   readNow();
@@ -749,10 +1010,12 @@ document.addEventListener("visibilitychange", () => {
 document.addEventListener("change", e => {
   const t = e.target;
   if (t.dataset && t.dataset.pref) store.set("ark-ui-notify", { ...notePrefs(), [t.dataset.pref]: t.checked });
+  if (t.dataset && t.dataset.note !== undefined && S.route.screen === "draft") saveNote(t.dataset.note, t.value);
 });
 document.addEventListener("input", e => {
   const t = e.target;
   if (t.dataset && t.dataset.filter) { S.filter = { ...S.filter, [t.dataset.filter]: t.value }; render(true); return; }
+  if (t.dataset && t.dataset.note !== undefined && S.draft && S.draft.data) { S.notes[`${draftDoc(S.draft.data)}#${t.dataset.note}`] = t.value; return; }
   if (!t.dataset || !t.dataset.q) return;
   const p = currentPlan();
   if (!p) return;
@@ -775,7 +1038,7 @@ function copyCommand() {
   try { navigator.clipboard.writeText(c.text).then(() => done(true), () => done(false)); } catch (e) { done(false); }
 }
 document.addEventListener("click", e => {
-  const t = e.target.closest("[data-job],[data-answer],[data-goto],[data-cmd],[data-copy],[data-notify],#cmd-copy,#cmd-close");
+  const t = e.target.closest("[data-job],[data-answer],[data-goto],[data-cmd],[data-copy],[data-notify],[data-verdict],[data-draft-act],[data-approve-plan],[data-draft-cancel],[data-reopen],#cmd-copy,#cmd-close");
   if (!t) return;
   if (t.dataset.notify) {
     try { Promise.resolve(Notification.requestPermission()).then(() => render(true), () => render(true)); } catch (err) { render(true); }
@@ -790,6 +1053,16 @@ document.addEventListener("click", e => {
   if (t.id === "cmd-close") { document.getElementById("cmd").hidden = true; return; }
   if (t.dataset.cmd) { openCommand(t.dataset.cmd); return; }
   if (t.dataset.answer) { sendAnswer(t.dataset.answer); return; }
+  if (t.dataset.verdict) { setVerdict(t.dataset.key, t.dataset.verdict); return; }
+  if (t.dataset.draftAct) { draftAction(t.dataset.draftAct); return; }
+  if (t.dataset.approvePlan) { approvePlan(); return; }
+  if (t.dataset.draftCancel) { S.draft.confirm = false; render(true); return; }
+  if (t.dataset.reopen) {
+    S.draft.reopen = true;
+    const d = S.draft.data;
+    if (S.route.doc !== "spec") location.hash = `#/draft/${d.repo}/${d.slug}/spec`; else render(true);
+    return;
+  }
   if (t.dataset.goto) { const s = document.getElementById(t.dataset.goto); if (s) s.scrollIntoView({ block: "start" }); return; }
   if (t.dataset.job) { S.job = S.job === t.dataset.job ? null : t.dataset.job; render(true); }
 });
@@ -814,6 +1087,7 @@ async function load() {
     const r = await api("/api/history");
     if (r.ok && Array.isArray(r.body)) { S.history = r.body; render(); }
   }
+  if (s === "draft" && !S.draft) await loadDraft();
   if (s === "euklides") {
     const r = await api("/api/euklides");
     if (r.ok && r.body && typeof r.body === "object") { S.euk = r.body; render(); }
