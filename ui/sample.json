@@ -53,6 +53,9 @@
       "spec": "",
       "plan_file": "---\ntitle: Edit notes in place\n---\n\n# Edit notes in place\n\n## Goal\n\nShort goal for Edit notes in place.\n\n## Tasks\n\n- model: do the work\n- api: do the work\n- ui-edit: do the work\n- review-ui: do the work\n- docs: do the work\n\n## Run manifest\n\n- job: model\n- job: api\n- job: ui-edit\n- job: review-ui\n- job: docs\n",
       "decisions": "",
+      "questions": [],
+      "answers": [],
+      "spec_file": "",
       "events": [
         "2026-11-07T06:05:00+00:00 job model started",
         "2026-11-07T06:30:00+00:00 job model merged",
@@ -309,6 +312,9 @@
       "spec": "",
       "plan_file": "---\ntitle: Onboarding copy\n---\n\n# Onboarding copy\n\n## Goal\n\nShort goal for Onboarding copy.\n\n## Tasks\n\n- copy: do the work\n- screens: do the work\n- polish: do the work\n\n## Run manifest\n\n- job: copy\n- job: screens\n- job: polish\n",
       "decisions": "",
+      "questions": [],
+      "answers": [],
+      "spec_file": "",
       "events": [
         "2026-11-07T08:35:00+00:00 job copy started",
         "2026-11-07T09:05:00+00:00 job copy merged",
@@ -474,6 +480,9 @@
       "spec": "",
       "plan_file": "---\ntitle: API cleanup\n---\n\n# API cleanup\n\n## Goal\n\nShort goal for API cleanup.\n\n## Tasks\n\n- routes: do the work\n- tests: do the work\n\n## Run manifest\n\n- job: routes\n- job: tests\n",
       "decisions": "- Kept the v1 route names.\n  Why: clients still call them.\n  Rejected: renaming now.\n",
+      "questions": [],
+      "answers": [],
+      "spec_file": "",
       "events": [
         "2026-11-07T03:05:00+00:00 job routes started",
         "2026-11-07T03:55:00+00:00 plan done"
@@ -598,6 +607,9 @@
       "spec": "",
       "plan_file": "",
       "decisions": "",
+      "questions": [],
+      "answers": [],
+      "spec_file": "",
       "events": [],
       "final_pr": null,
       "jobs": [],

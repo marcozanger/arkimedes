@@ -8,11 +8,10 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
-from . import ctl, desk, estimate, monitor, paths, reporting, review, validate
-from .plan import load_plan, set_status, sha256_file
+from . import approve, ctl, desk, estimate, monitor, paths, reporting, review, validate
+from .plan import load_plan, sha256_file
 from .report import minutes, usd
 
 
@@ -89,7 +88,7 @@ def cmd_approve(args) -> int:
     except OSError as e:
         print(f"ark approve: could not read {path}: {e}", file=sys.stderr)
         return 1
-    problems = validate.validate(path)
+    problems = approve.check(path)
     if problems:
         print("Cannot approve: the plan does not meet the contract.", file=sys.stderr)
         for p in problems:
@@ -102,20 +101,15 @@ def cmd_approve(args) -> int:
         if answer not in ("s", "si", "sí", "y", "yes"):
             print("Not approved.")
             return 1
-    if sha256_file(path) != sha_seen:
-        print("The plan changed while it was being approved; run ark approve again.", file=sys.stderr)
+    try:
+        rec = approve.approve_plan(path, expect_sha=sha_seen)
+    except approve.ApproveError as e:
+        if e.kind == "changed":
+            print("The plan changed while it was being approved; run ark approve again.", file=sys.stderr)
+        else:
+            print(f"ark approve: {e}", file=sys.stderr)
         return 1
-    set_status(path, "closed")
-    sha = sha256_file(path)
-    repo, slug = str(plan.frontmatter["repo"]), str(plan.frontmatter["slug"])
-    f = paths.approval_file(repo, slug)
-    f.parent.mkdir(parents=True, exist_ok=True)
-    rec = {"repo": repo, "slug": slug, "plan": str(path.resolve()), "sha256": sha,
-           "approved_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
-    tmp = f.with_name(f.name + ".tmp")
-    tmp.write_text(json.dumps(rec, indent=2) + "\n", encoding="utf-8")
-    tmp.replace(f)
-    print(f"Approved {repo}/{slug} · sha256 {sha[:12]}")
+    print(f"Approved {rec['repo']}/{rec['slug']} · sha256 {rec['sha256'][:12]}")
     return 0
 
 
