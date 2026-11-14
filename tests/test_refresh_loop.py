@@ -3,7 +3,15 @@ from conftest import git
 from helpers import manifest
 from test_loop import SLUG, drive, feature, jobs_settled, state  # noqa: F401  (test_loop's own feature fixture)
 
+import pytest
+
 from ark import gitops, loop, paths
+
+
+@pytest.fixture(autouse=True)
+def start_check(monkeypatch):
+    """conftest turns the start check off for the suite; these tests are about it."""
+    monkeypatch.setenv("ARK_START_CHECK", "1")
 
 
 def commit_on(repo, branch, rel, text) -> str:

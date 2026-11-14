@@ -44,7 +44,7 @@ FIX_BASE_USD = 2  # the budget of one base-fix worker
 REFRESH_PREFIX = "_refresh-"   # a run-level name, like _fix-
 REFRESH_EVERY = 60             # seconds between two looks at origin's default branch, per run
 REFRESH_RUNNING = {"checking": "check"}
-START_CHECK = True             # False: a new run counts its base as green and dispatches at once (old loop tests)
+START_CHECK = True             # False (or ARK_START_CHECK=0): a new run counts its base as green and dispatches at once
 
 # What a job's status says is running, and where the job goes back to if that process is not there.
 RUNNING = {"working": "worker", "gating": "gate", "reviewing": "review", "integrating": "integrate",
@@ -259,9 +259,10 @@ def try_start(st: dict, others: list[dict], forge) -> bool:
         run.save(st)  # on disk before the branch exists: the next cycle knows that branch is ours
         gitops.push_ref(repo, base, f"ark/{st['slug']}")
     st.update(status="running", reason="", default_branch=default, base_sha=base, area=area)
-    if START_CHECK:
+    check = START_CHECK and os.environ.get("ARK_START_CHECK", "1") != "0"
+    if check:
         st["refresh"] = _new_refresh(0, base, None)  # no job before a check is green on the base
-    st.update(main_seen=base, base_green=not START_CHECK)
+    st.update(main_seen=base, base_green=not check)
     st.setdefault("refreshes", [])
     for mj in mjobs:
         st["jobs"][mj["id"]] = run.new_job(mj)
