@@ -30,6 +30,26 @@ def test_stamping_again_keeps_the_first_times(monkeypatch):
     assert st["jobs"]["a"] == {"status": "merged", "started": "first", "finished": "first"}
 
 
+def test_waiting_on_a_dependency_is_not_started(monkeypatch):
+    monkeypatch.setattr(run, "now", lambda: "T")
+    st = {"jobs": {
+        "a": {"status": "waiting_dep"},
+        "b": {"status": "pending", "started": "S", "attempts": 0},     # stamped by older code while it waited
+        "c": {"status": "waiting_dep", "started": "S", "attempts": 2},  # really ran before: keeps its start
+    }}
+    run.stamp_times(st)
+    j = st["jobs"]
+    assert "started" not in j["a"] and "started" not in j["b"]
+    assert j["c"]["started"] == "S"
+
+
+def test_the_monitor_ignores_a_false_start_on_a_job_that_never_ran():
+    from ark import monitor
+    never = monitor._job("x", {}, {"status": "pending", "started": "S", "attempts": 0}, {})
+    ran = monitor._job("y", {}, {"status": "working", "started": "S", "attempts": 1}, {})
+    assert never["started"] is None and ran["started"] == "S"
+
+
 def test_a_finished_run_has_start_and_end_on_every_job(feature):
     feature()
     drive(settled)

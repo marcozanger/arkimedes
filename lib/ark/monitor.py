@@ -117,7 +117,9 @@ def _job(jid: str, mj: dict, sj: dict, heads: dict) -> dict:
     return {"id": jid, "status": sj.get("status", "pending"), "tier": sj.get("tier") or mj.get("tier", ""),
             "tier_path": sj.get("tier_path") or [mj.get("tier", "")], "attempts": sj.get("attempts", 0),
             "usd": _num(sj.get("usd")), "reason": sj.get("reason") or "", "question": sj.get("question") or "",
-            "pr": sj.get("pr"), "started": sj.get("started"), "finished": sj.get("finished"),
+            "pr": sj.get("pr"), "finished": sj.get("finished"),
+            # a run stamped before waiting_dep counted as not started keeps a false `started` on jobs that never ran
+            "started": None if sj.get("status", "pending") in run.UNSTARTED and not sj.get("attempts") else sj.get("started"),
             "after": list(mj.get("after") or []),
             "budget": {"minutes": _num(budget.get("minutes")), "usd": _num(budget.get("usd"))},
             "pr_title": mj.get("pr_title", ""), "tasks": [heads.get(t, t) for t in mj.get("tasks") or []],

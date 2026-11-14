@@ -15,7 +15,8 @@ from . import paths
 
 MAX_EVENTS = 200
 TERMINAL = {"merged", "blocked"}
-NOT_STARTED = {"pending", "needs_worker"}
+NOT_STARTED = {"pending", "waiting_dep", "needs_worker"}
+UNSTARTED = {"pending", "waiting_dep"}  # with no attempt, a job here never ran
 FINISHED = ("done", "blocked", "aborted")  # a plan status the loop never steps: blocked may be reopened by `ark retry`
 
 
@@ -27,6 +28,8 @@ def area(st: dict, job: str, mj: dict) -> list[str]:
 def stamp_times(st: dict) -> None:
     """`started` the first pass a job is past NOT_STARTED, `finished` the pass it reached TERMINAL.
     A job that leaves blocked loses `finished` and keeps `started`. The control center reads both.
+    A job that is still pending or waiting on a dependency with no attempt yet has not started: a stamp it got from
+    older code (which counted waiting_dep as started) is dropped.
     A run that was already finished when it first met this code has no real times to stamp: it is marked and left
     alone, since "now" would put every one of its jobs at the moment of the upgrade."""
     if not st.get("times_kept"):
@@ -35,6 +38,8 @@ def stamp_times(st: dict) -> None:
             return
     t = now()
     for j in st["jobs"].values():
+        if j["status"] in UNSTARTED and not j.get("attempts"):
+            j.pop("started", None)
         if j["status"] not in NOT_STARTED and not j.get("started"):
             j["started"] = t
         if j["status"] in TERMINAL:
