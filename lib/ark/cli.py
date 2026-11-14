@@ -131,6 +131,9 @@ def cmd_estimate(args) -> int:
     print("|---|---|---|---|---|")
     for j in e["jobs"]:
         print(f"| {j['id']} | {j['tier']} | {', '.join(j['after']) or '–'} | {minutes(j['minutes'])} | {usd(j['usd'])} |")
+    if e["merge"]:
+        g = e["merge"]
+        print(f"| merge | {g['tier']} | – | {minutes(g['minutes'])} | {usd(g['usd'])} |")
     print(f"| **total** | | | {minutes(e['total_minutes'])} | {usd(e['total_usd'])} |")
     print()
     print(f"End to end: {minutes(e['end_to_end_minutes'])} "
