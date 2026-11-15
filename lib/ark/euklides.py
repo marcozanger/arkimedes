@@ -26,11 +26,12 @@ DEFAULTS = {
 }
 MAX_FIX_BASE = 3  # base fixes per run without Marco
 TRIGGERS = ("failure", "question", "blocked")
-KEYS = {"action", "note", "undo", "why", "proposal", "files", "usd", "then"}
-THEN = ("go_on", "escalate", "widen", "fix_base", "raise", "stop")  # what Marco's ok to an ask makes the runner do
+KEYS = {"action", "note", "undo", "why", "proposal", "files", "usd", "then", "gate"}
+THEN = ("go_on", "escalate", "widen", "fix_base", "raise", "accept", "stop")  # what Marco's ok to an ask makes the runner do
 RUN = "_run"  # the job name of a run-level decision: a job id never starts with "_"
 RUN_ACTIONS = ["raise", "ask"]
 NOTE_CHARS, WHY_CHARS, PROPOSAL_CHARS = 1000, 300, 1000
+GATE_CHARS = 500  # a replacement gate is one shell command; a longer one is not a gate
 SITUATION_CHARS = 600
 LESSONS_CHARS = 8000  # a hand-edited file that grew too long is cut, never fails the call
 
@@ -142,8 +143,12 @@ def _then(d: dict) -> dict | None:
     then = d.get("then")
     if not isinstance(then, str) or then not in THEN:
         return None
-    if ("files" in d) != (then == "widen") or ("usd" in d) != (then == "raise"):
+    if ("files" in d) != (then == "widen") or ("usd" in d) != (then == "raise") \
+            or ("gate" in d) != (then == "accept"):
         return None
+    if then == "accept":
+        gate = d["gate"].strip() if isinstance(d["gate"], str) else ""
+        return {"then": then, "gate": gate} if gate and len(gate) <= GATE_CHARS and "\0" not in gate else None
     if then == "widen":
         files = _files(d["files"])
         return {"then": then, "files": files} if files else None
@@ -163,7 +168,7 @@ def parse(d, allowed_now: list[str], then: bool = True) -> dict | None:
     action, note = d["action"], _text(d["note"], NOTE_CHARS)
     if not isinstance(action, str) or action not in allowed_now or not note:
         return None
-    if "then" in d and action != "ask":
+    if ("then" in d or "gate" in d) and action != "ask":
         return None
     if not then:  # a run-level ask: Marco answers `raise <usd>` or `stop`, no `then` to carry out
         d = {k: v for k, v in d.items() if k != "then"}
@@ -171,7 +176,7 @@ def parse(d, allowed_now: list[str], then: bool = True) -> dict | None:
     if action == "ask" and then:
         if ask_then is None:
             return None
-        d = {k: v for k, v in d.items() if k not in ("then", "files", "usd")}
+        d = {k: v for k, v in d.items() if k not in ("then", "files", "usd", "gate")}
     why, proposal = d.get("why", ""), d.get("proposal")
     if why is None:
         why = ""
@@ -246,6 +251,8 @@ def record(st: dict, job: str, ctx: dict, d: dict, *, valid: bool, usd: float) -
             row["then"] = d["then"]
         if d.get("files"):
             row["files"] = d["files"]
+        if d.get("gate"):
+            row["gate"] = d["gate"]
         if d["action"] == "raise" or d.get("then") == "raise":
             row["raise_usd"] = d["usd"]  # `usd` is what the call cost
         _append("decisions.jsonl", row)
