@@ -25,10 +25,13 @@ FAKE_BLOCKED=job:n,... makes attempt n end BLOCKED with the question "which stor
 FAKE_INTERVENE is the raw answer of an intervene tick.
 FAKE_FIXBASE=file makes a base-fix worker (job `_fix-<n>`) delete that file and commit; without it, it
 changes nothing. Either way it ends STATUS: DONE.
+A refresh worker (job `_refresh-<n>`) merges the main sha its prompt names with `-X <FAKE_REFRESH or ours>`;
+FAKE_REFRESH=nothing changes nothing. It ends STATUS: DONE.
 """
 import fcntl
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -82,7 +85,15 @@ if os.environ.get("FAKE_DOWN"):
     print("Could not reach the model")
     sys.exit(1)
 
-if ROLE == "worker" and os.environ["ARK_JOB"].startswith("_fix-"):
+if ROLE == "worker" and os.environ["ARK_JOB"].startswith("_refresh-"):
+    wt, how = Path(os.environ["ARK_WORKTREE"]), os.environ.get("FAKE_REFRESH") or "ours"
+    bump(os.environ["ARK_JOB"])
+    m = re.search(r"git merge --no-ff ([0-9a-f]{40})", PROMPT)
+    if m and how != "nothing":
+        subprocess.run(["git", "merge", "--no-ff", "--no-edit", "-X", how, m.group(1)], cwd=wt, check=True,
+                       stdout=subprocess.DEVNULL)
+    emit("merged\nSTATUS: DONE")
+elif ROLE == "worker" and os.environ["ARK_JOB"].startswith("_fix-"):
     wt, target = Path(os.environ["ARK_WORKTREE"]), os.environ.get("FAKE_FIXBASE")
     bump(os.environ["ARK_JOB"])
     if target and (wt / target).exists():

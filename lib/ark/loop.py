@@ -43,7 +43,8 @@ SMALL_FILES, SMALL_LINES = 3, 30  # the small-fix rule: what Euklides may widen 
 FIX_BASE_USD = 2  # the budget of one base-fix worker
 REFRESH_PREFIX = "_refresh-"   # a run-level name, like _fix-
 REFRESH_EVERY = 60             # seconds between two looks at origin's default branch, per run
-REFRESH_RUNNING = {"checking": "check"}
+REFRESH_RUNNING = {"checking": "check", "working": "worker", "gating": "gate"}
+REFRESH_WAITING = {"check": "needs_check", "worker": "needs_worker", "gate": "needs_gate"}
 START_CHECK = True             # False: a new run counts its base as green and dispatches at once (tests)
 
 # What a job's status says is running, and where the job goes back to if that process is not there.
@@ -856,6 +857,20 @@ def _new_refresh(n: int, main: str | None, before: str | None) -> dict:
             "seen_before": before}
 
 
+REFRESH_DEFAULT = ("T1", 40)  # tier and minutes of a refresh worker when the plan has no merge entry
+
+
+def _refresh_budget(c: Ctx) -> tuple[str, float, float]:
+    """(tier, usd left, minutes) of a refresh worker: the plan's merge entry, spent across the run's refreshes,
+    or the workspace's limits.refresh_usd for each refresh."""
+    g = c.plan.manifest.get("merge")
+    if isinstance(g, dict):
+        b = g["budget"]
+        return g["tier"], round(b["usd"] - c.st.get("merge_usd", 0), 4), b["minutes"]
+    tier, minutes = REFRESH_DEFAULT
+    return tier, paths.load_workspace()["limits"]["refresh_usd"], minutes
+
+
 def _refresh_of(st: dict, name: str) -> dict | None:
     """The live refresh, when `name` is its process."""
     r = st.get("refresh")
@@ -872,6 +887,9 @@ def _finish_refresh(st: dict, r: dict, result: str, why: str = "", alert: bool =
                                            "usd": r.get("usd", 0.0), "at": run.now()})
     if st.get("refresh") is r:
         st.pop("refresh")
+    if r.get("workers"):  # its worktree goes at the next _move_refresh, where the repo is at hand
+        st.setdefault("refresh_cleanup", []).append({"name": f"{REFRESH_PREFIX}{r['n']}",
+                                                     "landed": result == "landed"})
     if why:
         text = f"refresh {r['n']} (main@{str(r['main'])[:8]}) {result}: {_clean(why)[:1000]}"
         if alert or (result == "failed" and not st.get("base_green")):  # every job holds on it: Marco hears it
@@ -904,8 +922,15 @@ def _start_refresh_check(c: Ctx, r: dict) -> None:
 
 
 def _move_refresh(c: Ctx, slots: Slots) -> None:
-    """A new refresh when main moved; the live one a step on. A step that raises waits and tries again on the
-    PASSING_WAITS schedule, then the refresh fails."""
+    """A new refresh when main moved; the live one a step on; a finished refresh's worktree goes."""
+    try:
+        _step_refresh(c, slots)
+    finally:
+        _clean_refreshes(c)
+
+
+def _step_refresh(c: Ctx, slots: Slots) -> None:
+    """A step that raises waits and tries again on the PASSING_WAITS schedule, then the refresh fails."""
     st = c.st
     r = st.get("refresh")
     if r is None:
@@ -922,10 +947,26 @@ def _move_refresh(c: Ctx, slots: Slots) -> None:
     if r.get("not_before", 0) > time.time():
         return
     try:
+        if r["status"] == "clash":
+            if r.pop("fresh", None):  # reported in this cycle; acted on from the next one
+                return
+            _after_clash(c, r)
         if r["status"] == "needs_check":
             if not slots.gate(_plan_heavy(st)):
                 return
             _start_refresh_check(c, r)
+        elif r["status"] == "needs_worker":
+            if not slots.writer(st["repo"]):
+                return
+            try:
+                _start_refresh_worker(c, r)
+            finally:
+                if r["status"] != "working":
+                    slots.release_writer(st["repo"])
+        elif r["status"] == "needs_gate":
+            if not slots.gate(_plan_heavy(st)):
+                return
+            _start_refresh_gate(c, r)
         elif r["status"] == "needs_land":
             _land_refresh(c, r)
         else:
@@ -935,6 +976,85 @@ def _move_refresh(c: Ctx, slots: Slots) -> None:
     else:
         r.pop("tries", None)
         r.pop("not_before", None)
+
+
+def _refresh_name(r: dict) -> str:
+    return f"{REFRESH_PREFIX}{r['n']}"
+
+
+def _after_clash(c: Ctx, r: dict) -> None:
+    """A clash goes to a refresh worker while the budget lasts; past it, Marco decides."""
+    _, left, _ = _refresh_budget(c)
+    if left > 0:
+        r["status"] = "needs_worker"
+        return run.event(c.st, f"refresh {r['n']}: a refresh worker takes the clash (${left:.2f} left)")
+    _ask_refresh(c.st, r, f"the refresh budget is spent (${c.st.get('merge_usd', 0):.2f} spent), so no worker "
+                          "started")
+
+
+def _refresh_full_usd(c: Ctx) -> float:
+    """What one refresh worker may spend after Marco answers retry: the whole budget again."""
+    g = c.plan.manifest.get("merge")
+    return g["budget"]["usd"] if isinstance(g, dict) else paths.load_workspace()["limits"]["refresh_usd"]
+
+
+def _start_refresh_worker(c: Ctx, r: dict) -> None:
+    name = _refresh_name(r)
+    wt, m = c.wt(name), c.plan.manifest
+    tier, left, minutes = _refresh_budget(c)
+    usd = _refresh_full_usd(c) if r.get("retry") else left
+    if usd <= 0:
+        return _ask_refresh(c.st, r, "the refresh budget is spent, so no worker started")
+    gitops.fetch(c.repo)
+    fresh = not wt.exists()
+    gitops.add_worktree(c.repo, wt, c.branch(name), f"origin/{c.base}")  # ark/<slug>-_refresh-<n>: no job's name
+    if fresh or not r.get("from"):
+        r["base"] = r["from"] = gitops.rev(wt, "HEAD")  # what the worker starts from: the base it lands on
+    default = c.st.get("default_branch") or gitops.default_branch(c.repo)
+    prompt = brief.refresh_brief(c.st, r, c.plan, default)
+    env = claude.runner_env("worker", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo), worktree=wt,
+                            area=json.dumps(["**"]), report=c.report(name), gate=m["integration_gate"],
+                            run_dir=c.dir, job=name)
+    sid = str(uuid.uuid4())
+    cmd = claude.agent_cmd("worker", claude.MODELS[tier], prompt, session=sid, resume=False, usd=usd)
+    proc.start(c.dir, f"{name}.worker", cmd, cwd=wt, env=env, minutes=minutes, pre=list(m.get("setup") or []),
+               meta={"session": sid, "tier": tier})
+    r.pop("retry", None)
+    r["workers"] = r.get("workers", 0) + 1
+    r["status"] = "working"
+    run.event(c.st, f"refresh {r['n']}: worker started ({tier}, up to ${usd:.2f})")
+
+
+def _start_refresh_gate(c: Ctx, r: dict) -> None:
+    name = _refresh_name(r)
+    env = claude.runner_env("gate", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo))  # it runs tests a worker wrote
+    proc.start(c.dir, f"{name}.gate", ["sh", "-c", c.plan.manifest["integration_gate"]], cwd=c.wt(name), env=env,
+               minutes=integrate.GATE_TIMEOUT / 60, meta={"head": r.get("head")})
+    r["status"] = "gating"
+
+
+def _ask_refresh(st: dict, r: dict, why: str) -> None:
+    """Marco decides: one more worker, or the base stays until main moves again."""
+    r["status"], r["why"] = "waiting_answer", _clean(why)[:1200]
+    questions.ask(st, "refresh", _refresh_question(r))
+
+
+def _refresh_question(r: dict) -> str:
+    return (f"Refresh {r['n']}: main moved to {str(r['main'])[:12]} and does not merge into the run's base on its "
+            f"own; {r.get('why') or 'the refresh stopped'}. The base stays where it is meanwhile. Answer `retry` "
+            "to start one more refresh worker with the same budget again (the extra spend is yours to approve), "
+            "or `skip` to leave the base as it is until main moves again.")
+
+
+def _clean_refreshes(c: Ctx) -> None:
+    """A finished refresh's worktree goes; its branch on origin too, only when it landed."""
+    for item in c.st.pop("refresh_cleanup", None) or []:
+        gitops._cleanup(c.repo, c.wt(item["name"]))
+        if item.get("landed"):  # the worker does not send it, so usually there is nothing to remove
+            try:
+                gitops.git(c.repo, "push", "-q", "origin", "--delete", c.branch(item["name"]), check=False)
+            except (gitops.GitError, OSError):
+                pass
 
 
 def _refresh_retry(c: Ctx, r: dict, why: str) -> None:
@@ -950,8 +1070,13 @@ def on_refresh(c: Ctx, name: str, r: dict) -> None:
     """ark-refresh's JSON line: green waits to land; a red main keeps the base; a clash waits for its fix."""
     st = c.st
     live = _refresh_of(st, name)
-    if live is None or REFRESH_RUNNING.get(live["status"]) != name.rpartition(".")[2]:
+    kind = name.rpartition(".")[2]
+    if live is None or REFRESH_RUNNING.get(live["status"]) != kind:
         return run.event(st, f"ignored the result of {_clean(name)}: nothing was waiting for it")
+    if kind == "worker":
+        return _on_refresh_worker(c, live, r)
+    if kind == "gate":
+        return _on_refresh_gate(c, live, r)
     out = None if r["reason"] else _answer(r)
     if not isinstance(out, dict) or "ok" not in out:
         return _finish_refresh(st, live, "failed",
@@ -971,11 +1096,52 @@ def on_refresh(c: Ctx, name: str, r: dict) -> None:
     if out.get("conflict") or out.get("main_red") is False:
         conflict = [_printable(str(f)) for f in out.get("conflict") or []]
         live.update(status="clash", conflict=conflict, merged=out.get("merged"), base=out.get("base"),
-                    tail=tail[-4000:])
+                    tail=tail[-4000:], fresh=True)
         what = ", ".join(conflict) if conflict else "gate red on the merge"
         return run.event(st, f"refresh {live['n']}: main@{main[:8]} clashes with the run ({what})")
     _finish_refresh(st, live, "failed", str(out.get("reason") or "ark-refresh failed")
                     + (f"\n{tail[-800:]}" if tail else ""))
+
+
+def _on_refresh_worker(c: Ctx, live: dict, r: dict) -> None:
+    """The worker's spend is the merge budget's; its branch must hold both the base and main, committed."""
+    st, usd = c.st, _usd(r.get("usd"))  # _charge already put it in other_usd
+    st["merge_usd"] = round(st.get("merge_usd", 0) + usd, 4)
+    live["usd"] = round(live.get("usd", 0) + usd, 4)
+    wt = c.wt(_refresh_name(live))
+    status, detail = brief.worker_status(r.get("result") or "")
+    if not _clean_exit(r) or status != "DONE":
+        why = r["reason"] or (f"exit {r['exit']}" if r["exit"] else f"{status}: {detail}")
+        return _ask_refresh(st, live, f"the refresh worker ended without finishing ({_clean(str(why))[:300]})")
+    if not gitops.is_clean(wt):
+        return _ask_refresh(st, live, "the refresh worker left uncommitted changes")
+    head = gitops.rev(wt, "HEAD")
+    if not (gitops.is_ancestor(wt, live["base"], head) and gitops.is_ancestor(wt, live["main"], head)):
+        return _ask_refresh(st, live, "the worker did not merge main")
+    live.update(head=head, status="needs_gate")
+    run.event(st, f"refresh {live['n']}: the worker joined main@{live['main'][:8]} and the base (${usd:.2f})")
+
+
+def _on_refresh_gate(c: Ctx, live: dict, r: dict) -> None:
+    if r["exit"] != 0 or r["reason"]:
+        tail = _clean(r.get("result") or "")[-800:]
+        return _ask_refresh(c.st, live, "the integration gate is red on the worker's result "
+                                        f"(exit {r['exit']}{', ' + r['reason'] if r['reason'] else ''}):\n{tail}")
+    live.update(merged=live["head"], status="needs_land")
+    run.event(c.st, f"refresh {live['n']}: integration gate green on the worker's result")
+
+
+def _answered_refresh(st: dict, q: dict, text: str) -> None:
+    r = st.get("refresh")
+    if not r or r["status"] != "waiting_answer":
+        return run.event(st, f"{q['id']} was answered, but no refresh waits for it")
+    word = text.strip().lower()
+    if word == "retry":
+        r.update(status="needs_worker", retry=True)
+        return run.event(st, f"refresh {r['n']}: Marco asked for one more worker")
+    if word == "skip":
+        return _finish_refresh(st, r, "skipped", "Marco skipped it; the base stays until main moves again")
+    questions.ask(st, "refresh", _refresh_question(r))
 
 
 def _land_refresh(c: Ctx, r: dict) -> None:
@@ -1004,22 +1170,23 @@ def _stale_refresh(st: dict, r: dict, why: str) -> None:
 
 
 def _reconcile_refresh(st: dict, d: Path) -> None:
-    """A check whose process is gone with no receipt starts again once; the second time the refresh fails.
-    A check running that the state does not know about is adopted."""
+    """A check, worker or gate whose process is gone with no receipt starts again once; the second time the
+    refresh fails. One running that the state does not know about is adopted."""
     r = st.get("refresh")
     if not r:
         return
-    proc_file = d / f"{REFRESH_PREFIX}{r['n']}.check.proc"
-    if r["status"] == "needs_check" and proc_file.exists():
-        r["status"] = "checking"
-        return run.event(st, f"refresh {r['n']}: found its check running; the state had not recorded it")
-    if r["status"] != "checking" or proc_file.exists():
+    for running, kind in REFRESH_RUNNING.items():
+        if r["status"] == REFRESH_WAITING[kind] and (d / f"{REFRESH_PREFIX}{r['n']}.{kind}.proc").exists():
+            r["status"] = running
+            return run.event(st, f"refresh {r['n']}: found its {kind} running; the state had not recorded it")
+    kind = REFRESH_RUNNING.get(r["status"])
+    if kind is None or (d / f"{REFRESH_PREFIX}{r['n']}.{kind}.proc").exists():
         return
     r["lost"] = r.get("lost", 0) + 1
     if r["lost"] >= 2:
-        return _finish_refresh(st, r, "failed", "its check was lost twice without a result")
-    r["status"] = "needs_check"
-    run.event(st, f"refresh {r['n']}: its check is gone without a result; checking again")
+        return _finish_refresh(st, r, "failed", f"its {kind} was lost twice without a result")
+    r["status"] = REFRESH_WAITING[kind]
+    run.event(st, f"refresh {r['n']}: its {kind} is gone without a result; starting it again")
 
 
 DECISIONS = "_decisions.tick"  # the close-of-run tick belongs to the run, not to a job
@@ -1692,8 +1859,10 @@ class Slots:
                 if f["status"] == "working":
                     self.writers[st["repo"]] = self.writers.get(st["repo"], 0) + 1
             r = st.get("refresh")
-            if r and r.get("status") == "checking" and _plan_heavy(st):
+            if r and r.get("status") in ("checking", "gating") and _plan_heavy(st):
                 self.heavy += 1
+            if r and r.get("status") == "working":  # a refresh worker writes too
+                self.writers[st["repo"]] = self.writers.get(st["repo"], 0) + 1
 
     def capped(self, repo: str) -> bool:
         return accounts.account_of(repo) in self.capped_accounts
@@ -2351,7 +2520,8 @@ def _settle_final_pr(st: dict, forge) -> None:
     _rerecord(st, forge)
 
 
-ANSWERS = {"worker": _answered_worker, "plan_changed": _answered_plan_changed, "cap_run": _answered_cap_run}
+ANSWERS = {"worker": _answered_worker, "plan_changed": _answered_plan_changed, "cap_run": _answered_cap_run,
+           "refresh": _answered_refresh}
 INBOX = {"answer": _apply_answer, "stop": _apply_stop, "steer": _apply_steer,
          "attach": _apply_attach, "attach_done": _apply_attach_done, "retry": _apply_retry}
 
