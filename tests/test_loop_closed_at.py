@@ -1,5 +1,5 @@
 """Every way a run closes stamps closed_at; a retry that reopens it clears the stamp."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from control_helpers import ark, change_state, drive, job_status
 
@@ -71,7 +71,7 @@ def test_a_reopened_run_loses_closed_at_and_gets_a_new_one_when_it_closes_again(
     change_state(shell={"status": "blocked", "reason": "x", "blocked_from": "working"},
                  ui={"status": "blocked", "reason": "a job it depends on is blocked: shell", "waiting_on": "shell"})
     st = state()
-    old = "2026-01-01T00:00:00+00:00"
+    old = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(timespec="seconds")  # inside the window
     st.update(status="blocked", closing="done", closed_at=old)
     run.save(st)
     assert ark(capsys, "retry", f"demo/{SLUG}:shell")[0] == 0
