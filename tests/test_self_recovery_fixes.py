@@ -1,3 +1,4 @@
+import contextlib
 import json
 
 import pytest
@@ -5,7 +6,7 @@ from conftest import git
 from test_loop import SLUG, at_euklides, drive, euk_answer, jobs_settled, state, stopping  # noqa: F401
 from helpers import job, manifest
 
-from ark import brief, euklides, gitops, loop, run
+from ark import brief, euklides, gitops, loop, questions, run
 
 
 def test_widen_and_fix_base_open_only_after_their_blocks():
@@ -118,7 +119,10 @@ def test_ok_to_a_widen_over_the_rule_grants_it(tmp_path, ark_home, monkeypatch):
     monkeypatch.setattr(gitops, "rev", lambda wt, ref: "f" * 40)
     loop.on_euklides(c, "shell", euk_answer(action="widen", note="n", undo="job", why="w", proposal=None,
                                             files=["docs/a.md"]))
+    ask = c.st["jobs"]["shell"]["euklides_ask"]
+    assert ask["then"] == "widen" and ask["files"] == ["docs/a.md", "docs/b.md"] and "grant" not in ask
     [q] = c.st["questions"]
+    assert "Answer ok to: widen shell's area to docs/a.md, docs/b.md" in q["text"]
     loop._answered_worker(c.st, q, "ok")
     assert c.st["grants"]["shell"] == ["docs/a.md", "docs/b.md"]
     assert c.st["jobs"]["shell"]["status"] == "needs_push"
@@ -141,6 +145,56 @@ def test_a_widen_into_another_jobs_area_asks_marco(tmp_path, ark_home, monkeypat
                                             files=["src/ui/x.ts"]))
     assert c.st["jobs"]["shell"]["status"] == "waiting_answer"
     assert "ui's area" in c.st["questions"][0]["text"]
+    assert c.st["jobs"]["shell"]["euklides_ask"]["refuse_ok"]
+    assert "ui's area" in questions.check_answer(c.st["questions"][0], "ok")
+
+
+def test_a_fixed_that_fails_its_check_asks_with_then_stop(tmp_path, ark_home):
+    c = at_euklides(tmp_path, trigger="failure", allowed=("fixed", "ask"))
+    loop.on_euklides(c, "shell", euk_answer(action="fixed", note="repaired it"))
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "waiting_answer" and j["euklides_ask"]["then"] == "stop"
+    loop._answered_worker(c.st, c.st["questions"][0], "ok")
+    assert j["status"] == "blocked"
+
+
+def test_a_fix_marco_started_from_a_question_sends_the_worker_on_when_it_lands(tmp_path, ark_home, monkeypatch):
+    c = at_euklides(tmp_path, trigger="question", allowed=("ask",), situation="which file?", session="s1")
+    loop.on_euklides(c, "shell", euk_answer(action="ask", note="delete bad.txt", proposal="fix the base first",
+                                            then="fix_base"))
+    loop._apply_answer(c.st, {"id": "q1", "text": "ok"})
+    assert c.st["jobs"]["shell"]["status"] == "waiting_fix"
+    c.st["jobs"]["ui"] = {**run.new_job(job("ui", ["T1"], ["src/ui/**"])), "status": "waiting_fix", "fix": 1}
+    [f] = c.st["fixes"]
+    f["waiting"]["ui"] = {"trigger": "blocked", "situation": "red", "kind": "integrate", "decision": None,
+                          "proposal": "p"}
+    f.update(status="needs_land", head="h" * 40, files=["bad.txt"])
+    monkeypatch.setattr(loop.merge, "run_lock", lambda d: contextlib.nullcontext())
+    monkeypatch.setattr(gitops, "fetch", lambda repo: None)
+    monkeypatch.setattr(gitops, "rev", lambda repo, ref: "b" * 40)
+    monkeypatch.setattr(gitops, "squash_keep", lambda *a: "s" * 40)
+    monkeypatch.setattr(gitops, "push_ref", lambda *a: None)
+    monkeypatch.setattr(gitops, "_cleanup", lambda *a: None)
+    loop._land_fix(c, f)
+    shell, ui = c.st["jobs"]["shell"], c.st["jobs"]["ui"]
+    assert f["status"] == "landed"
+    assert shell["status"] == "needs_worker" and "fix" not in shell
+    assert f"bring origin/{c.base} into the job's branch first" in shell["resume_msg"]
+    assert "fix the base first" in shell["resume_msg"]
+    assert ui["status"] == "needs_integrate" and ui["integrate_fails"] == 0 and "fix" not in ui
+
+
+def test_a_failed_base_fix_asks_with_then_fix_base(tmp_path, ark_home):
+    st = run.new_state({"repo": "demo", "slug": SLUG, "plan": "/nowhere", "sha256": "0" * 64, "approved_at": "t"})
+    st["jobs"]["shell"] = {**run.new_job(job("shell", [], ["src/**"])), "status": "waiting_fix", "fix": 1}
+    st["fixes"] = [{"n": 1, "job": "shell", "note": "n", "situation": "s", "decision": None, "status": "working",
+                    "waiting": {"shell": {"trigger": "blocked", "situation": "s", "kind": "integrate",
+                                          "decision": None, "proposal": "p"}}, "lost": 0}]
+    loop._fix_failed(None, st["fixes"][0], "no change", st=st)
+    j = st["jobs"]["shell"]
+    assert j["status"] == "waiting_answer" and j["euklides_ask"]["then"] == "fix_base"
+    loop._answered_worker(st, st["questions"][0], "ok")
+    assert j["status"] == "waiting_fix" and st["fixes"][1]["status"] == "needs_worker"
 
 
 def test_a_failed_base_fix_asks_marco_for_every_waiting_job(feature, monkeypatch):
