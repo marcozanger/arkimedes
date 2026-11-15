@@ -126,3 +126,23 @@ def test_resolve(monkeypatch):
         ctl._resolve("old")
     with pytest.raises(ctl.CtlError, match="nope"):
         ctl._resolve("a/x:nope")
+
+
+def test_ps_header_shows_the_base_main_a_red_main_and_a_live_refresh():
+    st = {"repo": "demo", "slug": "x", "status": "running", "base_sha": "1" * 40,
+          "refreshes": [{"n": 0, "main": "2" * 40, "result": "landed"},
+                        {"n": 1, "main": "3" * 40, "result": "landed"},
+                        {"n": 2, "main": "4" * 40, "result": "failed"}],
+          "main_red": "5" * 40, "refresh": {"n": 3, "main": "6" * 40, "status": "needs_worker"}}
+    head = ctl._ps_extra(st)
+    assert "base: main@33333333" in head and "main red at 55555555" in head and "refresh 3: needs_worker" in head
+    assert "base: main@11111111" in ctl._ps_extra({"base_sha": "1" * 40})
+    assert "red" not in ctl._ps_extra({"base_sha": "1" * 40})
+
+
+def test_ps_says_main_is_red_instead_of_the_waiting_text():
+    j = {"status": "waiting_dep", "waiting_on": "shell", "tier": "T1"}
+    st = {"repo": "demo", "slug": "x", "jobs": {"ui": j}, "base_green": False, "main_red": "5" * 40}
+    assert ctl._ps_row(st, "ui", j)[-1] == "waiting: main is red"
+    st["main_red"] = None
+    assert ctl._ps_row(st, "ui", j)[-1] == "waiting on shell"

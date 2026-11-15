@@ -37,3 +37,16 @@ def test_estimate_totals_and_rows():
     assert e["total_minutes"] == 30 and e["total_usd"] == 5 and e["end_to_end_minutes"] == 30
     assert e["writers"] == 3
     assert e["jobs"][1] == {"id": "b", "tier": "T2", "after": ["a"], "minutes": 20, "usd": 3}
+
+
+def test_the_merge_budget_is_in_the_totals_and_at_the_end():
+    m = {"jobs": [{"id": "a", "tier": "T1", "budget": {"minutes": 40, "usd": 3}}],
+         "merge": {"tier": "T2", "budget": {"minutes": 30, "usd": 4}}}
+    e = estimate(m, writers=3)
+    assert e["merge"] == {"tier": "T2", "minutes": 30, "usd": 4}
+    assert (e["total_minutes"], e["total_usd"], e["end_to_end_minutes"]) == (70, 7, 70)
+
+
+def test_without_merge_nothing_changes():
+    m = {"jobs": [{"id": "a", "tier": "T1", "budget": {"minutes": 40, "usd": 3}}]}
+    assert estimate(m, writers=3)["merge"] is None

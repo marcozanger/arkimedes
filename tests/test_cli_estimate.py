@@ -43,6 +43,17 @@ def test_the_writer_limit_comes_from_workspace_json(make_feature, ark_home, caps
     assert data["writers"] == 1
 
 
+def test_the_table_has_a_merge_row(make_feature, capsys):
+    from helpers import manifest
+    make_feature(plan_text(manifest(merge={"tier": "T2", "budget": {"minutes": 30, "usd": 4}})))
+    code, out, _ = run(capsys, "estimate", "demo/notes-edit")
+    assert code == 0
+    assert "| merge | T2 | – | 30 min | $4.00 |" in out
+    assert "| **total** | | | 1 h 30 min | $8.00 |" in out
+    data = json.loads(run(capsys, "estimate", "demo/notes-edit", "--json")[1])
+    assert data["merge"] == {"tier": "T2", "minutes": 30, "usd": 4}
+
+
 def test_an_invalid_plan_prints_the_problems(make_feature, capsys):
     make_feature(plan_text(tasks=("T1", "T2", "T3", "T4")))
     code, out, _ = run(capsys, "estimate", "demo/notes-edit")

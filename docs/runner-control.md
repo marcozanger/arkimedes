@@ -61,6 +61,27 @@ becomes `done`, whatever jobs were left blocked stay on record in its state.
 
 `questions.md` at the Arkimedes root lists them. It is rewritten by the loop and never read back.
 
+## Base refresh
+
+The run's base `ark/<slug>` follows the default branch. Every time origin's default branch moves (looked at every
+few minutes; several moves give one refresh, to the newest), the runner checks main into the base, runs the plan's
+integration gate on the result, and moves the base only when it is green. Nothing happens while main stays put.
+
+- A textual clash goes to a refresh worker, paid from the plan's `merge` budget (spent across all refreshes of the
+  run) or, when the plan has none, `limits.refresh_usd` in the workspace settings (default 3, per refresh).
+- A red main (the gate fails on main itself) never moves the base and is not a job's failure: Marco hears it once,
+  `ark ps` shows `main red at <sha8>`, and the jobs wait with `waiting: main is red` until main moves again.
+- Marco also hears a refresh that failed while the base was not green, and a clash the budget cannot cover.
+
+When the budget is spent or the worker fails, the run asks a `refresh` question:
+
+| Kind | Asked when | Answers |
+|---|---|---|
+| refresh | a clash with main that no refresh worker fixed | `retry` starts one more worker with the whole budget again (the extra spend is Marco's to approve); `skip` leaves the base as it is until main moves again |
+
+`ark ps` shows `base: main@<sha8>` (the newest landed refresh, or the base's start), `main red at <sha8>` and
+`refresh <n>: <status>` while one is live. The run report has a Base refreshes section.
+
 ## Euklides
 
 Euklides (Opus, read-only: Read, Grep, Glob, in the job's worktree) decides how a job goes on. The job's status is

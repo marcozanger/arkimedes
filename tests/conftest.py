@@ -33,6 +33,13 @@ def git(*args, cwd):
     subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
 
 
+@pytest.fixture(autouse=True)
+def no_start_check(monkeypatch):
+    """Tests that predate the start check: a new run counts its base as green. test_refresh_loop turns it on."""
+    from ark import loop
+    monkeypatch.setattr(loop, "START_CHECK", False)
+
+
 @pytest.fixture
 def ark_home(tmp_path, monkeypatch):
     """An empty Arkimedes home whose only workspace root is tmp_path/ws."""

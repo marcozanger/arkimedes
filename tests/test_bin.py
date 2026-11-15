@@ -264,9 +264,13 @@ def test_a_worker_outlives_the_loop_without_its_lock_and_ark_dispatch_stops_it(r
     d = paths.run_dir("demo", SLUG)
     info = None
     try:
-        r = subprocess.run([str(CODE / "bin/ark-loop"), "--once"], capture_output=True, text=True, env=env)
-        assert r.returncode == 0, r.stderr
-        info = proc._read(d / "shell.worker.proc")
+        for _ in range(10):  # the start check goes green in a tick or two, then the worker starts
+            r = subprocess.run([str(CODE / "bin/ark-loop"), "--once"], capture_output=True, text=True, env=env)
+            assert r.returncode == 0, r.stderr
+            info = proc._read(d / "shell.worker.proc")
+            if info:
+                break
+            time.sleep(0.5)
         assert info and not is_gone(info["pid"], seconds=0.2)
         with open(ark_home / "runs" / ".loop.lock", "a") as lock:               # no child kept it
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
