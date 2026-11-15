@@ -163,8 +163,10 @@ def parse(d, allowed_now: list[str], then: bool = True) -> dict | None:
     action, note = d["action"], _text(d["note"], NOTE_CHARS)
     if not isinstance(action, str) or action not in allowed_now or not note:
         return None
-    if "then" in d and not (action == "ask" and then):
+    if "then" in d and action != "ask":
         return None
+    if not then:  # a run-level ask: Marco answers `raise <usd>` or `stop`, no `then` to carry out
+        d = {k: v for k, v in d.items() if k != "then"}
     ask_then = _then(d) if action == "ask" and then else None
     if action == "ask" and then:
         if ask_then is None:

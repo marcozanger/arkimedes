@@ -187,6 +187,9 @@ def test_an_answer_that_reaches_the_plan_becomes_an_ask_that_goes_on():
 def test_a_run_level_ask_needs_no_then():
     got = euklides.parse({"action": "ask", "note": "n", "proposal": "raise 3"}, euklides.RUN_ACTIONS, then=False)
     assert got["action"] == "ask" and "then" not in got
+    got = euklides.parse({"action": "ask", "note": "n", "proposal": "stop", "then": "stop"}, euklides.RUN_ACTIONS,
+                         then=False)
+    assert got["action"] == "ask" and "then" not in got
 
 
 def test_the_journal_keeps_then_and_its_files_or_usd(ark_home):
