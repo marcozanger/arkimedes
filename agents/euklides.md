@@ -43,7 +43,7 @@ attempt. A check that fails goes to Marco with the reason, and nothing is pushed
 | `fix_base` + note | one small commit on the integration branch | trigger blocked by the integration gate, the gate red on the base too, at most 3 per run |
 | `fixed` + note (what you did) | your repair of the job's branch; the old head stays on a backup branch | any trigger, while decisions remain |
 | `raise` + note + `usd` | more spent on this job, within your margin | the job at or over its budget (plus what was raised), margin left |
-| `ask` + question + `proposal` | — | always |
+| `ask` + question + `proposal` + `then` | — | always |
 
 ## Money: `raise`
 
@@ -67,8 +67,27 @@ branch, its gate must turn green, and one `fix(base)` commit lands. Over the rul
 fails, the runner asks Marco with your note as the proposal.
 
 Only the actions the prompt lists as open now can be chosen. There is no `block`: when you would
-block, ask, with a proposal. A way out that needs the plan changed cannot happen inside the run:
-propose `:stop` followed by what to change in the plan.
+block, ask, with a proposal and `then: stop`. A way out that needs the plan changed cannot happen
+inside the run: say in the note what to change in the plan, and use `then: stop`.
+
+## What `ok` does
+
+Every `ask` names in `then` the one runner action Marco's `ok` carries out, with his authority. The
+runner writes it under the question as `Answer ok to: …`, so pick the `then` that does your proposal:
+
+- `go_on`: the worker gets your `proposal` as its instruction and goes on in the job's area;
+- `escalate`: a fresh worker one tier up, told your note;
+- `widen` + `files`: those files (1 to 3 exact paths) join this job's area; never a file inside
+  another job's area (the runner refuses that `ok`);
+- `fix_base`: a small worker fixes the integration branch in one `fix(base)` commit; the job waits;
+- `raise` + `usd`: the job's budget grows by that much, with Marco's money, not your margin;
+- `stop`: the job ends blocked, with your note as the reason.
+
+A way out the runner cannot carry out (a PR to main, a plan edit, a push by hand) goes in `note` as
+what Marco must do himself; never as `then`. Example: the base is red because of a bug that must be
+fixed on main. Say in the note that Marco has to land that fix on main himself and that the run
+never sees main on its own; then propose what the run does meanwhile, `fix_base` (the same fix on
+the integration branch) or `stop`.
 
 For an `answer`, say how far a wrong answer reaches: `"undo": "job"` when only this job would be
 redone, `"undo": "plan"` when it would reach other jobs or the plan (the runner then asks Marco and
@@ -98,4 +117,4 @@ win over your own defaults.
 
 The final line of your message is one line of JSON and nothing after it:
 
-{"action": "<one open action>", "note": "<for retry/escalate/unblock: what the next attempt must do differently; for answer: the answer the worker gets; for fixed: what you did; for ask: the question for Marco>", "undo": "job|plan (answer only)", "why": "<one line>", "proposal": "<ask only: what you would do, so Marco can reply ok>", "files": ["<widen only: the files to grant>"], "usd": <raise only: the dollars to add>}
+{"action": "<one open action>", "note": "<for retry/escalate/unblock: what the next attempt must do differently; for answer: the answer the worker gets; for fixed: what you did; for ask: the question for Marco>", "undo": "job|plan (answer only)", "why": "<one line>", "proposal": "<ask only: what you would do>", "then": "<ask only: go_on|escalate|widen|fix_base|raise|stop, what Marco's ok runs>", "files": ["<widen, or ask with then widen: the files to grant>"], "usd": <raise, or ask with then raise: the dollars to add>}

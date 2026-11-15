@@ -554,11 +554,57 @@ def _go_on(st: dict, job: str, e: dict, text: str) -> None:
     j.update(note=msg, status="needs_worker")
 
 
-def _euklides_ask(st: dict, job: str, e: dict, d: dict, decision: str | None) -> None:
+OTHER_ANSWERS = "Other answers: :stop blocks the job; any other text goes to the worker as its instruction."
+
+
+def _then_text(st: dict, job: str, ask: dict) -> str:
+    """The runner's words for what Marco's ok to Euklides' ask carries out."""
+    then, tier = ask.get("then"), st["jobs"][job]["tier"]
+    if then == "escalate":
+        nxt = claude.NEXT_TIER.get(tier)
+        return f"move {job} to {nxt} and go on" if nxt else f"go on at {tier} (the top tier) with the note above"
+    if then == "widen":
+        return f"widen {job}'s area to {', '.join(ask['files'])}"
+    if then == "fix_base":
+        return "fix the integration branch (a small worker, one fix(base) commit)"
+    if then == "raise":
+        return f"raise {job}'s budget by ${ask['usd']:.2f}"
+    if then == "stop":
+        return f"stop {job} (it ends blocked)"
+    return "go on with the proposal above"
+
+
+def _foreign(st: dict, job: str, files: list[str], mjobs: dict | None) -> str | None:
+    """Why a widen cannot be granted: a file inside another job's area. None when it can."""
+    for other, mj in (mjobs or {}).items():
+        hit = [f for f in files if other != job and match_any(f, run.area(st, other, mj))]
+        if hit:
+            return f"{', '.join(hit)} belong to {other}'s area, and a widen never takes another job's files"
+    return None
+
+
+def _euklides_ask(st: dict, job: str, e: dict, d: dict, decision: str | None, mjobs: dict | None = None) -> None:
+    """Marco decides. The question ends with what his ok makes the runner do (`then`) and the other answers;
+    a `then` the runner refuses (a widen into another job's area) says why instead, and ok is refused."""
     j = st["jobs"][job]
     proposal = d["proposal"] or "(none: write what the job should do, or :stop)"
-    questions.ask(st, "worker", f"{e['situation']}\n\nEuklides: {d['note']}\n\nProposal: {proposal}", job=job)
-    j["euklides_ask"] = {"proposal": d["proposal"], "decision": decision, "ctx": e}
+    ask = {"proposal": d["proposal"], "decision": decision, "ctx": e, "note": d["note"]}
+    if d.get("then"):
+        ask.update({k: d[k] for k in ("then", "files", "usd") if d.get(k) is not None})
+    refuse = _foreign(st, job, ask["files"], mjobs) if ask.get("then") == "widen" else None
+    tail = [OTHER_ANSWERS]
+    if refuse:
+        ask["refuse_ok"] = f"ok cannot be granted: {refuse}"
+        tail.insert(0, f"The widen cannot be granted: {refuse}. Answer :stop or say what the job should do.")
+    elif ask.get("then"):
+        tail.insert(0, f"Answer ok to: {_then_text(st, job, ask)}")
+    tail_text = "\n\n".join(tail)
+    head = _clean(f"{e['situation']}\n\nEuklides: {d['note']}\n\nProposal: {proposal}").strip()
+    head = head[:max(0, questions.MAX_TEXT - len(tail_text) - 2)]  # the answer lines always survive the cut
+    q = questions.ask(st, "worker", f"{head}\n\n{tail_text}", job=job)
+    if refuse:
+        q["refuse_ok"] = ask["refuse_ok"]
+    j["euklides_ask"] = ask
     j["status"] = "waiting_answer"
 
 
@@ -575,7 +621,7 @@ def on_euklides(c: Ctx, job: str, r: dict) -> None:
         run.event(c.st, f"{job}: the Euklides journal could not be written: {err}")
     run.event(c.st, f"{job} euklides: {d['action']} — {_clean(d['note'])[:300]}")
     if d["action"] == "ask":
-        return _euklides_ask(c.st, job, e, d, decision)
+        return _euklides_ask(c.st, job, e, d, decision, mjobs=c.mjobs)
     if d["action"] == "widen":
         return _widen(c, job, e, d, decision)
     if d["action"] == "fix_base":
@@ -596,11 +642,10 @@ def _raise(c: Ctx, job: str, e: dict, d: dict, decision) -> None:
     j, budget = c.st["jobs"][job], c.mjobs[job]["budget"]["usd"]
     left = euklides.margin_left(j, budget, euklides.settings()["budget_margin"])
     if d["usd"] > left + 1e-9:
-        proposal = f"raise {job}'s budget by ${d['usd']:.2f} (answer ok)"
+        proposal = f"raise {job}'s budget by ${d['usd']:.2f}"
         _euklides_ask(c.st, job, {**e, "situation": f"{e['situation']}\n\nEuklides would raise the budget by "
                                                     f"${d['usd']:.2f}, past the ${max(0, left):.2f} left of his margin"},
-                      {**d, "proposal": proposal}, decision)
-        j["euklides_ask"].update(raise_usd=d["usd"], note=d["note"])
+                      {**d, "proposal": proposal, "then": "raise"}, decision)
         return
     j["usd_raised"] = round(j.get("usd_raised", 0) + d["usd"], 4)
     j["euklides_count"] = j.get("euklides_count", 0) + 1
@@ -618,7 +663,7 @@ def _fixed(c: Ctx, job: str, e: dict, d: dict, decision) -> None:
     bad = done_check(c, job) if c.wt(job).is_dir() else ("worktree", "the job has no worktree")
     if bad:
         return _euklides_ask(c.st, job, e, {**d, "note": f"it replied fixed, but {bad[1]}",
-                                            "proposal": FIXED_PROPOSAL}, decision)
+                                            "proposal": FIXED_PROPOSAL, "then": "stop"}, decision)
     for k in ("question", "not_before", "push_tries", "step_tries"):
         j.pop(k, None)
     j.update(status="needs_push", head=gitops.rev(c.wt(job), "HEAD"), rewrite_ok=True, integrate_fails=0,
@@ -670,37 +715,47 @@ def _widen(c: Ctx, job: str, e: dict, d: dict, decision) -> None:
                          skip=(job,))
     if why:
         grant = outside or files
-        d = {**d, "proposal": d["proposal"] or f"widen {job}'s area to {', '.join(grant)} (answer ok)"}
+        d = {**d, "proposal": d["proposal"] or f"widen {job}'s area to {', '.join(grant)}", "then": "widen",
+             "files": grant}
         _euklides_ask(c.st, job, {**e, "situation": f"{e['situation']}\n\nOver the small-fix rule: {why}. "
-                                                    f"Files: {', '.join(grant)}"}, d, decision)
-        c.st["jobs"][job]["euklides_ask"]["grant"] = grant
+                                                    f"Files: {', '.join(grant)}"}, d, decision, mjobs=c.mjobs)
         return
     c.st["jobs"][job]["euklides_count"] = c.st["jobs"][job].get("euklides_count", 0) + 1
     _grant(c.st, job, outside, decision)
 
 
-def _grant(st: dict, job: str, files: list[str], decision, by: str = "Euklides") -> None:
-    """The files join the job's area for this run; the worker's head goes on as if it had stayed inside."""
+def _add_grant(st: dict, job: str, files: list[str], decision, by: str) -> None:
     grants = st.setdefault("grants", {}).setdefault(job, [])
     grants += [f for f in files if f not in grants]
-    j = st["jobs"][job]
-    j.update(status="needs_push", head=gitops.rev(_wt(st, job), "HEAD"))
     run.alert(st, f"{job}: {by} widened its area to {', '.join(files)} ({decision or 'not journaled'})")
 
 
+def _grant(st: dict, job: str, files: list[str], decision, by: str = "Euklides") -> None:
+    """The files join the job's area for this run; the worker's head goes on as if it had stayed inside."""
+    _add_grant(st, job, files, decision, by)
+    st["jobs"][job].update(status="needs_push", head=gitops.rev(_wt(st, job), "HEAD"))
+
+
 def _fix_base(c: Ctx, job: str, e: dict, d: dict, decision) -> None:
-    """One small worker fixes the integration branch; every job that finds the base red meanwhile waits on it."""
-    fixes = c.st.setdefault("fixes", [])
+    _start_base_fix(c.st, job, e, d, decision)
+
+
+def _start_base_fix(st: dict, job: str, e: dict, d: dict, decision, by: str = "Euklides") -> None:
+    """One small worker fixes the integration branch; every job that finds the base red meanwhile waits on it.
+    Marco's ok (`by="Marco"`) has no count limit and counts against neither Euklides' fixes nor his decisions."""
+    fixes = st.setdefault("fixes", [])
     live = next((f for f in fixes if f["status"] not in FIX_DONE), None)
     if live is None:
-        c.st["fix_base_count"] = c.st.get("fix_base_count", 0) + 1
+        if by == "Euklides":
+            st["fix_base_count"] = st.get("fix_base_count", 0) + 1
         live = {"n": len(fixes) + 1, "job": job, "note": _clean(d["note"]), "situation": e["situation"],
                 "decision": decision, "status": "needs_worker", "waiting": {}, "lost": 0}
         fixes.append(live)
-        run.alert(c.st, f"Euklides is fixing the base (fix {live['n']}, for {job}): {_clean(d['note'])[:200]}")
+        run.alert(st, f"{by} is fixing the base (fix {live['n']}, for {job}): {_clean(d['note'])[:200]}")
     live["waiting"][job] = {**e, "decision": decision, "proposal": d["proposal"] or d["note"]}
-    c.st["jobs"][job].update(status="waiting_fix", fix=live["n"])
-    c.st["jobs"][job]["euklides_count"] = c.st["jobs"][job].get("euklides_count", 0) + 1
+    st["jobs"][job].update(status="waiting_fix", fix=live["n"])
+    if by == "Euklides":
+        st["jobs"][job]["euklides_count"] = st["jobs"][job].get("euklides_count", 0) + 1
 
 
 def _fix_of(st: dict, name: str) -> dict | None:
@@ -818,11 +873,15 @@ def _land_fix(c: Ctx, f: dict) -> None:
     f["status"] = "landed"
     run.alert(c.st, f"base fix {f['n']} landed on {c.base}: {', '.join(f['files'])} "
                     f"({f['decision'] or 'not journaled'})")
-    for job in f["waiting"]:
+    for job, e in f["waiting"].items():
         j = c.st["jobs"][job]
         if j["status"] == "waiting_fix" and j.get("fix") == f["n"]:
-            j.update(status="needs_integrate", integrate_fails=0)
             j.pop("fix", None)
+            if e.get("kind") == "integrate":
+                j.update(status="needs_integrate", integrate_fails=0)
+            else:  # Marco's ok started the fix from another trigger: the worker goes on, on the fixed base
+                _go_on(c.st, job, e, f"base fix {f['n']} landed on {c.base}; bring origin/{c.base} into the "
+                                     f"job's branch first. {e.get('proposal') or ''}".strip())
     gitops._cleanup(c.repo, c.wt(f"{FIX_PREFIX}{f['n']}"))
 
 
@@ -838,7 +897,8 @@ def _fix_failed(c, f: dict, why: str, st: dict | None = None) -> None:
             continue
         j.pop("fix", None)
         _euklides_ask(st, job, {**e, "situation": f"{e['situation']}\n\nBase fix {f['n']} failed: {f['why']}"},
-                      {"note": f"base fix {f['n']} failed: {f['why']}", "proposal": e["proposal"]}, e["decision"])
+                      {"note": f"base fix {f['n']} failed: {f['why']}", "proposal": e["proposal"],
+                       "then": "fix_base"}, e["decision"])
     if c is not None:
         gitops._cleanup(c.repo, c.wt(f"{FIX_PREFIX}{f['n']}"))
 
@@ -1332,7 +1392,7 @@ def _cannot_archive(c: Ctx, name: str, e: OSError) -> None:
             if kind == "euklides":  # never send Euklides' own trouble back to him
                 e_ = j.pop("euklides", None) or {"trigger": "blocked", "situation": why, "kind": None}
                 return _euklides_ask(c.st, job, {**e_, "situation": why},
-                                     {"note": why, "proposal": ":stop"}, None)
+                                     {"note": why, "proposal": ":stop", "then": "stop"}, None)
             to_euklides(c, job, "blocked", why, "step", back=WAITING.get(kind, "needs_worker"))
     if (j is None or j["status"] in run.TERMINAL) and proc.discard(c.dir, name):
         run.event(c.st, f"forgot {_clean(name)}, its result could not be archived; if it was still running, "
@@ -2187,21 +2247,54 @@ def _answered_worker(st: dict, q: dict, text: str) -> None:
             euklides.set_marco(ask["decision"], text)
         except OSError as err:
             run.event(st, f"{job}: the Euklides journal could not be written: {err}")
-    if ask and text.strip().lower() == "ok" and ask.get("proposal") and not ask.get("grant") and not ask.get("raise_usd"):
-        text = ask["proposal"]
+    if ask and text.strip().lower() in questions.OK_WORDS and not ask.get("refuse_ok"):
+        return _carry_out(st, job, q, ask)
     if text == questions.STOP_JOB or text.startswith(questions.STOP_JOB + " "):
         return _block(st, job, f"stopped by Marco at question {q['id']}: {text}"[:600])
-    if ask and ask.get("grant") and text.strip().lower() == "ok":
-        return _grant(st, job, ask["grant"], ask.get("decision"), by="Marco")
-    if ask and ask.get("raise_usd") and text.strip().lower() == "ok":
-        usd = ask["raise_usd"]
-        j["usd_raised"] = round(j.get("usd_raised", 0) + usd, 4)
-        j["marco_raised"] = round(j.get("marco_raised", 0) + usd, 4)  # never against Euklides' margin
-        run.event(st, f"{job}: Marco raised its budget by ${usd:.2f}")
-        return _go_on(st, job, ask["ctx"], ask.get("note") or "go on: Marco raised the budget")
     if ask:
         return _go_on(st, job, ask["ctx"], text)
     _resume_with_answer(st, job, text)  # a question asked before Euklides
+
+
+def _carry_out(st: dict, job: str, q: dict, ask: dict) -> None:
+    """Marco's ok to Euklides' ask: the runner carries out its `then`, with Marco's authority. A state saved
+    before `then` existed holds `grant` or `raise_usd` instead, or neither (ok took the proposal's text)."""
+    j, e = st["jobs"][job], ask["ctx"]
+    then, files, usd = ask.get("then"), ask.get("files"), ask.get("usd")
+    if then is None:
+        if ask.get("grant"):
+            then, files = "widen", ask["grant"]
+        elif ask.get("raise_usd"):
+            then, usd = "raise", ask["raise_usd"]
+        else:
+            then = "go_on"
+    note = ask.get("note") or ask.get("proposal") or "go on"
+    if then == "widen":
+        if e.get("kind") == "area":
+            return _grant(st, job, files, ask.get("decision"), by="Marco")
+        _add_grant(st, job, files, ask.get("decision"), by="Marco")
+        return _go_on(st, job, e, f"{note}\n\nMarco granted {', '.join(files)} to this job's area.")
+    if then == "raise":
+        j["usd_raised"] = round(j.get("usd_raised", 0) + usd, 4)
+        j["marco_raised"] = round(j.get("marco_raised", 0) + usd, 4)  # never against Euklides' margin
+        run.event(st, f"{job}: Marco raised its budget by ${usd:.2f}")
+        return _go_on(st, job, e, ask.get("note") or "go on: Marco raised the budget")
+    if then == "fix_base":
+        return _start_base_fix(st, job, e, {"note": note, "proposal": ask.get("proposal")}, ask.get("decision"),
+                               by="Marco")
+    if then == "escalate":
+        if j["tier"] in claude.NEXT_TIER:
+            _escalate(j)
+            run.event(st, f"{job}: Marco moved it to {j['tier']}")
+        else:
+            run.event(st, f"{job}: stays at {j['tier']}, the top tier; it goes on there")
+        return _go_on(st, job, e, note)
+    if then == "stop":
+        return _block(st, job, f"stopped by Marco at question {q['id']} (ok to Euklides): {note}"[:600])
+    text = ask.get("proposal") or "ok"
+    if text == questions.STOP_JOB or text.startswith(questions.STOP_JOB + " "):
+        return _block(st, job, f"stopped by Marco at question {q['id']}: {text}"[:600])
+    _go_on(st, job, e, text)
 
 
 def _apply_stop(st: dict, item: dict) -> None:

@@ -14,6 +14,7 @@ from .usage import clean
 
 MAX_TEXT = 2000
 STOP_JOB = ":stop"  # to a worker's question: no answer, the job ends blocked
+OK_WORDS = ("ok", "yes", "s\u00ed", "si")  # to Euklides' ask: the runner carries out its `then`
 
 
 def _text(text) -> str:
@@ -63,6 +64,8 @@ def check_answer(q: dict, text: str) -> str | None:
     words = text.split()
     if q["kind"] == "cap_run" and not (words == ["stop"] or (len(words) == 2 and words[0] == "raise" and _positive(words[1]))):
         return "answer `raise <usd>` or `stop`"
+    if q["kind"] == "worker" and q.get("refuse_ok") and text.lower() in OK_WORDS:
+        return q["refuse_ok"]
     if q["kind"] == "plan_changed" and text != "stop":
         return "answer `stop` to end the run; to go on, restore the approved text or approve the new one"
     return None
