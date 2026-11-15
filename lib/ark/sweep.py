@@ -6,12 +6,14 @@ job not merged) for `sweep.abandon_days` without a retry. Anything a live run or
 could need is never touched, and neither is anything with work that exists nowhere else."""
 from __future__ import annotations
 
+import fcntl
+import json
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import gitops, paths, run
+from . import gitops, history, paths, run
 
 DEFAULTS = {"enabled": True, "abandon_days": 14}
 
@@ -365,3 +367,102 @@ def plan(now: datetime, forge) -> tuple[list[RunPlan], list[str]]:
             owner.items.append(Item("folder", str(d), owner.repo, owner.slug))
         plans.append(loose)
     return [rp for rp in plans if rp.items or rp.held], problems
+
+
+# --- carrying out a plan, and the log
+
+LOG = "sweeps.jsonl"
+COMMENT = "Closed by the Arkimedes sweep: run {repo}/{slug} is {why}."
+_BRANCH_ORDER = {"pr": 0, "local_branch": 1, "remote_branch": 2}
+
+
+def _log(rp: RunPlan, item: Item, now: datetime) -> None:
+    """One line in history/sweeps.jsonl, under history/.lock like the other history files."""
+    d = history.history_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    row = {"at": now.isoformat(), "repo": item.repo, "slug": item.slug, "why": rp.why, "kind": item.kind,
+           "target": item.target}
+    with open(d / ".lock", "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        with open(d / LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def _worktree_repo(item: Item) -> Path:
+    repo = _repo_of(Path(item.target))
+    if repo is not None and repo.is_dir():
+        return repo
+    found = paths.find_repo(item.repo) if item.repo else None
+    if found is None:
+        raise gitops.GitError(f"cannot tell which repo {item.target} belongs to")
+    return found
+
+
+def apply(plans: list[RunPlan], forge, now: datetime) -> dict:
+    """Carry out the plans: worktrees, then each branch (its open PRs closed with a comment first, then the
+    local branch, then origin's), then empty folders deepest first. Held items are left alone. An item that
+    fails is reported and skipped with the rest of its branch; the others go on. Every deletion is logged."""
+    removed: list[str] = []
+    errors: list[tuple[str, str]] = []
+    held = [(i.key(), why) for rp in plans for i, why in rp.held]
+    skip: set[tuple[str, str, str]] = set()   # (repo, slug, branch) whose items must stay
+    repos: dict[str, Path | None] = {}
+
+    def repo_of(name: str) -> Path:
+        if name not in repos:
+            repos[name] = paths.find_repo(name)
+        if repos[name] is None:
+            raise gitops.GitError(f"{name}: no such repo under the workspace roots")
+        return repos[name]
+
+    def done(rp: RunPlan, item: Item) -> None:
+        _log(rp, item, now)
+        removed.append(item.key())
+
+    def failed(item: Item, e: Exception) -> None:
+        errors.append((item.key(), str(e)))
+        if item.branch:
+            skip.add((item.repo, item.slug, item.branch))
+
+    for rp in plans:
+        for item in rp.items:
+            if item.kind != "worktree":
+                continue
+            try:
+                gitops.remove_worktree(_worktree_repo(item), Path(item.target))
+            except (gitops.GitError, OSError) as e:
+                failed(item, e)
+                continue
+            done(rp, item)
+    for rp in plans:
+        branch_items = sorted((i for i in rp.items if i.kind in _BRANCH_ORDER), key=lambda i: _BRANCH_ORDER[i.kind])
+        for item in branch_items:
+            b = item.branch or item.target
+            if (item.repo, item.slug, b) in skip:
+                continue
+            try:
+                repo = repo_of(item.repo)
+                if item.kind == "pr":
+                    forge.close(repo, item.number, COMMENT.format(repo=rp.repo, slug=rp.slug, why=rp.why))
+                elif item.kind == "local_branch":
+                    gitops.delete_branch(repo, b)
+                else:
+                    gitops.delete_remote_branch(repo, b)
+            except Exception as e:  # git, the forge, or anything they raise: this branch stays, the rest goes on
+                errors.append((item.key(), str(e)))
+                skip.add((item.repo, item.slug, b))
+                continue
+            done(rp, item)
+    root = paths.worktrees_dir().resolve()
+    folders = [(rp, i) for rp in plans for i in rp.items if i.kind == "folder"]
+    for rp, item in sorted(folders, key=lambda f: len(Path(f[1].target).parts), reverse=True):
+        path = Path(item.target)
+        try:
+            if path.resolve() == root or root not in path.resolve().parents:
+                raise OSError(f"{path} is not a folder under {root}")
+            path.rmdir()   # only ever an empty folder
+        except OSError as e:
+            errors.append((item.key(), str(e)))
+            continue
+        done(rp, item)
+    return {"removed": removed, "errors": errors, "held": held}
