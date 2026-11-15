@@ -1829,11 +1829,17 @@ def _forget_retries(st: dict) -> None:
         st.pop(key, None)
 
 
+def _closed(st: dict) -> None:
+    """The run is closed: stamped with when, which the sweep counts its abandon window from."""
+    st.update(closing="done", closed_at=run.now())
+
+
 def _stop_closing(c: Ctx, why: str) -> None:
     """A finished run is never entered again, so this tells Marco what is left to do by hand."""
     st = c.st
     _forget_retries(st)
-    st.update(status="blocked", closing="done")
+    st.update(status="blocked")
+    _closed(st)
     _close_report(c, record=True)
     file = f"The decisions file is on ark/{st['slug']}" if st.get("decisions_sha") else \
         f"The decisions file was not committed; its text, if it could be written, is at {c.dir / 'decisions.md'}"
@@ -1894,7 +1900,8 @@ def publish(c: Ctx) -> None:
         return _closing_failed(c, e)
     _forget_retries(st)
     all_merged = all(j["status"] == "merged" for j in st["jobs"].values())
-    st.update(status="done" if all_merged else "blocked", closing="done")
+    st.update(status="done" if all_merged else "blocked")
+    _closed(st)
     _close_report(c, record=True)
     pr = f"final PR {st['final_pr']['url']}" if st["final_pr"] else "no job merged, no final PR"
     run.alert(st, f"run {st['status']}: {pr}{_report_note(st)}", critical=True)
@@ -2344,7 +2351,8 @@ def _finish_ending(st: dict) -> None:
         if j["status"] not in run.TERMINAL:
             j.pop("question", None)
             _block(st, job, why)
-    st.update(status="blocked", closing="done", reason=why, questions=[])
+    st.update(status="blocked", reason=why, questions=[])
+    _closed(st)
     run.alert(st, f"run blocked: {why}. No final PR was opened; what merged stays on ark/{st['slug']}, and the "
                   "worktrees are still there", critical=True)
 
@@ -2555,7 +2563,7 @@ def _reopen(st: dict) -> None:
     if not any((st["jobs"].get(i.get("job")) or {}).get("status") == "blocked" for i in items):
         return
     st.update(status="running", closing=None)
-    for k in ("decisions_sha", "closing_wait", "closing_errors", "decisions_ticks"):
+    for k in ("decisions_sha", "closing_wait", "closing_errors", "decisions_ticks", "closed_at"):
         st.pop(k, None)
     run.event(st, "reopened by ark retry")
 
@@ -2579,7 +2587,8 @@ def _abort(st: dict, forge) -> None:
     why = _clean(str(items[-1].get("why") or "")) or "ended by Marco"
     for k in ("decisions_sha", "closing_wait", "closing_errors", "decisions_ticks"):
         st.pop(k, None)
-    st.update(status="aborted", closing="done", reason=why, questions=[])
+    st.update(status="aborted", reason=why, questions=[])
+    _closed(st)
     run.event(st, f"aborted by Marco: {why}")
     if was == "blocked":
         _rerecord(st, forge)
