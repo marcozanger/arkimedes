@@ -31,6 +31,7 @@ session (a hook enforces `approvals/`), and only Marco approves plans, from a te
 | `ark approve <repo>/<slug>` | validate, show the PR table, close the plan, write the approval — Marco confirms |
 | `ark report <repo>/<slug> [--open]` | a run's report.html and steps.jsonl; a closed run also goes to `history/` (`--all`: every closed run) |
 | `ark review [<repo>/<slug>] [--all]` | review Euklides' decisions (and, with a target, the run's decisions.md; also a click in `ark ui`'s Decisions tab); new verdicts are distilled into history/euklides/lessons.md |
+| `ark sweep [--dry-run]` | clear the worktrees and `ark/*` branches (local, origin) and open PRs of aborted, done and abandoned runs; `--dry-run` lists them and why, changes nothing; the loop also does it daily |
 | `ark stats` | rewrite `history/insights.md` from `history/jobs.jsonl` |
 
 Over running plans, also without a model: `ark ps`, `ark logs`, `ark stop`, `ark retry`, `ark abort`, `ark steer`, `ark attach`, `ark answer`.

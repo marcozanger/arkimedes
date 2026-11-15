@@ -71,3 +71,47 @@ def test_a_runner_process_cannot_retry(feature, capsys, monkeypatch):
     code, out = ark(capsys, "retry", "shell")
     assert code == 1 and "runner process" in out
     assert not inbox.pending("demo", "notes-edit")
+
+
+def _closed_days_ago(days):
+    from datetime import datetime, timedelta, timezone
+    change_state(shell={"status": "blocked", "reason": "x", "blocked_from": "working"},
+                 ui={"status": "blocked", "reason": "a job it depends on is blocked: shell", "waiting_on": "shell"})
+    st = state()
+    at = datetime.now(timezone.utc) - timedelta(days=days)
+    st.update(status="blocked", closing="done", closed_at=at.isoformat())
+    run.save(st)
+    return (at + timedelta(days=14)).date().isoformat()
+
+
+def test_retry_refuses_a_run_abandoned_15_days_ago(feature, capsys):
+    feature()
+    loop.cycle()
+    since = _closed_days_ago(15)
+    code, out = ark(capsys, "retry", "demo/notes-edit:shell")
+    assert code == 1
+    assert f"demo/notes-edit was abandoned on {since}: plan it again" in out
+    assert not inbox.pending("demo", "notes-edit")
+
+
+def test_retry_of_a_run_closed_3_days_ago_works(feature, capsys):
+    feature()
+    loop.cycle()
+    _closed_days_ago(3)
+    code, out = ark(capsys, "retry", "demo/notes-edit:shell")
+    assert code == 0 and "next cycle" in out
+    loop.cycle()
+    assert state()["status"] == "running"
+
+
+def test_the_loop_drops_a_retry_of_an_abandoned_run(feature):
+    feature()
+    loop.cycle()
+    since = _closed_days_ago(15)
+    inbox.post("demo", "notes-edit", "retry", job="shell")
+    loop.cycle()
+    st = state()
+    assert st["status"] == "blocked" and st["closing"] == "done"
+    assert st["jobs"]["shell"]["status"] == "blocked"
+    assert any(e.endswith(f"a retry was dropped: the run was abandoned on {since}") for e in st["events"])
+    assert not inbox.pending("demo", "notes-edit")

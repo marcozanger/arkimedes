@@ -61,6 +61,7 @@ DEFAULTS = {
     "poll_seconds": 15,
     "notify": [],
     "accounts": [],
+    "sweep": {},
 }
 
 

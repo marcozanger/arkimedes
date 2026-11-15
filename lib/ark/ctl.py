@@ -8,7 +8,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from . import accounts, answers, approve, claude, daycap, desk, gitops, inbox, paths, proc, questions, run, usage
+from . import accounts, answers, approve, claude, daycap, desk, gitops, inbox, paths, proc, questions, run, sweep, usage
 
 FOLLOW_POLL = 1.0   # seconds between looks at a log being followed
 ATTACH_WAIT = 60  # seconds for ark-loop to hand a job over
@@ -200,7 +200,11 @@ def cmd_stop(args) -> int:
 def cmd_retry(args) -> int:
     _writer()
     repo, slug, job = _resolve(args.job)
-    j = run.load(repo, slug)["jobs"][job]
+    st = run.load(repo, slug)
+    since = sweep.abandoned(st, datetime.now(timezone.utc))
+    if since:
+        raise CtlError(f"{repo}/{slug} was abandoned on {since.date().isoformat()}: plan it again")
+    j = st["jobs"][job]
     if j["status"] != "blocked":
         raise CtlError(f"{job} is not blocked: {j['status']}")
     st = run.load(repo, slug)
