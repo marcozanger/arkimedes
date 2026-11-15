@@ -8,9 +8,10 @@ import argparse
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
-from . import approve, ctl, desk, estimate, monitor, paths, reporting, review, validate
+from . import approve, ctl, desk, estimate, forge, monitor, paths, reporting, review, sweep, validate
 from .plan import load_plan, sha256_file
 from .report import minutes, usd
 
@@ -142,6 +143,90 @@ def cmd_estimate(args) -> int:
     return 0
 
 
+def _bytes(n: int) -> str:
+    if n < 1024:
+        return f"{n} B"
+    for unit in ("KB", "MB", "GB"):
+        n /= 1024
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f} {unit}" if n < 10 or unit == "KB" else f"{n:.1f} {unit}"
+
+
+def _shown(item) -> str:
+    """A path under the worktrees folder as wt/<repo>/<slug>/<job>; anything else as it is."""
+    root = paths.worktrees_dir()
+    try:
+        return "wt/" + Path(item.target).relative_to(root).as_posix()
+    except ValueError:
+        return item.target
+
+
+def cmd_sweep(args) -> int:
+    if not args.dry_run:
+        try:
+            ctl._writer()
+        except ctl.CtlError as e:
+            print(e, file=sys.stderr)
+            return 1
+    try:
+        now = datetime.now(timezone.utc)
+        f = forge.get()
+        plans, problems = sweep.plan(now, f)
+    except (ValueError, OSError, forge.ForgeError) as e:
+        print(f"ark sweep: {e}", file=sys.stderr)
+        return 1
+    for p in problems:
+        print(f"warning: {p}", file=sys.stderr)
+    if not plans:
+        print("Nothing to sweep.")
+        return 0
+    res = None if args.dry_run else sweep.apply(plans, f, now)
+    removed = set(res["removed"]) if res else set()
+    errors = dict(res["errors"]) if res else {}
+
+    def mark(*items) -> str:
+        """The outcome of a line made of one or more items, in a real sweep ("" in a dry run)."""
+        if res is None:
+            return ""
+        bad = [errors[i.key()] for i in items if i.key() in errors]
+        if bad:
+            return f"  error: {bad[0]}"
+        return "  removed" if all(i.key() in removed for i in items) else "  skipped"
+
+    size = nwt = npr = 0
+    names: set[tuple[str, str, str]] = set()
+    nheld = 0
+    for rp in plans:
+        print(f"{rp.repo}/{rp.slug} · {rp.why}" if rp.repo else f"leftovers · {rp.why}")
+        branches: dict[str, list] = {}
+        for i in rp.items:
+            if i.kind in ("local_branch", "remote_branch"):
+                branches.setdefault(i.target, []).append(i)
+        for i in rp.items:
+            if i.kind == "worktree":
+                print(f"  worktree  {_shown(i)}  ({_bytes(i.size)}){mark(i)}")
+                if not res or i.key() in removed:
+                    size += i.size
+                    nwt += 1
+            elif i.kind == "pr":
+                print(f"  pr        {i.target}  (close){mark(i)}")
+                npr += not res or i.key() in removed
+            elif i.kind == "folder":
+                print(f"  folder    {_shown(i)}{mark(i)}")
+        for b, items in branches.items():
+            where = ", ".join("local" if i.kind == "local_branch" else "origin" for i in items)
+            print(f"  branch    {b}  ({where}){mark(*items)}")
+            names.add((rp.repo, rp.slug, b))
+        for i, why in rp.held:
+            print(f"  held      {_shown(i) if i.kind in ('worktree', 'folder') else i.target}: {why}")
+            nheld += 1
+    verb = "would free" if args.dry_run else "freed"
+    nbr = len(names) if args.dry_run else len({n for n in names if any(
+        k in removed for k in (f"local_branch:{n[0]}/{n[1]}:{n[2]}", f"remote_branch:{n[0]}/{n[1]}:{n[2]}"))})
+    print(f"{verb} {_bytes(size)} · {nwt} worktrees · {nbr} branches · {npr} PRs · {nheld} held")
+    return 1 if errors else 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="ark", description="Arkimedes desk and run control (no model).")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -161,6 +246,9 @@ def main(argv=None) -> int:
     s.add_argument("target", help="<repo>/<slug> or path to plan.md")
     s.add_argument("--json", action="store_true", help="the same data as JSON")
     s.set_defaults(fn=cmd_estimate)
+    s = sub.add_parser("sweep", help="clear what finished and abandoned runs leave behind")
+    s.add_argument("--dry-run", action="store_true", help="show what would go and why, change nothing")
+    s.set_defaults(fn=cmd_sweep)
     ctl.register(sub)
     monitor.register(sub)
     reporting.register(sub)
