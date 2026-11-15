@@ -281,6 +281,26 @@ finished, the budget for what runs and what is left. Delay is forecast end minus
   which chooses wait (once), steer (twice per job), stop and escalate, or stop and block. The process's hard deadline
   is twice its tier's minutes.
 
+## Gate limits
+
+`limits` in `workspace.json` (all optional) also keep gates from overloading the machine:
+
+| Limit | Default | What |
+|---|---|---|
+| `heavy_gates` | 1 | gates of `heavy: true` jobs that run at once |
+| `gate_workers` | 4 | test processes a gate may spawn |
+| `load_max` | cores x 1.25 (min 2) | 1-minute load average above which a gate waits; `0` turns the brake off |
+| `load_wait_max` | 900 | seconds a gate waits for the load before it starts anyway |
+
+- Every gate (job, integration, refresh and base-fix gates) runs with `ARK_TEST_WORKERS=<gate_workers>`, so a plan's
+  gate can say `vitest --maxWorkers=$ARK_TEST_WORKERS`. It also sets `VITEST_MAX_WORKERS` and
+  `PYTEST_XDIST_AUTO_NUM_WORKERS` (what `-n auto` means) when the environment does not already have them. Jest has no
+  such variable. A flag in the gate's own command line wins.
+- The load brake applies to gates only, never to workers, reviewers or ticks. A gate that finds the machine busier
+  than `load_max` stays in `needs_gate` / `needs_integrate` and is tried again next cycle,
+  with one run event when the wait begins. After `load_wait_max` seconds (monotonic, a sleep does not count) it starts
+  anyway, with one more event. `heavy` still serialises gates as before; the brake is checked first and takes no heavy slot.
+
 ## New code
 
 Between polls the loop hashes `lib/ark/*.py` and `bin/ark-loop`. When the hash differs from the one it started with,
