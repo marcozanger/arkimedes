@@ -49,6 +49,44 @@ def test_area_guard(tmp_path):
     assert decision(hook("area-guard.py", {"tool_name": "Read", "tool_input": {"file_path": "/x"}}, **env)) == "allow"
 
 
+def test_area_guard_reads_live_grants(tmp_path):
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    grants = tmp_path / "shell.grants.json"
+    env = worker_env(wt, tmp_path / "r.md", ARK_GRANTS_FILE=str(grants), ARK_COMPANIONS="0")
+    w = lambda p, **e: decision(hook("area-guard.py", {"tool_name": "Write", "tool_input": {"file_path": p},
+                                                       "cwd": str(wt)}, **{**env, **e}))
+    assert w("src/ui/a.py") == "deny"                       # no file: no grants
+    grants.write_text(json.dumps(["src/ui/a.py"]))
+    assert w("src/ui/a.py") == "allow" and w("src/ui/b.py") == "deny"
+    grants.write_text(json.dumps(["src/ui/**"]))             # globs count as in run.area
+    assert w("src/ui/b.py") == "allow" and w("src/other.py") == "deny"
+    for bad in ["not json", "{}", '"src/ui/a.py"', "[5]", '["src/ui/a.py", ""]', "", "null"]:
+        grants.write_text(bad)                                # malformed: no grants, never open
+        assert w("src/ui/a.py") == "deny", bad
+    grants.unlink()
+    grants.mkdir()                                            # unreadable
+    assert w("src/ui/a.py") == "deny"
+    assert w("src/ui/a.py", ARK_GRANTS_FILE=str(tmp_path / "missing.json")) == "deny"
+    assert w("src/shell/a.py") == "allow"                    # the area itself is unaffected
+
+
+def test_area_guard_allows_companions_outside_the_area(tmp_path):
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    env = worker_env(wt, tmp_path / "r.md")
+    w = lambda p, **e: decision(hook("area-guard.py", {"tool_name": "Write", "tool_input": {"file_path": p},
+                                                       "cwd": str(wt)}, **{**env, **e}))
+    for p in ["tests/test_brief.py", "tests/conftest.py", "src/ui/a.test.ts", "docs/runner-control.md",
+              "docs/decisions/x.md", "pkg/__tests__/a.ts"]:
+        assert w(p) == "allow", p
+    for p in ["lib/ark/loop.py", "src/ui/a.ts", "tsconfig.json", "package.json", "vitest.config.ts", "tests/../lib/a.py",
+              ".git/hooks/pre-commit", ".claude/settings.json"]:
+        assert w(p) == "deny", p
+    assert w("tests/test_brief.py", ARK_COMPANIONS="0") == "deny"   # the plan opted out
+    assert w("tests/test_brief.py", ARK_ROLE="reviewer") == "deny"
+
+
 def test_area_guard_fails_closed_for_workers(tmp_path):
     env = worker_env(tmp_path, tmp_path / "r.md")
     for payload in ["", "not json", {"tool_name": "Edit", "tool_input": {}},

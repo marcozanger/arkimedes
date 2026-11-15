@@ -49,6 +49,21 @@ def check(raw: str) -> None:
         check_path(p, data)
 
 
+def _grants() -> list:
+    """The job's live grants (ARK_GRANTS_FILE: a JSON list of paths the runner keeps current). No file, or
+    anything but a well-formed list, means no grants: a bad file can only narrow the area, never open it."""
+    f = os.environ.get("ARK_GRANTS_FILE")
+    if not f:
+        return []
+    try:
+        data = json.loads(Path(f).read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(data, list) or not all(isinstance(g, str) and g for g in data):
+        return []
+    return data
+
+
 def check_path(p: str, data: dict) -> None:
     wt = Path(os.path.realpath(os.environ["ARK_WORKTREE"]))
     target = Path(os.path.realpath(os.path.join(data.get("cwd") or wt, os.path.expanduser(p))))
@@ -65,9 +80,13 @@ def check_path(p: str, data: dict) -> None:
     area = json.loads(os.environ["ARK_AREA"])
     if not isinstance(area, list) or not area or not all(isinstance(g, str) and g for g in area):
         deny("area-guard: the job area is not a list of globs.")
-    if not match_any(rel, area):
-        deny(f"{rel} is outside this job's area {area}. Do not change it: note it under Open issues "
-             "in your report and, if the job cannot be done without it, end with STATUS: BLOCKED.")
+    if match_any(rel, area) or match_any(rel, _grants()):
+        return
+    from ark.companions import is_companion
+    if os.environ.get("ARK_COMPANIONS") != "0" and is_companion(rel):
+        return  # the runner checks afterwards that these are few, small and in no other job's area
+    deny(f"{rel} is outside this job's area {area}. Do not change it: note it under Open issues "
+         "in your report and, if the job cannot be done without it, end with STATUS: BLOCKED.")
 
 
 def main() -> None:

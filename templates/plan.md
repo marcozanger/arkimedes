@@ -63,6 +63,7 @@ jobs:
     tier: T1                          # T0 haiku · T1 sonnet · T2 opus
     gate: pnpm -F shell test
     heavy: false                      # heavy gates run one at a time
+    companions: true                  # optional, default true: a few small test/doc files outside the area are allowed; false keeps the area strict
     done:
       - notes.delete removes the file and emits notes.changed
     budget: { minutes: 40, usd: 3 }   # estimate; history/insights.md says what jobs cost
