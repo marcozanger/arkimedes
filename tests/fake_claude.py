@@ -11,6 +11,7 @@ euklides  FAKE_EUKLIDES is its raw answer; by default retry for a failure and as
           FAKE_STATE. FAKE_EUKLIDES_RUN=<shell command> runs that command in its cwd before it answers.
 tick      the decisions file when asked for one, else `retry` (no intervene action: the runner picks one).
 
+FAKE_COMPANION=job with FAKE_COMPANION_FILES=a,b also writes those files, wherever they are.
 FAKE_EARLY_OUTSIDE=job makes a first commit outside the area, under a last commit inside it.
 FAKE_DIRTY=job:n leaves attempt n's file uncommitted; FAKE_EMPTY=job:n changes nothing. Both end DONE.
 
@@ -132,6 +133,11 @@ elif ROLE == "worker":
         f.parent.mkdir(parents=True, exist_ok=True)
         with open(f, "a") as h:
             h.write(f"attempt {n}\n")
+        if listed("FAKE_COMPANION", job):  # extra files outside the area: FAKE_COMPANION_FILES=a,b
+            for extra in os.environ["FAKE_COMPANION_FILES"].split(","):
+                (wt / extra).parent.mkdir(parents=True, exist_ok=True)
+                with open(wt / extra, "a") as h:
+                    h.write(f"attempt {n}\n")
         if f"{job}:{n}" in os.environ.get("FAKE_DIRTY", "").split(","):
             emit("done\nSTATUS: DONE")
             sys.exit(0)

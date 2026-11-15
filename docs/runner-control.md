@@ -208,7 +208,17 @@ files and 30 changed lines, no binary file, and no file inside another job's are
 - `widen` opens after an area block (files changed outside the area), under budget. It names the files; when the
   job changed exactly those outside its area and the change is within the rule, they become **grants**: the run
   state keeps them under `grants.<job>`, and every later area check (the worker's, the reviewer's, ark-merge's)
-  counts them as part of the area. Briefs show them as "Granted in this run".
+  counts them as part of the area. Briefs show them as "Granted in this run". The runner also writes a job's grants
+  to `<job>.grants.json` in the run folder (at every grant and at worker spawn) and passes its path as
+  `ARK_GRANTS_FILE`: area-guard reads it on every write, so a grant reaches a worker that is already running. A
+  missing, unreadable or malformed file means no grants (it can only narrow the area).
+- **Companion files** (`lib/ark/companions.py`: `tests/**`, `test/**`, `**/__tests__/**`, `*.test.*`, `*.spec.*`,
+  `conftest.py`, `docs/decisions/**`, `docs/*.md`) may be written outside the area without a question. area-guard
+  lets a worker write them; after the worker's DONE (and Euklides' `fixed`) the runner counts the companions outside
+  the area, and when they are within the small-fix rule together and none lies in another job's area it records
+  them as grants (`runner (companion files)`) and an event, with no Euklides call. Otherwise the usual block, and
+  Euklides' widen or ask, applies. Source and config files are never companions. A job opts out with
+  `companions: false` in its plan entry (default true).
 - `fix_base` opens after the integration gate failed twice and is red on the base too, at most 3 times per run. A
   small worker (job name `_fix-<n>`, branch `ark/<slug>-_fix-<n>`, never pushed) fixes `ark/<slug>`; its change must
   be within the rule (files of merged jobs do not count) and the integration gate must pass on it. Then one

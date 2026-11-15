@@ -254,6 +254,7 @@ import pytest
     ("gate", 0), ("gate", False), ("pr_title", 0), ("includes", False), ("excludes", 0),
     ("after", 0), ("after", False), ("after", "shell"),
     ("heavy", 0), ("heavy", "yes"),
+    ("companions", 0), ("companions", "no"), ("companions", None), ("companions", []),
     ("tasks", 0), ("tasks", False),
 ])
 def test_falsy_or_mistyped_job_value_is_a_problem(make_feature, field, value):
@@ -262,6 +263,12 @@ def test_falsy_or_mistyped_job_value_is_a_problem(make_feature, field, value):
     m = manifest(jobs=[j])
     probs = validate(make_feature(plan_text(m)))
     assert any(p.check in ("jobs", "after") and "shell" in str(p) for p in probs), (field, value)
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_companions_is_optional_and_boolean(make_feature, value):
+    j = job("shell", ["T1", "T2", "T3"], ["src/**"], companions=value)
+    assert validate(make_feature(plan_text(manifest(jobs=[j])))) == []
 
 
 # 7. layers (only while the plan is not closed)

@@ -21,7 +21,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from . import accounts, approve, beat, brief, caps, claude, daycap, euklides, forge as forge_mod, gitops, inbox, integrate, merge, notify, paths, proc, questions, reporting, run, usage
+from . import accounts, approve, beat, brief, caps, claude, companions, daycap, euklides, forge as forge_mod, gitops, inbox, integrate, merge, notify, paths, proc, questions, reporting, run, usage
 from .globs import areas_overlap, match_any
 from .plan import load_plan, sha256_file
 from .validate import validate
@@ -420,6 +420,8 @@ def done_check(c: Ctx, job: str) -> tuple[str, str] | None:
         return "empty", f"nothing changed against origin/{c.base}"
     outside = [_printable(f) for f in files if not match_any(f, run.area(c.st, job, c.mjobs[job]))]
     if outside:
+        outside = _absorb_companions(c, job, outside)
+    if outside:
         return "outside", "changed files outside its area: " + ", ".join(outside[:5])
     return None
 
@@ -763,9 +765,35 @@ def _widen(c: Ctx, job: str, e: dict, d: dict, decision) -> None:
     _grant(c.st, job, outside, decision)
 
 
+def _absorb_companions(c: Ctx, job: str, outside: list[str]) -> list[str]:
+    """Companion files (tests, test helpers, docs) among `outside` become grants when, together, they are within
+    the small-fix rule and none lies in another job's area; no Euklides, no question. Returns what still blocks."""
+    if c.mjobs[job].get("companions") is False:
+        return outside
+    comps = [f for f in outside if companions.is_companion(f)]
+    if not comps:
+        return outside
+    why = _small_fix(c, comps, gitops.changed_lines(c.wt(job), f"origin/{c.base}", "HEAD", comps), skip=(job,))
+    if why:
+        return outside
+    _add_grant(c.st, job, comps, "companion files within the small-fix rule", by="runner (companion files)")
+    run.event(c.st, f"{job}: companion files allowed outside its area: {', '.join(comps)}")
+    return [f for f in outside if f not in comps]
+
+
+def grants_file(st: dict, job: str) -> Path:
+    return paths.run_dir(st["repo"], st["slug"]) / f"{job}.grants.json"
+
+
+def _write_grants(st: dict, job: str) -> None:
+    """The job's grants, where its area-guard reads them: a worker already running sees a grant at once."""
+    run._atomic(grants_file(st, job), json.dumps((st.get("grants") or {}).get(job, [])) + "\n")
+
+
 def _add_grant(st: dict, job: str, files: list[str], decision, by: str) -> None:
     grants = st.setdefault("grants", {}).setdefault(job, [])
     grants += [f for f in files if f not in grants]
+    _write_grants(st, job)
     run.alert(st, f"{job}: {by} widened its area to {', '.join(files)} ({decision or 'not journaled'})")
 
 
@@ -1621,8 +1649,10 @@ def start_worker(c: Ctx, job: str) -> bool:
         j["session"] = None  # known again only when this process says what it had: one may never start
         prompt = brief.worker_brief(c.st, job, mj, c.plan, worktree=wt, report=report,
                                     note=j["note"] or j["resume_msg"], previous_report=c.read_report(job))
+    _write_grants(c.st, job)
     env = claude.runner_env("worker", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo), worktree=wt, area=json.dumps(run.area(c.st, job, mj)),
-                            report=report, gate=mj["gate"], run_dir=c.dir, job=job)
+                            report=report, gate=mj["gate"], run_dir=c.dir, job=job, grants_file=grants_file(c.st, job),
+                            **({"companions": "0"} if mj.get("companions") is False else {}))
     sid = j["session"] or str(uuid.uuid4())  # the worker's id before it says so: a kill may come first
     cmd = claude.agent_cmd("worker", claude.MODELS[j["tier"]], prompt, session=sid, resume=resume, usd=mj["budget"]["usd"])
     proc.start(c.dir, f"{job}.worker", cmd, cwd=wt, env=env, minutes=claude.TIER_MINUTES[j["tier"]] * claude.HARD_FACTOR, pre=pre,
