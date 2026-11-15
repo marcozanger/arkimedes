@@ -223,6 +223,8 @@ def _check_job(jid, j, add):
             add("jobs", f"{jid}: budget needs positive numeric `minutes` and `usd`")
     if "heavy" in j and not isinstance(j["heavy"], bool):
         add("jobs", f"{jid}: `heavy` must be true or false")
+    if "companions" in j and not isinstance(j["companions"], bool):
+        add("jobs", f"{jid}: `companions` must be true or false")
     if "after" in j and j["after"] is not None and not isinstance(j["after"], list):
         add("jobs", f"{jid}: `after` must be a list")
     if not isinstance(j.get("tasks"), list) or not j["tasks"]:

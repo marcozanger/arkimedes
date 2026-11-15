@@ -196,6 +196,10 @@ THEN_TEXT = {
     "fix_base": "`fix_base`: fix the integration branch with a small worker and one fix(base) commit; the job waits "
                 "on it. `note` says what to change.",
     "raise": "`raise`: add `usd` (a positive number) to this job's budget, with Marco's money, not your margin.",
+    "accept": "`accept`: the job's current head, already committed, is accepted on the replacement gate in `gate` "
+              "(a shell command), run by the runner with no worker: green goes on to push, PR and review, red asks "
+              "Marco again. Use it only when the replacement is a narrower form of the job's own gate (for "
+              "example a `--changed` run); never to skip a red test.",
     "stop": "`stop`: the job ends blocked, with your `note` as the reason.",
 }
 THEN_RULE = ("Only these: a way out the runner cannot carry out (a PR to main, a plan edit, a push by hand) goes in "

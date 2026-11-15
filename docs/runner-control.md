@@ -38,7 +38,9 @@ from, with that step's counters cleared:
 
 Jobs blocked only because they waited on it go back to pending. A run that closed blocked reopens when a retry
 for one of its blocked jobs arrives: it keeps its final PR and closes again normally. A closed run needs the long
-form `<repo>/<slug>:<job>`.
+form `<repo>/<slug>:<job>`. A closed run reopens only if its area does not overlap a running or held run of the
+same repo: `ark retry` refuses and names the other run and the globs they share, and a retry that reaches the loop
+anyway is dropped with an alert.
 
 ## ark abort
 
@@ -160,7 +162,8 @@ runner action Marco's `ok` carries out: `go_on` (the worker gets the proposal as
 `:stop …` blocks the job), `escalate` (one tier up; at T2 it goes on there, and an event says so), `widen` (with
 `files`: they join the job's area; after an area block the head is pushed again, otherwise the worker goes on),
 `fix_base` (a base fix with Marco's authority: no `MAX_FIX_BASE` limit, not counted, the job waits on it), `raise`
-(with `usd`: added to `usd_raised` and `marco_raised`) or `stop` (the job ends blocked with Euklides' note). An `ask`
+(with `usd`: added to `usd_raised` and `marco_raised`), `accept` (with `gate`, a shell command: the job's committed
+head is accepted on that replacement gate, see below) or `stop` (the job ends blocked with Euklides' note). An `ask`
 without a valid `then` is an unusable answer. The runner writes the action at the end of the question, `Answer ok
 to: …`, followed by `Other answers: :stop blocks the job; any other text goes to the worker as its instruction.`
 `ok`, `yes` and `si` (with or without its accent; any case, trimmed) are the ok words; `commit yes` is text. A `widen` naming a file inside
@@ -170,6 +173,25 @@ a `then`: Euklides writes it in the note as what Marco must do himself. A questi
 still works: its `grant` widens and its `raise_usd` raises on `ok`; with neither, `ok` takes the proposal.
 `_widen` over the small-fix rule asks with `then: widen`, `_raise` past the margin with `then: raise`, a `fixed`
 that fails its check with `then: stop`, and a failed base fix with `then: fix_base`.
+
+**`accept`.** For a head that is already committed and a replacement gate that is a narrower form of the job's own
+gate (a `--changed` run), never to skip a red test. Marco's `ok` queues the head for push and gate with no worker: the
+job's `accept_gate` replaces the plan's gate for that one run of the gate, run by the runner under the same
+environment as any job gate (no new privilege), charged to nothing. The question shows the gate verbatim, so Marco
+sees what runs. Green records the gate result (with `accepted_gate`) and the job goes on to PR, review and
+integration as a green job; the integration gate is still the plan's. Red asks again with `then: stop` and the
+failing tail; a worker never starts. An `accept` without a non-empty string `gate` of at most 500 characters is
+unusable like an `ask` without a valid `then`. Without a clean worktree at a committed head the `ok` is not carried
+out (next paragraph).
+
+**The effect of every `ok` is checked.** After `_carry_out`, `_effect_ok` looks for what the `then` must have left:
+`widen` the files in `run.area`, `raise` a larger `usd_raised`, `fix_base` a live base fix with the job waiting on it,
+`escalate` a changed tier (or one already at the top), `accept` the head queued with its gate. When the effect is not
+there the runner restores the job, writes an alert `Marco's ok to <then> was not carried out: <why>` and asks a new
+question (`then: stop`) saying the way out is a plan edit and a new approval, or `:stop`. It never resumes a worker
+on an answer it could not carry out. When a worker does resume on an answer (`_go_on`) and the job's spend is at or
+over its budget plus what was raised, a one-time alert names the spend and the budget (once per budget); the worker is
+not blocked, since Marco may have chosen to go on.
 
 Every decision appends one line to `history/euklides/decisions.jsonl` (`valid: false` when the answer was unusable),
 and Marco's answer to a question it asked is written on that line. Euklides reads `history/euklides/lessons.md` on
@@ -226,7 +248,17 @@ files and 30 changed lines, no binary file, and no file inside another job's are
 - `widen` opens after an area block (files changed outside the area), under budget. It names the files; when the
   job changed exactly those outside its area and the change is within the rule, they become **grants**: the run
   state keeps them under `grants.<job>`, and every later area check (the worker's, the reviewer's, ark-merge's)
-  counts them as part of the area. Briefs show them as "Granted in this run".
+  counts them as part of the area. Briefs show them as "Granted in this run". The runner also writes a job's grants
+  to `<job>.grants.json` in the run folder (at every grant and at worker spawn) and passes its path as
+  `ARK_GRANTS_FILE`: area-guard reads it on every write, so a grant reaches a worker that is already running. A
+  missing, unreadable or malformed file means no grants (it can only narrow the area).
+- **Companion files** (`lib/ark/companions.py`: `tests/**`, `test/**`, `**/__tests__/**`, `*.test.*`, `*.spec.*`,
+  `conftest.py`, `docs/decisions/**`, `docs/*.md`) may be written outside the area without a question. area-guard
+  lets a worker write them; after the worker's DONE (and Euklides' `fixed`) the runner counts the companions outside
+  the area, and when they are within the small-fix rule together and none lies in another job's area it records
+  them as grants (`runner (companion files)`) and an event, with no Euklides call. Otherwise the usual block, and
+  Euklides' widen or ask, applies. Source and config files are never companions. A job opts out with
+  `companions: false` in its plan entry (default true).
 - `fix_base` opens after the integration gate failed twice and is red on the base too, at most 3 times per run. A
   small worker (job name `_fix-<n>`, branch `ark/<slug>-_fix-<n>`, never pushed) fixes `ark/<slug>`; its change must
   be within the rule (files of merged jobs do not count) and the integration gate must pass on it. Then one
@@ -298,6 +330,26 @@ finished, the budget for what runs and what is left. Delay is forecast end minus
 - A worker that is over its tier's minutes, silent for 20 minutes, or over its tier's tokens gets an intervene tick,
   which chooses wait (once), steer (twice per job), stop and escalate, or stop and block. The process's hard deadline
   is twice its tier's minutes.
+
+## Gate limits
+
+`limits` in `workspace.json` (all optional) also keep gates from overloading the machine:
+
+| Limit | Default | What |
+|---|---|---|
+| `heavy_gates` | 1 | gates of `heavy: true` jobs that run at once |
+| `gate_workers` | 4 | test processes a gate may spawn |
+| `load_max` | cores x 1.25 (min 2) | 1-minute load average above which a gate waits; `0` turns the brake off |
+| `load_wait_max` | 900 | seconds a gate waits for the load before it starts anyway |
+
+- Every gate (job, integration, refresh and base-fix gates) runs with `ARK_TEST_WORKERS=<gate_workers>`, so a plan's
+  gate can say `vitest --maxWorkers=$ARK_TEST_WORKERS`. It also sets `VITEST_MAX_WORKERS` and
+  `PYTEST_XDIST_AUTO_NUM_WORKERS` (what `-n auto` means) when the environment does not already have them. Jest has no
+  such variable. A flag in the gate's own command line wins.
+- The load brake applies to gates only, never to workers, reviewers or ticks. A gate that finds the machine busier
+  than `load_max` stays in `needs_gate` / `needs_integrate` and is tried again next cycle,
+  with one run event when the wait begins. After `load_wait_max` seconds (monotonic, a sleep does not count) it starts
+  anyway, with one more event. `heavy` still serialises gates as before; the brake is checked first and takes no heavy slot.
 
 ## New code
 

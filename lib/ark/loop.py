@@ -6,6 +6,7 @@ Claude runs only as workers, reviewers, Euklides and two read-only ticks (interv
 from __future__ import annotations
 
 import fcntl
+import copy
 import hashlib
 import json
 import math
@@ -20,7 +21,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import accounts, beat, brief, caps, claude, daycap, euklides, forge as forge_mod, gitops, inbox, integrate, merge, notify, paths, proc, questions, reporting, run, sweep, usage
+from . import accounts, approve, beat, brief, caps, claude, companions, daycap, euklides, forge as forge_mod, gitops, inbox, integrate, merge, notify, paths, proc, questions, reporting, run, sweep, usage
 from .globs import areas_overlap, match_any
 from .plan import load_plan, sha256_file
 from .validate import validate
@@ -419,6 +420,8 @@ def done_check(c: Ctx, job: str) -> tuple[str, str] | None:
         return "empty", f"nothing changed against origin/{c.base}"
     outside = [_printable(f) for f in files if not match_any(f, run.area(c.st, job, c.mjobs[job]))]
     if outside:
+        outside = _absorb_companions(c, job, outside)
+    if outside:
         return "outside", "changed files outside its area: " + ", ".join(outside[:5])
     return None
 
@@ -426,10 +429,20 @@ def done_check(c: Ctx, job: str) -> tuple[str, str] | None:
 def on_gate(c: Ctx, job: str, r: dict) -> None:
     ok = r["exit"] == 0 and not r["reason"]
     tail = _clean(r["result"] or "")[-2000:]
-    merge.record(c.dir, job, "gate", {"ok": ok, "head": r["meta"].get("head"), "exit": r["exit"], "tail": tail})
+    j = c.st["jobs"][job]
+    accepted = j.pop("accept_gate", None)  # it applies to one run of the gate: a red one asks again
+    extra = {"accepted_gate": accepted} if accepted else {}
+    merge.record(c.dir, job, "gate", {"ok": ok, "head": r["meta"].get("head"), "exit": r["exit"], "tail": tail, **extra})
     if ok:
-        c.st["jobs"][job]["status"] = "needs_pr"
-        run.event(c.st, f"{job}: job gate green")
+        j["status"] = "needs_pr"
+        run.event(c.st, f"{job}: job gate green" + (f" (the replacement gate `{_clean(accepted)[:200]}`)" if accepted else ""))
+    elif accepted:
+        why = (f"the replacement gate `{_clean(accepted)[:200]}` is red on head {str(r['meta'].get('head'))[:8]} "
+               f"(exit {r['exit']}{', ' + r['reason'] if r['reason'] else ''})")
+        run.event(c.st, f"{job}: {why}")
+        _euklides_ask(c.st, job, {"trigger": "blocked", "situation": f"{why}:\n{tail[-1200:]}", "kind": None},
+                      {"note": f"Accepting the head on the replacement gate failed: {why}.",
+                       "proposal": ":stop, or say what the job should do", "then": "stop"}, None)
     else:
         fail(c, job, f"job gate red (exit {r['exit']}{', ' + r['reason'] if r['reason'] else ''}): {tail[-600:]}")
 
@@ -542,6 +555,7 @@ def _go_on(st: dict, job: str, e: dict, text: str) -> None:
     if e.get("kind") == "review":
         j.update(review_errors=0, status="needs_review")
         return
+    _tell_over_budget(st, job)  # a worker is about to be paid for
     if e.get("kind") == "integrate":
         j["integrate_fails"] = 0
     if e["trigger"] == "question":
@@ -552,6 +566,28 @@ def _go_on(st: dict, job: str, e: dict, text: str) -> None:
         j["resume_msg"] = brief.resume_message(kind, msg, st["slug"])
     j.pop("question", None)
     j.update(note=msg, status="needs_worker")
+
+
+def _budget_usd(st: dict, job: str) -> float | None:
+    """The job's planned budget from its plan, or None when the plan cannot be read now."""
+    try:
+        return next(mj["budget"]["usd"] for mj in load_plan(Path(st["plan"])).manifest["jobs"] if mj["id"] == job)
+    except Exception:  # a missing plan must not stop an answer from going on
+        return None
+
+
+def _tell_over_budget(st: dict, job: str) -> None:
+    """A worker resumes on a job whose spend is at or over its budget and what was raised: it is not blocked (Marco
+    may have chosen to go on), but he hears it, once for each budget the job has had."""
+    j = st["jobs"][job]
+    budget = _budget_usd(st, job)
+    if budget is None:
+        return
+    total = round(budget + j.get("usd_raised", 0), 4)
+    if j["usd"] < total - 1e-9 or j.get("over_told") == total:
+        return
+    j["over_told"] = total
+    run.alert(st, f"{job} goes on with a worker over its budget: ${j['usd']:.2f} spent of ${total:.2f}")
 
 
 OTHER_ANSWERS = "Other answers: :stop blocks the job; any other text goes to the worker as its instruction."
@@ -569,6 +605,9 @@ def _then_text(st: dict, job: str, ask: dict) -> str:
         return "fix the integration branch (a small worker, one fix(base) commit)"
     if then == "raise":
         return f"raise {job}'s budget by ${ask['usd']:.2f}"
+    if then == "accept":
+        return (f"accept {job}'s head on the gate `{ask['gate']}` (the runner runs it, no worker; red asks you "
+                "again)")
     if then == "stop":
         return f"stop {job} (it ends blocked)"
     return "go on with the proposal above"
@@ -591,6 +630,8 @@ def _euklides_ask(st: dict, job: str, e: dict, d: dict, decision: str | None, mj
     ask = {"proposal": d["proposal"], "decision": decision, "ctx": e, "note": d["note"]}
     if d.get("then"):
         ask.update({k: d[k] for k in ("then", "files", "usd") if d.get(k) is not None})
+        if d.get("gate") is not None:
+            ask["gate"] = _clean(d["gate"])
     refuse = _foreign(st, job, ask["files"], mjobs) if ask.get("then") == "widen" else None
     tail = [OTHER_ANSWERS]
     if refuse:
@@ -724,9 +765,35 @@ def _widen(c: Ctx, job: str, e: dict, d: dict, decision) -> None:
     _grant(c.st, job, outside, decision)
 
 
+def _absorb_companions(c: Ctx, job: str, outside: list[str]) -> list[str]:
+    """Companion files (tests, test helpers, docs) among `outside` become grants when, together, they are within
+    the small-fix rule and none lies in another job's area; no Euklides, no question. Returns what still blocks."""
+    if c.mjobs[job].get("companions") is False:
+        return outside
+    comps = [f for f in outside if companions.is_companion(f)]
+    if not comps:
+        return outside
+    why = _small_fix(c, comps, gitops.changed_lines(c.wt(job), f"origin/{c.base}", "HEAD", comps), skip=(job,))
+    if why:
+        return outside
+    _add_grant(c.st, job, comps, "companion files within the small-fix rule", by="runner (companion files)")
+    run.event(c.st, f"{job}: companion files allowed outside its area: {', '.join(comps)}")
+    return [f for f in outside if f not in comps]
+
+
+def grants_file(st: dict, job: str) -> Path:
+    return paths.run_dir(st["repo"], st["slug"]) / f"{job}.grants.json"
+
+
+def _write_grants(st: dict, job: str) -> None:
+    """The job's grants, where its area-guard reads them: a worker already running sees a grant at once."""
+    run._atomic(grants_file(st, job), json.dumps((st.get("grants") or {}).get(job, [])) + "\n")
+
+
 def _add_grant(st: dict, job: str, files: list[str], decision, by: str) -> None:
     grants = st.setdefault("grants", {}).setdefault(job, [])
     grants += [f for f in files if f not in grants]
+    _write_grants(st, job)
     run.alert(st, f"{job}: {by} widened its area to {', '.join(files)} ({decision or 'not journaled'})")
 
 
@@ -785,7 +852,7 @@ def _start_fix_worker(c: Ctx, f: dict) -> None:
 
 def _start_fix_gate(c: Ctx, f: dict) -> None:
     name = f"{FIX_PREFIX}{f['n']}"
-    env = claude.runner_env("gate", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo))  # it runs tests a worker wrote
+    env = gate_env(c, "gate")  # it runs tests a worker wrote
     proc.start(c.dir, f"{name}.gate", ["sh", "-c", c.plan.manifest["integration_gate"]], cwd=c.wt(name), env=env,
                minutes=integrate.GATE_TIMEOUT / 60, meta={"head": f.get("head")})
     f["status"] = "gating"
@@ -807,6 +874,8 @@ def _move_fixes(c: Ctx, slots: Slots) -> None:
                     if f["status"] != "working":
                         slots.release_writer(c.st["repo"])
             elif f["status"] == "needs_gate":
+                if not slots.gate(False, c.st, "fix"):
+                    continue
                 _start_fix_gate(c, f)
             else:
                 _land_fix(c, f)
@@ -975,7 +1044,7 @@ def _main_moved(c: Ctx) -> str | None:
 def _start_refresh_check(c: Ctx, r: dict) -> None:
     name = f"{REFRESH_PREFIX}{r['n']}"
     cmd = [str(paths.code_dir() / "bin" / "ark-refresh"), f"{c.st['repo']}/{c.st['slug']}", r["main"]]
-    env = claude.runner_env("integrate", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo))  # the plan's gate
+    env = gate_env(c, "integrate")  # the plan's gate
     proc.start(c.dir, f"{name}.check", cmd, cwd=paths.code_dir(), env=env,
                minutes=2 * integrate.GATE_TIMEOUT / 60 + 30, meta={"main": r["main"]})
     r["status"] = "checking"
@@ -1012,7 +1081,7 @@ def _step_refresh(c: Ctx, slots: Slots) -> None:
                 return
             _after_clash(c, r)
         if r["status"] == "needs_check":
-            if not slots.gate(_plan_heavy(st)):
+            if not slots.gate(_plan_heavy(st), st, "refresh"):
                 return
             _start_refresh_check(c, r)
         elif r["status"] == "needs_worker":
@@ -1024,7 +1093,7 @@ def _step_refresh(c: Ctx, slots: Slots) -> None:
                 if r["status"] != "working":
                     slots.release_writer(st["repo"])
         elif r["status"] == "needs_gate":
-            if not slots.gate(_plan_heavy(st)):
+            if not slots.gate(_plan_heavy(st), st, "refresh"):
                 return
             _start_refresh_gate(c, r)
         elif r["status"] == "needs_land":
@@ -1087,7 +1156,7 @@ def _start_refresh_worker(c: Ctx, r: dict) -> None:
 
 def _start_refresh_gate(c: Ctx, r: dict) -> None:
     name = _refresh_name(r)
-    env = claude.runner_env("gate", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo))  # it runs tests a worker wrote
+    env = gate_env(c, "gate")  # it runs tests a worker wrote
     proc.start(c.dir, f"{name}.gate", ["sh", "-c", c.plan.manifest["integration_gate"]], cwd=c.wt(name), env=env,
                minutes=integrate.GATE_TIMEOUT / 60, meta={"head": r.get("head")})
     r["status"] = "gating"
@@ -1580,8 +1649,10 @@ def start_worker(c: Ctx, job: str) -> bool:
         j["session"] = None  # known again only when this process says what it had: one may never start
         prompt = brief.worker_brief(c.st, job, mj, c.plan, worktree=wt, report=report,
                                     note=j["note"] or j["resume_msg"], previous_report=c.read_report(job))
+    _write_grants(c.st, job)
     env = claude.runner_env("worker", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo), worktree=wt, area=json.dumps(run.area(c.st, job, mj)),
-                            report=report, gate=mj["gate"], run_dir=c.dir, job=job)
+                            report=report, gate=mj["gate"], run_dir=c.dir, job=job, grants_file=grants_file(c.st, job),
+                            **({"companions": "0"} if mj.get("companions") is False else {}))
     sid = j["session"] or str(uuid.uuid4())  # the worker's id before it says so: a kill may come first
     cmd = claude.agent_cmd("worker", claude.MODELS[j["tier"]], prompt, session=sid, resume=resume, usd=mj["budget"]["usd"])
     proc.start(c.dir, f"{job}.worker", cmd, cwd=wt, env=env, minutes=claude.TIER_MINUTES[j["tier"]] * claude.HARD_FACTOR, pre=pre,
@@ -1635,9 +1706,13 @@ def _push_rewrite(c: Ctx, job: str, branch: str, remote: str) -> None:
 
 def start_gate(c: Ctx, job: str) -> None:
     j, mj = c.st["jobs"][job], c.mjobs[job]
-    env = claude.runner_env("gate", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo))  # it runs tests a worker wrote
-    proc.start(c.dir, f"{job}.gate", ["sh", "-c", mj["gate"]], cwd=c.wt(job), env=env,
+    env = gate_env(c, "gate")  # it runs tests a worker wrote
+    gate = j.get("accept_gate") or mj["gate"]  # Marco's ok to an `accept`: the replacement, for this head only
+    proc.start(c.dir, f"{job}.gate", ["sh", "-c", gate], cwd=c.wt(job), env=env,
                minutes=mj["budget"]["minutes"], meta={"head": j["head"]})
+    if j.get("accept_gate"):
+        run.alert(c.st, f"{job}: the runner runs the replacement gate `{_clean(gate)[:200]}` on head "
+                        f"{j['head'][:8]}, by Marco's ok")
     j["status"] = "gating"
 
 
@@ -1667,7 +1742,7 @@ def start_integrate(c: Ctx, job: str) -> None:
     if j["pr"] and merge.confirmed(c.st, job, c.forge, c.repo):  # a crash lost it: a red check now would pay a worker
         return _merged(c, job)
     cmd = [str(paths.code_dir() / "bin" / "ark-integrate"), f"{c.st['repo']}/{c.st['slug']}", job, j["head"]]
-    env = claude.runner_env("integrate", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo))  # it runs tests a worker wrote
+    env = gate_env(c, "integrate")  # it runs tests a worker wrote
     # Above the check's own timeout, or a slow gate dies here with no result instead of red with its reason.
     proc.start(c.dir, f"{job}.integrate", cmd, cwd=paths.code_dir(), env=env,
                minutes=2 * integrate.GATE_TIMEOUT / 60 + 30, meta={"head": j["head"]})
@@ -1944,13 +2019,60 @@ class Slots:
     def release_writer(self, repo: str) -> None:
         self.writers[repo] -= 1
 
-    def gate(self, heavy: bool) -> bool:
-        if not heavy:
+    def gate(self, heavy: bool, st: dict | None = None, key: str = "") -> bool:
+        """May a gate start now? `st` and `key` (the run, and what gates in it) turn the load brake on."""
+        if not heavy and st is None:
             return True
-        if self.heavy >= self.limits["heavy_gates"]:
+        if st is not None and self._load_hold(st, key):
             return False
-        self.heavy += 1
+        if heavy:
+            if self.heavy >= self.limits["heavy_gates"]:
+                return False
+            self.heavy += 1
+        if st is not None:
+            _load_wait.pop((st["repo"], st["slug"], key), None)  # it starts: the next one waits afresh
         return True
+
+    def _load_hold(self, st: dict, key: str) -> bool:
+        """The load brake: True while the machine is busier than `load_max`, for at most `load_wait_max`
+        seconds (monotonic, so a sleep does not count). One event when the wait begins, one when it gives up."""
+        top = self.limits.get("load_max") or 0
+        k = (st["repo"], st["slug"], key)
+        try:
+            load = os.getloadavg()[0]
+        except OSError:
+            load = 0.0
+        if not top or load <= top:
+            _load_wait.pop(k, None)
+            return False
+        now = time.monotonic()
+        w = _load_wait.get(k)
+        if w is None:
+            _load_wait[k] = [now, False]
+            run.event(st, f"{key}: a gate waits for the machine (load {load:.1f} above {top})")
+            return True
+        if w[1]:
+            return False
+        if now - w[0] >= self.limits.get("load_wait_max", 900):
+            w[1] = True
+            run.event(st, f"{key}: the gate starts after waiting {int(now - w[0])}s for the load (now {load:.1f})")
+            return False
+        return True
+
+
+_load_wait: dict = {}  # (repo, slug, key) -> [monotonic start of the wait, gave up waiting]
+
+
+def gate_env(c: Ctx, role: str) -> dict:
+    """The environment of a gate process. ARK_TEST_WORKERS (limits.gate_workers) is always set, so a plan's gate can
+    pass `--maxWorkers=$ARK_TEST_WORKERS`; vitest and pytest-xdist read their own variables, set when the
+    environment does not already have them. A flag in the gate's command line wins over any of these."""
+    env = claude.runner_env(role, repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo))
+    n = str(max(1, int(paths.load_workspace()["limits"].get("gate_workers") or 4)))
+    env["ARK_TEST_WORKERS"] = n
+    env.setdefault("VITEST_MAX_WORKERS", n)  # documented by vitest
+    env.setdefault("PYTEST_XDIST_AUTO_NUM_WORKERS", n)  # what `-n auto` means in pytest-xdist; jest has no variable
+    return env
 
 
 def _start_writer(c: Ctx, job: str, slots: Slots) -> None:
@@ -1977,10 +2099,10 @@ def _next_step(c: Ctx, job: str, j: dict, slots: Slots):
         if slots.writer(repo):
             return lambda: _start_writer(c, job, slots)
     elif s == "needs_gate":
-        if slots.gate(j["heavy"]):
+        if slots.gate(j["heavy"], c.st, job):
             return lambda: start_gate(c, job)
     elif s == "needs_integrate":
-        if slots.gate(j["heavy"]):
+        if slots.gate(j["heavy"], c.st, job):
             return lambda: start_integrate(c, job)
     else:
         step_ = {"needs_push": push_job, "needs_pr": ensure_pr, "needs_review": start_review, "needs_merge": do_merge,
@@ -2263,7 +2385,49 @@ def _answered_worker(st: dict, q: dict, text: str) -> None:
     _resume_with_answer(st, job, text)  # a question asked before Euklides
 
 
+def _effect_ok(st: dict, job: str, then: str | None, ask: dict, before: dict) -> str | None:
+    """Why Marco's ok to `then` left no trace, or None when its effect is there: widen puts the files in the area,
+    raise grows usd_raised, fix_base leaves a live fix with the job waiting on it, escalate changes the tier (or the
+    job was at the top), accept queues the job's head for the replacement gate. Other thens have no check."""
+    j = st["jobs"][job]
+    if then == "widen":
+        area = run.area(st, job, {"area": []})  # the grants; the plan's own globs only make a widen redundant
+        missing = [f for f in ask.get("files") or [] if not match_any(f, area)]
+        return f"{', '.join(missing)} did not join the job's area" if missing else None
+    if then == "raise":
+        return None if j.get("usd_raised", 0) > before["usd_raised"] + 1e-9 else "the budget did not grow"
+    if then == "fix_base":
+        live = [f for f in st.get("fixes") or [] if f["status"] not in FIX_DONE and job in f["waiting"]]
+        return None if live else "no base fix is running for the job"
+    if then == "escalate":
+        return None if j["tier"] != before["tier"] or before["tier"] not in claude.NEXT_TIER else "the tier did not change"
+    if then == "accept":
+        if j["status"] == "needs_push" and j.get("accept_gate") == ask.get("gate") and j.get("head"):
+            return None
+        return before.get("accept_why") or "the head was not queued for the replacement gate"
+    return None
+
+
 def _carry_out(st: dict, job: str, q: dict, ask: dict) -> None:
+    """Marco's ok to Euklides' ask, checked: the runner carries it out, and when the effect is not there (nothing
+    was widened, raised, fixed, moved or queued) it says so and asks again, instead of resuming a worker on an
+    answer it could not carry out. The way out of such a question is `stop` or a plan edit and a new approval."""
+    j, then = st["jobs"][job], ask.get("then")
+    before = {"usd_raised": j.get("usd_raised", 0), "tier": j["tier"]}
+    snapshot = copy.deepcopy(j)
+    _run_then(st, job, q, ask, before)
+    why = _effect_ok(st, job, then, ask, before)
+    if why is None:
+        return
+    st["jobs"][job] = snapshot  # what the half-done ok changed on the job is undone
+    msg = f"Marco's ok to {then} was not carried out: {why}"
+    run.alert(st, f"{job}: {msg}")
+    _euklides_ask(st, job, ask["ctx"], {"note": f"{msg}. The way out is a plan edit and a new approval, or `stop`; "
+                                                "the runner cannot do it for the job.",
+                                        "proposal": ":stop, or say what the job should do", "then": "stop"}, None)
+
+
+def _run_then(st: dict, job: str, q: dict, ask: dict, before: dict) -> None:
     """Marco's ok to Euklides' ask: the runner carries out its `then`, with Marco's authority. A state saved
     before `then` existed holds `grant` or `raise_usd` instead, or neither (ok took the proposal's text)."""
     j, e = st["jobs"][job], ask["ctx"]
@@ -2296,6 +2460,21 @@ def _carry_out(st: dict, job: str, q: dict, ask: dict) -> None:
         else:
             run.event(st, f"{job}: stays at {j['tier']}, the top tier; it goes on there")
         return _go_on(st, job, e, note)
+    if then == "accept":
+        wt = _wt(st, job)
+        if not ask.get("gate"):
+            before["accept_why"] = "the ask names no gate"
+        elif not wt.is_dir() or not j.get("head"):
+            before["accept_why"] = "the job has no committed head in a worktree"
+        elif not gitops.is_clean(wt):
+            before["accept_why"] = "the job's worktree has uncommitted changes, so its head is not all there is"
+        else:
+            j.update(accept_gate=ask["gate"], head=gitops.rev(wt, "HEAD"), status="needs_push")
+            for k in ("question", "not_before", "push_tries", "step_tries", "rewrite_ok"):
+                j.pop(k, None)
+            run.event(st, f"{job}: Marco accepted head {j['head'][:8]} on the replacement gate "
+                          f"`{_clean(ask['gate'])[:200]}`; no worker")
+        return
     if then == "stop":
         return _block(st, job, f"stopped by Marco at question {q['id']} (ok to Euklides): {note}"[:600])
     text = ask.get("proposal") or "ok"
@@ -2518,7 +2697,7 @@ RETRY_STEP = {"waiting_fix": "needs_integrate", "working": "needs_worker", "eukl
               "waiting_dep": "pending"}
 RETRY_CLEARS = ("reason", "not_before", "step_tries", "infra_tries", "holder_tries", "push_tries", "integrate_lost",
                 "integrate_skips", "errors", "error", "euklides_count", "blocked_from", "waiting_on", "euklides",
-                "euklides_ask", "question")
+                "euklides_ask", "question", "accept_gate")
 
 
 def _retry_status(j: dict) -> str:
@@ -2570,9 +2749,10 @@ def _apply_retry(st: dict, item: dict) -> None:
                 moved = True
 
 
-def _reopen(st: dict) -> None:
+def _reopen(st: dict, states: list[dict] | None = None) -> None:
     """A closed blocked run with a retry for one of its blocked jobs runs again; its final PR stays and its
-    decisions doc is written again when it closes."""
+    decisions doc is written again when it closes. Not into the area of a run that is live now: the retry is
+    refused, and he hears who holds it."""
     items = [i for i in inbox.pending(st["repo"], st["slug"]) if i["kind"] == "retry"]
     since = _abandoned(st) if items else None
     if since:
@@ -2581,6 +2761,11 @@ def _reopen(st: dict) -> None:
         return
     if not any((st["jobs"].get(i.get("job")) or {}).get("status") == "blocked" for i in items):
         return
+    clash = approve.area_clash(st, states or []) if st.get("closing") == "done" else None
+    if clash:
+        for i in items:
+            inbox.done(i)
+        return run.alert(st, f"retry refused: {clash}. It stays blocked; retry again once that run ends")
     st.update(status="running", closing=None)
     for k in ("decisions_sha", "closing_wait", "closing_errors", "decisions_ticks", "closed_at"):
         st.pop(k, None)
@@ -2668,7 +2853,7 @@ def apply_inbox(st: dict) -> None:
 
 def step(st: dict, states: list[dict], forge, slots: Slots, hold: bool = False) -> None:
     if st["status"] == "blocked":
-        _reopen(st)
+        _reopen(st, states)
     if st["status"] in ("blocked", "waiting"):
         _abort(st, forge)
     if st["status"] == "blocked":
@@ -2716,6 +2901,16 @@ def step(st: dict, states: list[dict], forge, slots: Slots, hold: bool = False) 
         maybe_close(c)
 
 
+def _first_refusal(st: dict, a: dict, reason: str) -> bool:
+    """True the first time this approval is refused for this reason: he hears each reason once, and a new one
+    after another (a run that finished, then an area that overlaps) is heard too."""
+    key = f"{a['sha256']}:{reason}"
+    if st.get("reapprove_refused") == key:
+        return False
+    st["reapprove_refused"] = key
+    return True
+
+
 def _adopt_reapproval(st: dict, a: dict, states: list[dict], forge) -> None:
     """Marco edited a held run's plan and approved it again: that releases it, if the new plan still
     describes this run. The old text is gone, so nobody can say what the edit changed: every job not merged
@@ -2725,8 +2920,7 @@ def _adopt_reapproval(st: dict, a: dict, states: list[dict], forge) -> None:
     if a["sha256"] == st["plan_sha"]:
         return
     if st["status"] in run.FINISHED:  # only a plan with no run file runs: he must not wait for this one
-        if st.get("reapprove_refused") != a["sha256"]:
-            st["reapprove_refused"] = a["sha256"]
+        if _first_refusal(st, a, "finished"):
             run.alert(st, f"this run already finished ({st['status']}): the new approval starts nothing. "
                           "To run the new plan, approve it under another slug")
         return
@@ -2753,8 +2947,7 @@ def _adopt_reapproval(st: dict, a: dict, states: list[dict], forge) -> None:
                     and areas_overlap(area, o.get("area") or []):
                 why = f"its area overlaps the running plan {o['slug']}"
     if why:
-        if st.get("reapprove_refused") != a["sha256"]:
-            st["reapprove_refused"] = a["sha256"]
+        if _first_refusal(st, a, why):
             run.alert(st, f"it cannot take the new approval: {why}. It stays held. To go on with this run, restore "
                           "the approved text and approve it again; for a different run, approve under another "
                           "slug (this one keeps its area until it ends)")
@@ -2774,6 +2967,7 @@ def _adopt_reapproval(st: dict, a: dict, states: list[dict], forge) -> None:
         j["heavy"] = bool(mj.get("heavy"))
         if j["status"] in REWOUND:
             j["status"] = "needs_gate"
+            j.pop("accept_gate", None)  # the new plan's gate decides, not a replacement accepted under the old one
         merge.drop_records(d, mj["id"])  # before the new sha can reach disk: no old green under a new plan
     st.pop("reapprove_refused", None)
     st.update(plan=a["plan"], plan_sha=a["sha256"], approved_at=a["approved_at"], area=area)

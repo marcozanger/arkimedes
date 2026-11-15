@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import paths, validate
+from .globs import overlap
 from .plan import load_plan, set_status, sha256_file
 
 
@@ -19,6 +20,19 @@ class ApproveError(Exception):
 def check(path: Path) -> list[str]:
     """The contract problems that block approval; empty when it can be approved."""
     return validate.validate(path)
+
+
+def area_clash(st: dict, states: list[dict]) -> str | None:
+    """Why a closed run cannot run again beside the live ones of its repo: the other run and the globs they share.
+    None when no running or held run of the same repo overlaps its area."""
+    mine = st.get("area") or []
+    for o in states:
+        if o is st or o["repo"] != st["repo"] or o["slug"] == st["slug"] or o["status"] not in ("running", "held"):
+            continue
+        both = sorted({f"{x} ~ {y}" for x in mine for y in o.get("area") or [] if overlap(x, y)})
+        if both:
+            return f"its area overlaps the {o['status']} plan {o['slug']} ({', '.join(both[:4])})"
+    return None
 
 
 def approve_plan(path: Path, expect_sha: str | None = None) -> dict:

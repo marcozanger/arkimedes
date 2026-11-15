@@ -109,6 +109,73 @@ def test_outside_area_blocks_the_job_and_its_dependents(feature, monkeypatch):
     assert gitops.remote_sha(repo, f"ark/{SLUG}-shell") is None                 # never pushed
 
 
+def _companions_run(feature, monkeypatch, files, m=None):
+    monkeypatch.setenv("FAKE_COMPANION", "shell")
+    monkeypatch.setenv("FAKE_COMPANION_FILES", ",".join(files))
+    return feature(m)
+
+
+def test_companion_files_within_the_small_rule_become_grants_without_a_question(feature, monkeypatch, tmp_path):
+    repo, _ = _companions_run(feature, monkeypatch, ["tests/test_brief.py", "docs/runner-control.md"])
+    drive(lambda: state().get("grants"))
+    st = state()
+    assert any("runner (companion files) widened its area" in e for e in st["events"])
+    assert any("shell: companion files allowed outside its area" in e for e in st["events"])
+    drive(jobs_settled)
+    st = state()
+    assert st["jobs"]["shell"]["status"] == "merged" and not st.get("questions")
+    assert sorted(st["grants"]["shell"]) == ["docs/runner-control.md", "tests/test_brief.py"]
+    assert not (tmp_path / "fake" / "euklides.count").exists()                     # Euklides was never asked
+    g = json.loads((paths.run_dir("demo", SLUG) / "shell.grants.json").read_text())
+    assert g == st["grants"]["shell"]
+
+
+def test_the_worker_gets_its_grants_file_and_a_new_grant_reaches_it(feature, monkeypatch, tmp_path):
+    seen = []
+    real = claude.runner_env
+    monkeypatch.setattr(claude, "runner_env", lambda role, **kw: (seen.append((role, kw)), real(role, **kw))[1])
+    feature()
+    drive(jobs_settled)
+    gf = paths.run_dir("demo", SLUG) / "shell.grants.json"
+    assert json.loads(gf.read_text()) == []                                          # written at spawn
+    st = {"repo": "demo", "slug": SLUG, "alerts": [], "events": [], "grants": {}}
+    loop._add_grant(st, "shell", ["x.py"], None, "Marco")
+    assert json.loads(gf.read_text()) == ["x.py"]
+    [kw] = [kw for role, kw in seen if role == "worker" and kw["job"] == "shell"]
+    assert kw["grants_file"] == gf and "companions" not in kw
+
+
+def test_companions_over_the_small_rule_still_block(feature, monkeypatch):
+    _companions_run(feature, monkeypatch, [f"tests/test_{i}.py" for i in range(loop.SMALL_FILES + 1)])
+    drive(waits_for_marco)
+    st = state()
+    assert not st.get("grants") and st["jobs"]["shell"]["status"] == "waiting_answer"
+
+
+def test_a_companion_inside_another_jobs_area_still_blocks(feature, monkeypatch):
+    m = manifest(jobs=[job("shell", ["T1", "T2"], ["src/shell/**"]), job("ui", ["T3"], ["src/ui/**"], after=["shell"])])
+    _companions_run(feature, monkeypatch, ["src/ui/a.test.ts"], m)
+    drive(waits_for_marco)
+    assert not state().get("grants")
+
+
+def test_companions_false_keeps_the_area_strict(feature, monkeypatch):
+    m = manifest(jobs=[job("shell", ["T1", "T2"], ["src/shell/**"], companions=False),
+                       job("ui", ["T3"], ["src/ui/**"], after=["shell"])])
+    _companions_run(feature, monkeypatch, ["tests/test_brief.py"], m)
+    drive(waits_for_marco)
+    assert not state().get("grants")
+
+
+def test_a_source_file_is_never_a_companion(feature, monkeypatch):
+    _companions_run(feature, monkeypatch, ["tests/test_brief.py", "lib/ark/x.py"])
+    drive(waits_for_marco)
+    st = state()
+    assert st["grants"]["shell"] == ["tests/test_brief.py"]                          # the rest still blocks
+    [q] = [q for q in st["questions"] if q["job"] == "shell"]
+    assert "lib/ark/x.py" in q["text"]
+
+
 def test_a_failed_attempt_goes_to_euklides_and_is_retried(feature, monkeypatch, tmp_path):
     monkeypatch.setenv("FAKE_FAIL", "shell:1")
     repo, _ = feature()

@@ -156,7 +156,16 @@ def test_then_widen_carries_its_files_and_then_raise_its_usd():
     assert euklides.parse(ask(then="raise", usd=2), ["ask"])["usd"] == 2.0
 
 
+def test_then_accept_carries_its_gate_stripped():
+    got = euklides.parse(ask(then="accept", gate="  pytest --changed  "), ["ask"])
+    assert got["then"] == "accept" and got["gate"] == "pytest --changed"
+
+
 @pytest.mark.parametrize("raw", [
+    ask(then="accept"), ask(then="accept", gate=""), ask(then="accept", gate="   "), ask(then="accept", gate=3),
+    ask(then="accept", gate=["a"]), ask(then="accept", gate=None), ask(then="accept", gate="x" * 501),
+    ask(then="accept", gate="a\0b"), ask(then="go_on", gate="true"), ask(then="stop", gate="true"),
+    {"action": "retry", "note": "x", "gate": "true"},
     ask(),                                         # no then
     ask(then="land"), ask(then=None), ask(then=3),
     ask(then="widen"), ask(then="widen", files=[]), ask(then="widen", files=["../x"]),
