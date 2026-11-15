@@ -1,11 +1,22 @@
 """A clash between main and the run: a refresh worker merges main into the base, paid from the plan's merge budget."""
 from types import SimpleNamespace
 
+import pytest
+
 from helpers import manifest
 from test_loop import SLUG, drive, feature, state  # noqa: F401  (test_loop's own feature fixture)
 from test_refresh_loop import commit_on, start_check  # noqa: F401  (the start check stays on)
 
 from ark import brief, gitops, inbox, loop, paths, steps
+
+
+@pytest.fixture(autouse=True)
+def jobs_held(tmp_path, monkeypatch):
+    """The jobs' workers stay alive through the test: no job moves the base under a refresh, the run stays open."""
+    go = tmp_path / "go"
+    monkeypatch.setenv("FAKE_HOLD", str(go))
+    yield
+    go.write_text("")
 
 
 def proc_names(st) -> list[str]:
@@ -117,11 +128,12 @@ def test_retry_starts_one_more_worker(feature, monkeypatch):
     drive(lambda: state()["base_green"])
     main = clash(repo)
     drive(lambda: refresh_question(state()))
+    n = state()["refresh"]["n"]
     monkeypatch.setenv("FAKE_REFRESH", "theirs")
     inbox.post("demo", SLUG, "answer", id=refresh_question(state())["id"], text="retry")
     drive(lambda: state()["refreshes"][-1]["result"] == "landed" and state()["refreshes"][-1]["n"] > 0)
-    workers = [n for n in proc_names(state()) if n.endswith(".worker") and n.startswith("_refresh-")]
-    assert len(workers) == 2
+    assert proc_names(state()).count(f"_refresh-{n}.worker") == 2  # a job merging meanwhile may make it stale
+    assert not refresh_question(state())
     gitops.fetch(repo)
     assert gitops.is_ancestor(repo, main, gitops.remote_sha(repo, f"ark/{SLUG}"))
 
