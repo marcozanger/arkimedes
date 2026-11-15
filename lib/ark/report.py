@@ -164,6 +164,20 @@ def _agents(groups: dict, label: str, names: dict | None = None) -> str:
     return _table([label, "steps", "time", "tokens", "USD"], rows)
 
 
+def _refreshes(s: dict) -> str:
+    rs = s.get("base_refreshes")
+    if not rs:
+        return ""
+    rows = [[str(r["n"]), _e(str(r.get("main"))[:8]), _e(r.get("result", "")), usd(r.get("usd", 0.0)),
+             _e(str(r.get("at") or "")[11:16] or "–")] for r in rs]
+    landed = sum(1 for r in rs if r.get("result") == "landed")
+    workers = sum(1 for r in rs if r.get("usd"))
+    budget = s.get("merge_budget_usd")
+    spent = usd(s.get("merge_usd", 0.0)) + (f" of {usd(budget)}" if budget is not None else "")
+    return ("<h2>Base refreshes</h2>" + _table(["n", "main", "result", "USD", "time (UTC)"], rows)
+            + f"<p>Refreshes landed: {landed} · workers used: {workers} · merge budget spent: {spent}</p>")
+
+
 def render_html(s: dict, rows: list[dict], decisions: str | None) -> str:
     title = f"Report · {s['repo']}/{s['slug']}"
     head = (f"<h1>{_e(title)}</h1><p class=muted>{_status(s['status'])} · from {_e(s['started'])} "
@@ -173,6 +187,7 @@ def render_html(s: dict, rows: list[dict], decisions: str | None) -> str:
         "<h2>Summary</h2>", _summary(s),
         "<h2>Decisions</h2>", decisions_html(decisions),
         "<h2>By PR</h2>", _per_pr(s),
+        _refreshes(s),
         "<h2>Timeline</h2>", _timeline(rows),
         "<h2>Agents</h2>", "<h3>By role</h3>", _agents(s["by_kind"], "role", KIND_LABELS),
         "<h3>By model</h3>", _agents(s["by_model"], "model")])
