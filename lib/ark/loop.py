@@ -2929,6 +2929,7 @@ def cycle(forge=None) -> tuple[str, list[str], bool]:
     forge = forge or forge_mod.get()
     limits = paths.load_workspace()["limits"]  # first: if it raises, no alert was consumed and lost
     euklides.settings()  # a bad euklides value raises here too, before any process starts
+    sweep.settings()  # and a bad sweep value
     caps.check_limits(limits)  # a bad cap, personal or on a rule, raises here too: before any alert is consumed
     states, before, alerts, approved = {}, {}, [], {}
     changed, critical = False, []
@@ -3017,6 +3018,10 @@ def cycle(forge=None) -> tuple[str, list[str], bool]:
         questions.save_file(list(states.values()), day["questions"])
     except OSError as e:
         _once(("questions_file",), f"cannot write questions.md: {e}", alerts)
+    try:
+        sweep.daily(forge, alerts)  # once a local day: what finished and abandoned runs left behind
+    except Exception as e:  # the cycle's status and alerts still go out
+        alerts.append(f"sweep: {type(e).__name__}: {e}")
     alerts, critical, origins = _clean(alerts), _clean(critical), _clean(origins)  # an approval's names reach them unchecked; notify catches only OSError
     problem = notify.deliver(alerts, critical, origins)  # never raises: it says what went wrong
     if problem:
