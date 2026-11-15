@@ -15,6 +15,7 @@ them.
 | `ark abort <repo>/<slug> [--why "<line>"]` | ends a blocked or waiting plan for good (see `ark abort` below) |
 | `ark steer <job> "<instruction>"` | stops the worker and resumes its session with the instruction |
 | `ark attach <job>` | hands the worker to you in an interactive session; on a clean exit it goes on to the gate |
+| `ark sweep [--dry-run]` | clears what finished and abandoned runs leave behind (see Sweep below); `--dry-run` only shows it |
 | `ark answer [--list] [--run <repo>/<slug> <id> "<text>"] [--cap <id> "<text>"]` | answers open questions, one by one (account questions first); `--cap` answers an account's daily cap question |
 
 `<job>` also takes the form `<repo>/<slug>:<job>`, needed when two live runs share a job name or the run has finished.
@@ -49,6 +50,45 @@ waiting) and the drafts: every finished plan (`done`, `blocked`, `aborted`) is i
 
 A run that closed `blocked` with a final PR is looked at every ten minutes: once Marco merges that PR the run
 becomes `done`, whatever jobs were left blocked stay on record in its state.
+
+## Sweep
+
+`ark-loop` clears, once a day, what finished runs leave behind; `ark sweep` does it by hand and
+`ark sweep --dry-run` shows what would go and why, changing nothing (disk, origin and PRs stay as they are).
+`ark sweep` without `--dry-run` refuses any runner process (`ARK_ROLE` set); `--dry-run` is allowed anywhere.
+
+What is swept, per run: its worktrees under the worktrees folder, its `ark/*` branches (local and on origin), its
+open PRs (closed with a comment first), and the empty folders left over. Folders under the worktrees folder that
+no run owns are swept as orphans.
+
+A run is swept when it is `aborted`, `done` with every job merged, or abandoned: closed `blocked` (or `done` with
+a job not merged) for `sweep.abandon_days` days (14) without an `ark retry`. A live run, a run still inside that
+window and anything an `ark retry` could need are never touched.
+
+Held items stay and are listed with the reason, for example `uncommitted changes` or commits that exist nowhere
+else. Each run prints one block:
+
+```
+demo/notes-edit · aborted
+  worktree  wt/demo/notes-edit/a  (12 KB)
+  branch    ark/notes-edit-a  (local, origin)
+  pr        local://demo/pull/1  (close)
+  held      wt/demo/notes-edit/b: uncommitted changes
+would free 12 KB · 1 worktrees · 1 branches · 1 PRs · 1 held
+```
+
+A real sweep adds `removed` or `error: <why>` to each line and ends with `freed …`. It exits 1 when any item had
+an error (the rest still go on); with nothing to do it prints `Nothing to sweep.` and exits 0. Problems reading a
+run or a repo are warnings on stderr and that run is skipped.
+
+Every deletion is a line in `history/sweeps.jsonl`: `at`, `repo`, `slug`, `why`, `kind`, `target`.
+
+The `sweep` block of `workspace.json`:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | `false` turns the daily sweep off; `ark sweep` still works by hand |
+| `abandon_days` | `14` | days a blocked run waits for a retry before it counts as abandoned |
 
 ## Questions
 
