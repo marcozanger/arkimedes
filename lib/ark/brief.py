@@ -184,8 +184,31 @@ EUKLIDES_ACTIONS = {
     "raise": "`raise`: add `usd` (a positive number) to this job's budget and let it go on; `note` says why the "
              "job is worth it and what it does next. Your margin is a total across all your raises on this job, not "
              "per decision; a raise past what is left of it becomes a question to Marco, the only way past it.",
-    "ask": "`ask`: Marco decides; `note` is the question, `proposal` what you would do.",
+    "ask": "`ask`: Marco decides; `note` is the question, `proposal` what you would do, `then` the one runner "
+           "action his `ok` carries out (the runner writes it under the question as `Answer ok to: ...`). Pick "
+           "the `then` that does your proposal:",
 }
+THEN_TEXT = {
+    "go_on": "`go_on`: the worker gets your `proposal` as its instruction and goes on in the job's area.",
+    "escalate": "`escalate`: a fresh worker one tier up, told your `note`.",
+    "widen": "`widen`: the files in `files` (1 to 3 exact paths) join this job's area; never a file inside a "
+             "different job's area (the runner refuses that `ok`).",
+    "fix_base": "`fix_base`: fix the integration branch with a small worker and one fix(base) commit; the job waits "
+                "on it. `note` says what to change.",
+    "raise": "`raise`: add `usd` (a positive number) to this job's budget, with Marco's money, not your margin.",
+    "stop": "`stop`: the job ends blocked, with your `note` as the reason.",
+}
+THEN_RULE = ("Only these: a way out the runner cannot carry out (a PR to main, a plan edit, a push by hand) goes in "
+             "`note` as what Marco must do himself; never as `then`. Then pick the `then` for what the run does "
+             "meanwhile (often `fix_base` or `stop`).")
+ASK_EXAMPLE = ('{"action": "ask", "note": "...", "undo": null, "why": "...", "proposal": "...", "then": "go_on"}')
+
+
+def _actions(allowed: list[str]) -> str:
+    items = [EUKLIDES_ACTIONS[a] for a in allowed]
+    if "ask" in allowed:
+        items[allowed.index("ask")] += "\n" + "\n".join(f"  - {t}" for t in THEN_TEXT.values()) + "\n  " + THEN_RULE
+    return _bullets(items)
 BRANCH_COMMITS, BRANCH_FILES = 30, 50
 
 
@@ -254,11 +277,15 @@ def euklides_prompt(st: dict, job_id: str, j: dict, mj: dict, plan: Plan, *, tri
         "Lessons: " + (("\n" + lessons) if lessons else "(none yet)"),
         "## Decide",
         "Actions open now: " + ", ".join(allowed),
-        _bullets(EUKLIDES_ACTIONS[a] for a in allowed),
+        _actions(allowed),
         "End with one line of JSON and nothing after it:",
-        '{"action": "' + allowed[0] + '", "note": "...", "undo": "job", "why": "...", "proposal": null}',
+        *(['{"action": "' + first + '", "note": "...", "undo": "job", "why": "...", "proposal": null}'
+           for first in [a for a in allowed if a != "ask"][:1]]),
+        *([("or " if allowed != ["ask"] else "") + ASK_EXAMPLE] if "ask" in allowed else []),
         *(['A `widen` also carries `"files": ["<path>", ...]`.'] if "widen" in allowed else []),
         *(['A `raise` also carries `"usd": <positive number>`.'] if "raise" in allowed else []),
+        *(['An `ask` whose `then` is `widen` also carries `"files"`; one whose `then` is `raise` carries `"usd"`.']
+          if "ask" in allowed else []),
     ]) + "\n"
 
 

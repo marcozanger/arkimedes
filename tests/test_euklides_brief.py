@@ -39,3 +39,21 @@ def test_the_brief_explains_how_a_run_works():
 def test_the_brief_says_what_the_base_check_found():
     assert "Base check: red on ark/notes-edit without the job too" in euk()
     assert "Base check: not run" in euk(base_check=None)
+
+
+def test_an_open_ask_lists_every_then_with_one_line_each():
+    p = euk(allowed=["unblock", "ask"])
+    for then in ("go_on", "escalate", "widen", "fix_base", "raise", "stop"):
+        assert sum(1 for line in p.splitlines() if line.startswith(f"  - `{then}`")) == 1, then
+    [line] = [x for x in p.splitlines() if '"action": "ask"' in x]
+    assert '"then"' in line
+
+
+def test_a_way_out_the_runner_cannot_carry_out_goes_in_the_note():
+    p = " ".join(euk(allowed=["ask"]).split())
+    assert ("a way out the runner cannot carry out (a PR to main, a plan edit, a push by hand) goes in `note` as "
+            "what Marco must do himself; never as `then`") in p
+
+
+def test_then_shows_only_when_ask_is_open():
+    assert "`fix_base`: fix the integration branch" not in euk(allowed=["unblock"])

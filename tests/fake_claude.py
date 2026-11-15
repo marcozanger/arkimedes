@@ -178,6 +178,6 @@ elif ROLE == "euklides":
     elif "Trigger: failure" in PROMPT and "`retry`" in PROMPT:
         emit('{"action": "retry", "note": "try again"}', stream=False)
     else:
-        emit('{"action": "ask", "note": "needs Marco", "proposal": ":stop"}', stream=False)
+        emit('{"action": "ask", "note": "needs Marco", "proposal": ":stop", "then": "stop"}', stream=False)
 else:
     sys.exit(f"fake claude: unknown ARK_ROLE {ROLE!r}")

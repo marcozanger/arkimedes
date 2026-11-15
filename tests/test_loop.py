@@ -3372,7 +3372,7 @@ def test_unblock_after_two_reviews_without_verdict_reviews_again(tmp_path, ark_h
 def asked(tmp_path, proposal=":stop — widen the area to src/db/**"):
     c = at_euklides(tmp_path, trigger="blocked", allowed=("unblock", "ask"), kind="area",
                     situation="changed files outside its area: src/db/x.py", session="s1")
-    loop.on_euklides(c, "shell", euk_answer(action="ask", note="widen the area?", proposal=proposal))
+    loop.on_euklides(c, "shell", euk_answer(action="ask", note="widen the area?", proposal=proposal, then="go_on"))
     return c
 
 
@@ -3397,6 +3397,154 @@ def test_any_other_answer_is_the_answer(tmp_path, ark_home):
     j = c.st["jobs"]["shell"]
     assert j["status"] == "needs_worker" and "move it to src/shell/db.py" in j["resume_msg"]
     assert euklides_mod.decisions()[0]["marco"] == "move it to src/shell/db.py"
+
+
+# ---- then: what Marco's ok makes the runner do ---------------------------------------------------
+
+OTHER = "Other answers: :stop blocks the job; any other text goes to the worker as its instruction."
+
+
+def asked_then(tmp_path, trigger="question", kind=None, note="the worker needs x.py", proposal="widen it",
+               **then):
+    c = at_euklides(tmp_path, trigger=trigger, allowed=("ask",), kind=kind, situation="which file?", session="s1")
+    loop.on_euklides(c, "shell", euk_answer(action="ask", note=note, proposal=proposal, **then))
+    return c
+
+
+@pytest.mark.parametrize("word", ["ok", "yes", "S\u00ed", " si ", "OK"])
+def test_ok_to_a_widen_on_a_question_grants_the_files_and_goes_on(tmp_path, ark_home, word):
+    c = asked_then(tmp_path, then="widen", files=["x.py"])
+    [q] = c.st["questions"]
+    assert q["text"].endswith(f"Answer ok to: widen shell's area to x.py\n\n{OTHER}")
+    loop._apply_answer(c.st, {"id": "q1", "text": word})
+    j = c.st["jobs"]["shell"]
+    assert c.st["grants"]["shell"] == ["x.py"]
+    assert j["status"] == "needs_worker" and "the worker needs x.py" in j["resume_msg"]
+    assert "euklides_ask" not in j
+
+
+def test_ok_to_a_widen_on_an_area_block_grants_and_pushes(tmp_path, ark_home, monkeypatch):
+    monkeypatch.setattr(loop.gitops, "rev", lambda wt, ref: "f" * 40)
+    c = asked_then(tmp_path, trigger="blocked", kind="area", then="widen", files=["x.py"])
+    loop._apply_answer(c.st, {"id": "q1", "text": "ok"})
+    j = c.st["jobs"]["shell"]
+    assert c.st["grants"]["shell"] == ["x.py"] and j["status"] == "needs_push" and j["head"] == "f" * 40
+
+
+def test_a_widen_into_another_jobs_area_refuses_ok(tmp_path, ark_home):
+    c = at_euklides(tmp_path, trigger="question", allowed=("ask",), situation="which file?", session="s1")
+    c.mjobs["ui"] = job("ui", ["T1"], ["src/ui/**"])
+    loop.on_euklides(c, "shell", euk_answer(action="ask", note="n", proposal="p", then="widen",
+                                            files=["src/ui/x.ts"]))
+    [q] = c.st["questions"]
+    assert "Answer ok to" not in q["text"] and "cannot be granted" in q["text"] and "ui's area" in q["text"]
+    assert q["text"].endswith(OTHER)
+    problem = questions.check_answer(q, "ok")
+    assert problem and "ui's area" in problem
+    assert questions.check_answer(q, ":stop") is None and questions.check_answer(q, "keep it inside") is None
+    loop._apply_answer(c.st, {"id": "q1", "text": "yes"})
+    assert c.st["jobs"]["shell"]["status"] == "waiting_answer" and not c.st.get("grants")
+
+
+def test_ok_to_a_raise_adds_to_the_budget_and_marcos_raises(tmp_path, ark_home):
+    c = asked_then(tmp_path, then="raise", usd=2)
+    assert "Answer ok to: raise shell's budget by $2.00" in c.st["questions"][0]["text"]
+    loop._apply_answer(c.st, {"id": "q1", "text": "ok"})
+    j = c.st["jobs"]["shell"]
+    assert j["usd_raised"] == 2 and j["marco_raised"] == 2 and j["status"] == "needs_worker"
+
+
+@pytest.mark.parametrize("trigger, kind", [("question", None), ("blocked", "integrate")])
+def test_ok_to_fix_base_starts_a_fix_past_the_limit(tmp_path, ark_home, trigger, kind):
+    c = asked_then(tmp_path, trigger=trigger, kind=kind, note="delete bad.txt", then="fix_base")
+    c.st["fix_base_count"] = euklides_mod.MAX_FIX_BASE
+    assert "Answer ok to: fix the integration branch (a small worker, one fix(base) commit)" in c.st["questions"][0]["text"]
+    loop._apply_answer(c.st, {"id": "q1", "text": "ok"})
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "waiting_fix" and j["fix"] == 1
+    [f] = c.st["fixes"]
+    assert f["status"] == "needs_worker" and "delete bad.txt" in f["note"] and "shell" in f["waiting"]
+    assert c.st["fix_base_count"] == euklides_mod.MAX_FIX_BASE
+    assert any("Marco" in e and "base" in e for e in c.st["events"])
+
+
+def test_ok_to_escalate_moves_a_tier_up(tmp_path, ark_home):
+    c = asked_then(tmp_path, note="harder than it looks", then="escalate")
+    assert "Answer ok to: move shell to T2 and go on" in c.st["questions"][0]["text"]
+    loop._apply_answer(c.st, {"id": "q1", "text": "ok"})
+    j = c.st["jobs"]["shell"]
+    assert j["tier"] == "T2" and j["session"] is None and j["status"] == "needs_worker"
+    assert "harder than it looks" in j["note"]
+
+
+def test_ok_to_escalate_at_the_top_tier_goes_on_and_says_so(tmp_path, ark_home):
+    c = at_euklides(tmp_path, trigger="question", allowed=("ask",), situation="which file?", session="s1", tier="T2")
+    loop.on_euklides(c, "shell", euk_answer(action="ask", note="harder", proposal="p", then="escalate"))
+    assert "Answer ok to: go on at T2 (the top tier)" in c.st["questions"][0]["text"]
+    loop._apply_answer(c.st, {"id": "q1", "text": "ok"})
+    j = c.st["jobs"]["shell"]
+    assert j["tier"] == "T2" and j["status"] == "needs_worker"
+    assert any("T2" in e and "top tier" in e for e in c.st["events"])
+
+
+def test_ok_to_stop_blocks_with_the_note(tmp_path, ark_home):
+    c = asked_then(tmp_path, note="Marco has to land it on main himself", then="stop")
+    assert "Answer ok to: stop shell (it ends blocked)" in c.st["questions"][0]["text"]
+    loop._apply_answer(c.st, {"id": "q1", "text": "ok"})
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "blocked" and "Marco has to land it on main himself" in j["reason"]
+
+
+def test_ok_to_go_on_sends_the_proposal(tmp_path, ark_home):
+    c = asked_then(tmp_path, proposal="use src/shell/x.py instead", then="go_on")
+    assert "Answer ok to: go on with the proposal above" in c.st["questions"][0]["text"]
+    loop._apply_answer(c.st, {"id": "q1", "text": "ok"})
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "needs_worker" and "use src/shell/x.py instead" in j["resume_msg"]
+
+
+def test_commit_yes_is_not_an_ok(tmp_path, ark_home):
+    c = asked_then(tmp_path, then="widen", files=["x.py"])
+    loop._apply_answer(c.st, {"id": "q1", "text": "commit yes"})
+    j = c.st["jobs"]["shell"]
+    assert not c.st.get("grants") and j["status"] == "needs_worker" and "commit yes" in j["resume_msg"]
+
+
+def old_ask(tmp_path, **ask):
+    c = at_euklides(tmp_path, trigger="question", situation="which file?", session="s1")
+    j = c.st["jobs"]["shell"]
+    j.pop("euklides")
+    j["status"] = "waiting_answer"
+    questions.ask(c.st, "worker", "an old question", job="shell")
+    j["euklides_ask"] = {"proposal": "the old proposal", "decision": None,
+                         "ctx": {"trigger": "question", "situation": "which file?", "kind": None}, **ask}
+    return c
+
+
+def test_an_old_state_with_a_grant_still_grants_on_ok(tmp_path, ark_home):
+    c = old_ask(tmp_path, grant=["x.py"])
+    loop._apply_answer(c.st, {"id": "q1", "text": "ok"})
+    assert c.st["grants"]["shell"] == ["x.py"] and c.st["jobs"]["shell"]["status"] == "needs_worker"
+
+
+def test_an_old_state_with_a_raise_still_raises_on_ok(tmp_path, ark_home):
+    c = old_ask(tmp_path, raise_usd=0.5, note="more")
+    loop._apply_answer(c.st, {"id": "q1", "text": "ok"})
+    j = c.st["jobs"]["shell"]
+    assert j["usd_raised"] == 0.5 and j["marco_raised"] == 0.5 and j["status"] == "needs_worker"
+
+
+def test_an_old_state_with_neither_goes_on_with_the_proposal(tmp_path, ark_home):
+    c = old_ask(tmp_path)
+    loop._apply_answer(c.st, {"id": "q1", "text": "ok"})
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "needs_worker" and "the old proposal" in j["resume_msg"]
+
+
+def test_a_long_situation_keeps_the_answer_lines(tmp_path, ark_home):
+    c = at_euklides(tmp_path, trigger="question", allowed=("ask",), situation="x" * 5000, session="s1")
+    loop.on_euklides(c, "shell", euk_answer(action="ask", note="n", proposal="p", then="stop"))
+    assert c.st["questions"][0]["text"].endswith(f"Answer ok to: stop shell (it ends blocked)\n\n{OTHER}")
 
 
 def test_a_journal_that_cannot_be_written_does_not_stop_the_decision(tmp_path, ark_home, monkeypatch):
@@ -3581,7 +3729,7 @@ def test_a_raise_past_the_margin_left_asks_marco_with_the_raise_as_proposal(tmp_
     assert j["status"] == "waiting_answer" and j.get("usd_raised", 0) == 0
     [q] = c.st["questions"]
     assert "raise" in q["text"] and "$0.60" in q["text"] and "$0.50" in q["text"]
-    assert j["euklides_ask"]["raise_usd"] == 0.6
+    assert j["euklides_ask"]["then"] == "raise" and j["euklides_ask"]["usd"] == 0.6
 
 
 def test_the_margin_is_a_total_across_decisions(tmp_path, ark_home):
@@ -3594,7 +3742,7 @@ def test_the_margin_is_a_total_across_decisions(tmp_path, ark_home):
              euklides={"trigger": "failure", "situation": "red", "kind": None, "allowed": ["raise", "fixed", "ask"]})
     loop.on_euklides(c, "shell", euk_answer(action="raise", usd=0.3, note="a little more again"))
     assert j["usd_raised"] == 0.25 and j["status"] == "waiting_answer"
-    assert j["euklides_ask"]["raise_usd"] == 0.3
+    assert j["euklides_ask"]["then"] == "raise" and j["euklides_ask"]["usd"] == 0.3
 
 
 def test_marcos_ok_to_a_raise_adds_to_the_job_but_not_to_the_margin(tmp_path, ark_home):

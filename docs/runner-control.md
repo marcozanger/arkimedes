@@ -54,7 +54,7 @@ becomes `done`, whatever jobs were left blocked stay on record in its state.
 
 | Kind | Asked when | Answers |
 |---|---|---|
-| worker | Euklides asks (see below) | `ok` takes its proposal; any other text is the answer; `:stop` blocks the job |
+| worker | Euklides asks (see below) | `ok` (or `yes`, or `si` with or without its accent) runs the line `Answer ok to: …`, the runner action Euklides named in `then`; any other text goes to the worker as its instruction; `:stop` blocks the job |
 | plan_changed | the plan changed after its approval and the run is held | `stop` ends the run; restoring or re-approving the plan closes it |
 | cap_run | the run spent more than the sum of its budgets and raises, and Euklides could not raise it within his margin | `raise <usd>`, or `stop` to end the run |
 | cap_day | an account reached its daily cap (one per account and day) | `raise <usd>` adds to today's cap; `stop` waits until tomorrow |
@@ -115,8 +115,21 @@ was raised) cannot `retry`, `escalate` or `unblock`; with 4 decisions already ta
 reach beyond the job (`undo: plan`) is asked instead, with that answer as the proposal. An answer Euklides cannot
 give in the agreed shape also asks.
 
-`ask` becomes a worker question holding the situation, Euklides' note and its proposal. `ok` takes the proposal (a
-proposal of `:stop …` blocks the job), `:stop` blocks it, and any other text is the answer the job goes on with.
+`ask` becomes a worker question holding the situation, Euklides' note and its proposal, and it names in `then` the one
+runner action Marco's `ok` carries out: `go_on` (the worker gets the proposal as its instruction; a proposal of
+`:stop …` blocks the job), `escalate` (one tier up; at T2 it goes on there, and an event says so), `widen` (with
+`files`: they join the job's area; after an area block the head is pushed again, otherwise the worker goes on),
+`fix_base` (a base fix with Marco's authority: no `MAX_FIX_BASE` limit, not counted, the job waits on it), `raise`
+(with `usd`: added to `usd_raised` and `marco_raised`) or `stop` (the job ends blocked with Euklides' note). An `ask`
+without a valid `then` is an unusable answer. The runner writes the action at the end of the question, `Answer ok
+to: …`, followed by `Other answers: :stop blocks the job; any other text goes to the worker as its instruction.`
+`ok`, `yes` and `si` (with or without its accent; any case, trimmed) are the ok words; `commit yes` is text. A `widen` naming a file inside
+another job's area cannot be granted: the question says why instead of `Answer ok to`, and `ark answer` refuses an
+ok word with that reason. A way out the runner cannot carry out (a PR to main, a plan edit, a push by hand) is never
+a `then`: Euklides writes it in the note as what Marco must do himself. A question saved before `then` existed
+still works: its `grant` widens and its `raise_usd` raises on `ok`; with neither, `ok` takes the proposal.
+`_widen` over the small-fix rule asks with `then: widen`, `_raise` past the margin with `then: raise`, a `fixed`
+that fails its check with `then: stop`, and a failed base fix with `then: fix_base`.
 
 Every decision appends one line to `history/euklides/decisions.jsonl` (`valid: false` when the answer was unusable),
 and Marco's answer to a question it asked is written on that line. Euklides reads `history/euklides/lessons.md` on
@@ -183,7 +196,7 @@ files and 30 changed lines, no binary file, and no file inside another job's are
 
 Over the rule, or when the fix fails (its worker, its gate, or a step failing five times), every job concerned
 becomes a question to Marco with Euklides' proposal and the reason. For a widen over the rule, `ok` grants the
-files. The fix never syncs `main` into the run, never edits the plan and opens no PR of its own.
+files; for a failed fix, `ok` starts another one. The fix never syncs `main` into the run, never edits the plan and opens no PR of its own.
 
 The decisions file written at close (`runs/<repo>/<slug>/decisions.md`) is reviewed by Marco in the `ark ui` Decisions tab
 or with `ark review <repo>/<slug>`; see `docs/review.md`.

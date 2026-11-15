@@ -26,7 +26,8 @@ DEFAULTS = {
 }
 MAX_FIX_BASE = 3  # base fixes per run without Marco
 TRIGGERS = ("failure", "question", "blocked")
-KEYS = {"action", "note", "undo", "why", "proposal", "files", "usd"}
+KEYS = {"action", "note", "undo", "why", "proposal", "files", "usd", "then"}
+THEN = ("go_on", "escalate", "widen", "fix_base", "raise", "stop")  # what Marco's ok to an ask makes the runner do
 RUN = "_run"  # the job name of a run-level decision: a job id never starts with "_"
 RUN_ACTIONS = ["raise", "ask"]
 NOTE_CHARS, WHY_CHARS, PROPOSAL_CHARS = 1000, 300, 1000
@@ -132,16 +133,45 @@ def _text(v, limit: int) -> str | None:
     return v.strip()[:limit] if isinstance(v, str) else None
 
 
-def parse(d, allowed_now: list[str]) -> dict | None:
+def _usd(v) -> bool:
+    return _num(v) and math.isfinite(v) and v > 0
+
+
+def _then(d: dict) -> dict | None:
+    """An `ask`'s `then` (the runner action Marco's `ok` runs) with its `files` or `usd`; None when not usable."""
+    then = d.get("then")
+    if not isinstance(then, str) or then not in THEN:
+        return None
+    if ("files" in d) != (then == "widen") or ("usd" in d) != (then == "raise"):
+        return None
+    if then == "widen":
+        files = _files(d["files"])
+        return {"then": then, "files": files} if files else None
+    if then == "raise":
+        return {"then": then, "usd": round(float(d["usd"]), 4)} if _usd(d["usd"]) else None
+    return {"then": then}
+
+
+def parse(d, allowed_now: list[str], then: bool = True) -> dict | None:
     """The decision in an answer, or None when it is not usable now (the loop then asks Marco).
 
-    An `answer` whose mistake would reach the plan (`undo: plan`) comes back as an `ask` whose
-    proposal is that answer, so Marco can take it with `ok`."""
+    A job's `ask` names in `then` the runner action Marco's `ok` carries out (`then=False`: a run-level
+    decision, whose ask has no `then`). An `answer` whose mistake would reach the plan (`undo: plan`)
+    comes back as an `ask` whose proposal is that answer, so Marco can take it with `ok` (`then: go_on`)."""
     if not isinstance(d, dict) or not {"action", "note"} <= set(d) or not set(d) <= KEYS:
         return None
     action, note = d["action"], _text(d["note"], NOTE_CHARS)
     if not isinstance(action, str) or action not in allowed_now or not note:
         return None
+    if "then" in d and action != "ask":
+        return None
+    if not then:  # a run-level ask: Marco answers `raise <usd>` or `stop`, no `then` to carry out
+        d = {k: v for k, v in d.items() if k != "then"}
+    ask_then = _then(d) if action == "ask" and then else None
+    if action == "ask" and then:
+        if ask_then is None:
+            return None
+        d = {k: v for k, v in d.items() if k not in ("then", "files", "usd")}
     why, proposal = d.get("why", ""), d.get("proposal")
     if why is None:
         why = ""
@@ -156,7 +186,7 @@ def parse(d, allowed_now: list[str]) -> dict | None:
     usd = d.get("usd")
     if (action == "raise") != ("usd" in d):
         return None
-    if action == "raise" and not (_num(usd) and math.isfinite(usd) and usd > 0):
+    if action == "raise" and not _usd(usd):
         return None
     files = _files(d.get("files")) if action == "widen" else None
     if action == "widen" and files is None:
@@ -164,8 +194,10 @@ def parse(d, allowed_now: list[str]) -> dict | None:
     if action == "answer" and undo == "plan":
         return {"action": "ask", "note": f"Euklides would answer this, but a wrong answer would reach beyond "
                                          f"this job: {why or 'no reason given'}",
-                "undo": "plan", "why": why, "proposal": note}
+                "undo": "plan", "why": why, "proposal": note, "then": "go_on"}
     out = {"action": action, "note": note, "undo": undo, "why": why, "proposal": proposal}
+    if ask_then:
+        return {**out, **ask_then}
     if action == "raise":
         return {**out, "usd": round(float(usd), 4)}  # only a raise carries usd
     return {**out, "files": files} if files else out  # only a widen carries files
@@ -210,9 +242,11 @@ def record(st: dict, job: str, ctx: dict, d: dict, *, valid: bool, usd: float) -
                "trigger": ctx["trigger"], "situation": str(ctx.get("situation") or "")[:SITUATION_CHARS],
                "action": d["action"], "note": d["note"], "undo": d["undo"], "why": d["why"],
                "proposal": d["proposal"], "valid": valid, "usd": usd, "marco": None}
+        if d.get("then"):
+            row["then"] = d["then"]
         if d.get("files"):
             row["files"] = d["files"]
-        if d["action"] == "raise":
+        if d["action"] == "raise" or d.get("then") == "raise":
             row["raise_usd"] = d["usd"]  # `usd` is what the call cost
         _append("decisions.jsonl", row)
         return row["id"]

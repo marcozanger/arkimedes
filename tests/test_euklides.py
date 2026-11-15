@@ -70,8 +70,8 @@ def test_an_answer_whose_mistake_reaches_the_plan_becomes_a_question_with_the_an
     d(extra=1),                                                   # unknown key
     {"action": "answer", "note": "x"},                            # answer without undo
     {"action": "answer", "note": "x", "undo": "maybe"},
-    {"action": "ask", "note": "x"},                               # ask without proposal
-    {"action": "ask", "note": "x", "proposal": "  "},
+    {"action": "ask", "note": "x", "then": "go_on"},              # ask without proposal
+    {"action": "ask", "note": "x", "proposal": "  ", "then": "go_on"},
     d(why=3), d(proposal=["x"]),
 ])
 def test_anything_else_is_not_usable(raw):
@@ -137,6 +137,70 @@ def test_a_journal_line_that_is_not_json_is_skipped(ark_home):
     with open(history.history_dir() / "euklides" / "decisions.jsonl", "a") as f:
         f.write("not json\n")
     assert len(euklides.decisions()) == 1
+
+
+# ---- then: the runner action Marco's ok carries out ------------------------------------------------
+
+def ask(**fields):
+    return {"action": "ask", "note": "q", "proposal": "p", **fields}
+
+
+@pytest.mark.parametrize("then", ["go_on", "escalate", "fix_base", "stop"])
+def test_an_ask_names_the_runner_action_its_ok_runs(then):
+    got = euklides.parse(ask(then=then), ["ask"])
+    assert got["then"] == then and "files" not in got and "usd" not in got
+
+
+def test_then_widen_carries_its_files_and_then_raise_its_usd():
+    assert euklides.parse(ask(then="widen", files=[" x.py "]), ["ask"])["files"] == ["x.py"]
+    assert euklides.parse(ask(then="raise", usd=2), ["ask"])["usd"] == 2.0
+
+
+@pytest.mark.parametrize("raw", [
+    ask(),                                         # no then
+    ask(then="land"), ask(then=None), ask(then=3),
+    ask(then="widen"), ask(then="widen", files=[]), ask(then="widen", files=["../x"]),
+    ask(then="widen", files=["a", "b", "c", "d"]),
+    ask(then="raise"), ask(then="raise", usd=0), ask(then="raise", usd=-1), ask(then="raise", usd=float("inf")),
+    ask(then="raise", usd=True), ask(then="raise", usd="2"),
+    ask(then="go_on", files=["x.py"]), ask(then="go_on", usd=1), ask(then="widen", files=["x.py"], usd=1),
+    ask(then="raise", usd=1, files=["x.py"]),
+    {"action": "retry", "note": "x", "then": "go_on"},
+    {"action": "answer", "note": "x", "undo": "job", "then": "go_on"},
+])
+def test_an_ask_without_a_valid_then_is_not_usable(raw):
+    assert euklides.parse(raw, ["retry", "answer", "ask"]) is None
+
+
+def test_widen_and_raise_actions_keep_their_own_files_and_usd():
+    got = euklides.parse({"action": "widen", "note": "n", "files": ["a.py"]}, ["widen", "ask"])
+    assert got["files"] == ["a.py"] and "then" not in got
+    got = euklides.parse({"action": "raise", "note": "n", "usd": 1}, ["raise", "ask"])
+    assert got["usd"] == 1.0 and "then" not in got
+
+
+def test_an_answer_that_reaches_the_plan_becomes_an_ask_that_goes_on():
+    got = euklides.parse({"action": "answer", "note": "rename it", "undo": "plan", "why": "w"}, ["answer", "ask"])
+    assert got["action"] == "ask" and got["then"] == "go_on" and got["proposal"] == "rename it"
+
+
+def test_a_run_level_ask_needs_no_then():
+    got = euklides.parse({"action": "ask", "note": "n", "proposal": "raise 3"}, euklides.RUN_ACTIONS, then=False)
+    assert got["action"] == "ask" and "then" not in got
+    got = euklides.parse({"action": "ask", "note": "n", "proposal": "stop", "then": "stop"}, euklides.RUN_ACTIONS,
+                         then=False)
+    assert got["action"] == "ask" and "then" not in got
+
+
+def test_the_journal_keeps_then_and_its_files_or_usd(ark_home):
+    ctx = {"trigger": "question", "situation": "q"}
+    euklides.record(st(), "core", ctx, euklides.parse(ask(then="widen", files=["x.py"]), ["ask"]), valid=True, usd=0)
+    euklides.record(st(), "core", ctx, euklides.parse(ask(then="raise", usd=2), ["ask"]), valid=True, usd=0.3)
+    euklides.record(st(), "core", ctx, euklides.parse(ask(then="stop"), ["ask"]), valid=True, usd=0)
+    a, b, c = euklides.decisions()
+    assert a["then"] == "widen" and a["files"] == ["x.py"]
+    assert b["then"] == "raise" and b["raise_usd"] == 2.0 and b["usd"] == 0.3
+    assert c["then"] == "stop" and "files" not in c and "raise_usd" not in c
 
 
 # ---- raise: Euklides may add budget, up to a share of what was planned -------------------------
