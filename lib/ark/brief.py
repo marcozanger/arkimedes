@@ -298,6 +298,22 @@ def euklides_run_prompt(st: dict, *, spent: float, planned: float, usd_raised: f
     ]) + "\n"
 
 
+def refresh_brief(st: dict, r: dict, plan: Plan, default_branch: str) -> str:
+    """The brief of the worker that merges main into the run's base when the merge clashes."""
+    conflict = ", ".join(r.get("conflict") or []) or "none: the merge is clean but the integration gate is red on it"
+    return "\n\n".join([
+        f"`{default_branch}` of {st['repo']} moved to commit {r['main']}. Merge that commit into this branch "
+        f"(a copy of the run's integration branch `ark/{st['slug']}`) with `git merge --no-ff {r['main']}`, "
+        "resolve it, and make the integration gate pass. Keep the intent of both sides: main's change and the "
+        "run's jobs.",
+        f"Conflicting files: {conflict}",
+        _untrusted("The integration gate's tail on the merge", r.get("tail") or "(none)"),
+        f"Integration gate: `{plan.manifest['integration_gate']}`; it must pass in this worktree.",
+        "Commit the merge (one merge commit, plus fix commits if needed). Do not rebase, do not push.",
+        "End with `STATUS: DONE` on its own line.",
+    ]) + "\n"
+
+
 def fix_base_brief(st: dict, f: dict, plan: Plan, small_files: int = 3, small_lines: int = 30) -> str:
     """The brief of the small worker that fixes the integration branch itself (Euklides' `fix_base`)."""
     return "\n\n".join([

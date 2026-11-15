@@ -856,6 +856,20 @@ def _new_refresh(n: int, main: str | None, before: str | None) -> dict:
             "seen_before": before}
 
 
+REFRESH_DEFAULT = ("T1", 40)  # tier and minutes of a refresh worker when the plan has no merge entry
+
+
+def _refresh_budget(c: Ctx) -> tuple[str, float, float]:
+    """(tier, usd left, minutes) of a refresh worker: the plan's merge entry, spent across the run's refreshes,
+    or the workspace's limits.refresh_usd for each refresh."""
+    g = c.plan.manifest.get("merge")
+    if isinstance(g, dict):
+        b = g["budget"]
+        return g["tier"], round(b["usd"] - c.st.get("merge_usd", 0), 4), b["minutes"]
+    tier, minutes = REFRESH_DEFAULT
+    return tier, paths.load_workspace()["limits"]["refresh_usd"], minutes
+
+
 def _refresh_of(st: dict, name: str) -> dict | None:
     """The live refresh, when `name` is its process."""
     r = st.get("refresh")
