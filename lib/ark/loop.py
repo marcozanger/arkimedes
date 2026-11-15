@@ -2332,7 +2332,7 @@ def on_run_euklides(c: Ctx, r: dict) -> None:
     e = st.pop("cap_euklides", None)
     if e is None:
         return run.event(st, f"ignored the result of {RUN_EUKLIDES}: nothing was waiting for it")
-    d = euklides.parse(_answer(r) if _clean_exit(r) else None, euklides.RUN_ACTIONS)
+    d = euklides.parse(_answer(r) if _clean_exit(r) else None, euklides.RUN_ACTIONS, then=False)
     valid = d is not None
     d = d or NO_ANSWER
     try:
