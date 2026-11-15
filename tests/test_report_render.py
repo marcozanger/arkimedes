@@ -1,4 +1,4 @@
-from report_helpers import job, mjobs, receipt, result_line, run_state
+from report_helpers import iso, job, mjobs, receipt, result_line, run_state
 
 DECISIONS = """# Decisions — notes-edit
 
@@ -96,3 +96,29 @@ def test_total_time_is_shown_against_the_estimate(ark_home):
     html = report.render_html(s, [], None)
     assert "Estimated (end to end)" in html and "30 min" in html
     assert "1 h 00 min wall (estimated 30 min)" in report.summary_md(s, "/x/report.html")
+
+
+def render_refreshes(st, merge_budget=None):
+    from ark import reporting, report, steps, summary
+    rows = steps.build(st)
+    s = summary.summarize(st, rows, mjobs())
+    s.update(reporting.refresh_facts(st, merge_budget))
+    return report.render_html(s, rows, None)
+
+
+def test_base_refreshes_section_has_a_row_per_refresh_and_the_totals(ark_home):
+    st = run_state(refreshes=[
+        {"n": 0, "main": "a" * 40, "result": "landed", "usd": 0.0, "at": iso(1)},
+        {"n": 1, "main": "b" * 40, "result": "landed", "usd": 0.5, "at": iso(20)},
+        {"n": 2, "main": "c" * 40, "result": "main_red", "usd": 0.0, "at": iso(30)}], merge_usd=0.5)
+    html = render_refreshes(st, merge_budget=2.0)
+    assert ">Base refreshes<" in html
+    assert "bbbbbbbb" in html and "cccccccc" in html and "aaaaaaaa" not in html
+    assert "main_red" in html and "$0.50" in html
+    assert "Refreshes landed" in html and "$0.50 of $2.00" in html
+
+
+def test_no_refresh_after_the_start_means_no_section(ark_home):
+    st = run_state(refreshes=[{"n": 0, "main": "a" * 40, "result": "landed", "usd": 0.0, "at": iso(1)}])
+    assert "Base refreshes" not in render_refreshes(st)
+    assert "Base refreshes" not in render(run_state())

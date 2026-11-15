@@ -20,6 +20,22 @@ def plan_jobs(st: dict) -> dict:
         return {}
 
 
+def refresh_facts(st: dict, budget: float | None) -> dict:
+    """What the report's Base refreshes section needs; empty when no refresh ran after the start."""
+    rs = [r for r in st.get("refreshes") or [] if r.get("n", 0) > 0]
+    if not rs:
+        return {}
+    return {"base_refreshes": rs, "merge_usd": st.get("merge_usd", 0.0), "merge_budget_usd": budget}
+
+
+def _refresh_budget(st: dict) -> float | None:
+    try:
+        g = load_plan(Path(st["plan"])).manifest.get("merge")
+        return g["budget"]["usd"] if isinstance(g, dict) else None
+    except Exception:
+        return None
+
+
 def closed(st: dict) -> bool:
     return st.get("closing") == "done" and st.get("status") in run.FINISHED
 
@@ -28,6 +44,7 @@ def generate(st: dict, mjobs: dict, repo_dir, *, record: bool) -> dict:
     rows = steps.build(st)
     steps.write(st, rows)
     s = summary.summarize(st, rows, mjobs)
+    s.update(refresh_facts(st, _refresh_budget(st)))
     path = report.write(st, s, rows)
     if record:
         history.record(st, s, mjobs, repo_dir)

@@ -90,13 +90,29 @@ def _ps_row(st: dict, job: str, j: dict) -> list[str]:
         last = f"waiting on {j['waiting_on']}"
     if j["status"] == "waiting_fix":
         last = f"waiting for base fix {j.get('fix', '?')}"
+    if (st.get("main_red") and st.get("base_green") is False
+            and (j["status"] in run.NOT_STARTED or j["status"].startswith("waiting_"))):
+        last = "waiting: main is red"
     last = " ".join(usage.clean(last).split())[:100]
     return [f"{st['repo']}/{st['slug']}", job, j["status"], j.get("tier", "?"), elapsed, tokens, f"${j.get('usd', 0):.2f}", last]
 
 
+def _ps_extra(st) -> str:
+    """The base's main commit, a red main and a live refresh, each as ` · piece`."""
+    landed = [r for r in st.get("refreshes") or [] if r.get("n", 0) > 0 and r.get("result") == "landed"]
+    base = landed[-1]["main"] if landed else st.get("base_sha")
+    out = f" · base: main@{str(base)[:8]}" if base else ""
+    if st.get("main_red"):
+        out += f" · main red at {str(st['main_red'])[:8]}"
+    r = st.get("refresh")
+    if r:
+        out += f" · refresh {r.get('n')}: {r.get('status')}"
+    return out
+
+
 def _ps_header(st, now) -> str:
     elapsed, eta = desk._times(st["repo"], st["slug"], now)
-    return f"{st['repo']}/{st['slug']} · {st['status']} · elapsed {elapsed} · eta {eta}"
+    return f"{st['repo']}/{st['slug']} · {st['status']} · elapsed {elapsed} · eta {eta}{_ps_extra(st)}"
 
 
 @_cmd

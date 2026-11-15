@@ -34,6 +34,12 @@ runs get them too.
 - `estimated_minutes`: the plan's end-to-end estimate from `lib/ark/estimate.py` (same number `ark estimate`
   shows); the report puts it next to the total time.
 
+## Base refreshes
+
+When main moved during the run, the report has a Base refreshes section: one row per refresh (n, main sha8, result,
+USD, time) and the totals: refreshes landed, workers used, and the merge budget spent against the plan's `merge`
+budget when it has one. A run with no refresh after the start has no section.
+
 ## Commands
 
 | Command | What |
