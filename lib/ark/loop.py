@@ -785,7 +785,7 @@ def _start_fix_worker(c: Ctx, f: dict) -> None:
 
 def _start_fix_gate(c: Ctx, f: dict) -> None:
     name = f"{FIX_PREFIX}{f['n']}"
-    env = claude.runner_env("gate", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo))  # it runs tests a worker wrote
+    env = gate_env(c, "gate")  # it runs tests a worker wrote
     proc.start(c.dir, f"{name}.gate", ["sh", "-c", c.plan.manifest["integration_gate"]], cwd=c.wt(name), env=env,
                minutes=integrate.GATE_TIMEOUT / 60, meta={"head": f.get("head")})
     f["status"] = "gating"
@@ -807,6 +807,8 @@ def _move_fixes(c: Ctx, slots: Slots) -> None:
                     if f["status"] != "working":
                         slots.release_writer(c.st["repo"])
             elif f["status"] == "needs_gate":
+                if not slots.gate(False, c.st, "fix"):
+                    continue
                 _start_fix_gate(c, f)
             else:
                 _land_fix(c, f)
@@ -975,7 +977,7 @@ def _main_moved(c: Ctx) -> str | None:
 def _start_refresh_check(c: Ctx, r: dict) -> None:
     name = f"{REFRESH_PREFIX}{r['n']}"
     cmd = [str(paths.code_dir() / "bin" / "ark-refresh"), f"{c.st['repo']}/{c.st['slug']}", r["main"]]
-    env = claude.runner_env("integrate", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo))  # the plan's gate
+    env = gate_env(c, "integrate")  # the plan's gate
     proc.start(c.dir, f"{name}.check", cmd, cwd=paths.code_dir(), env=env,
                minutes=2 * integrate.GATE_TIMEOUT / 60 + 30, meta={"main": r["main"]})
     r["status"] = "checking"
@@ -1012,7 +1014,7 @@ def _step_refresh(c: Ctx, slots: Slots) -> None:
                 return
             _after_clash(c, r)
         if r["status"] == "needs_check":
-            if not slots.gate(_plan_heavy(st)):
+            if not slots.gate(_plan_heavy(st), st, "refresh"):
                 return
             _start_refresh_check(c, r)
         elif r["status"] == "needs_worker":
@@ -1024,7 +1026,7 @@ def _step_refresh(c: Ctx, slots: Slots) -> None:
                 if r["status"] != "working":
                     slots.release_writer(st["repo"])
         elif r["status"] == "needs_gate":
-            if not slots.gate(_plan_heavy(st)):
+            if not slots.gate(_plan_heavy(st), st, "refresh"):
                 return
             _start_refresh_gate(c, r)
         elif r["status"] == "needs_land":
@@ -1087,7 +1089,7 @@ def _start_refresh_worker(c: Ctx, r: dict) -> None:
 
 def _start_refresh_gate(c: Ctx, r: dict) -> None:
     name = _refresh_name(r)
-    env = claude.runner_env("gate", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo))  # it runs tests a worker wrote
+    env = gate_env(c, "gate")  # it runs tests a worker wrote
     proc.start(c.dir, f"{name}.gate", ["sh", "-c", c.plan.manifest["integration_gate"]], cwd=c.wt(name), env=env,
                minutes=integrate.GATE_TIMEOUT / 60, meta={"head": r.get("head")})
     r["status"] = "gating"
@@ -1635,7 +1637,7 @@ def _push_rewrite(c: Ctx, job: str, branch: str, remote: str) -> None:
 
 def start_gate(c: Ctx, job: str) -> None:
     j, mj = c.st["jobs"][job], c.mjobs[job]
-    env = claude.runner_env("gate", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo))  # it runs tests a worker wrote
+    env = gate_env(c, "gate")  # it runs tests a worker wrote
     proc.start(c.dir, f"{job}.gate", ["sh", "-c", mj["gate"]], cwd=c.wt(job), env=env,
                minutes=mj["budget"]["minutes"], meta={"head": j["head"]})
     j["status"] = "gating"
@@ -1667,7 +1669,7 @@ def start_integrate(c: Ctx, job: str) -> None:
     if j["pr"] and merge.confirmed(c.st, job, c.forge, c.repo):  # a crash lost it: a red check now would pay a worker
         return _merged(c, job)
     cmd = [str(paths.code_dir() / "bin" / "ark-integrate"), f"{c.st['repo']}/{c.st['slug']}", job, j["head"]]
-    env = claude.runner_env("integrate", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo))  # it runs tests a worker wrote
+    env = gate_env(c, "integrate")  # it runs tests a worker wrote
     # Above the check's own timeout, or a slow gate dies here with no result instead of red with its reason.
     proc.start(c.dir, f"{job}.integrate", cmd, cwd=paths.code_dir(), env=env,
                minutes=2 * integrate.GATE_TIMEOUT / 60 + 30, meta={"head": j["head"]})
@@ -1937,13 +1939,60 @@ class Slots:
     def release_writer(self, repo: str) -> None:
         self.writers[repo] -= 1
 
-    def gate(self, heavy: bool) -> bool:
-        if not heavy:
+    def gate(self, heavy: bool, st: dict | None = None, key: str = "") -> bool:
+        """May a gate start now? `st` and `key` (the run, and what gates in it) turn the load brake on."""
+        if not heavy and st is None:
             return True
-        if self.heavy >= self.limits["heavy_gates"]:
+        if st is not None and self._load_hold(st, key):
             return False
-        self.heavy += 1
+        if heavy:
+            if self.heavy >= self.limits["heavy_gates"]:
+                return False
+            self.heavy += 1
+        if st is not None:
+            _load_wait.pop((st["repo"], st["slug"], key), None)  # it starts: the next one waits afresh
         return True
+
+    def _load_hold(self, st: dict, key: str) -> bool:
+        """The load brake: True while the machine is busier than `load_max`, for at most `load_wait_max`
+        seconds (monotonic, so a sleep does not count). One event when the wait begins, one when it gives up."""
+        top = self.limits.get("load_max") or 0
+        k = (st["repo"], st["slug"], key)
+        try:
+            load = os.getloadavg()[0]
+        except OSError:
+            load = 0.0
+        if not top or load <= top:
+            _load_wait.pop(k, None)
+            return False
+        now = time.monotonic()
+        w = _load_wait.get(k)
+        if w is None:
+            _load_wait[k] = [now, False]
+            run.event(st, f"{key}: a gate waits for the machine (load {load:.1f} above {top})")
+            return True
+        if w[1]:
+            return False
+        if now - w[0] >= self.limits.get("load_wait_max", 900):
+            w[1] = True
+            run.event(st, f"{key}: the gate starts after waiting {int(now - w[0])}s for the load (now {load:.1f})")
+            return False
+        return True
+
+
+_load_wait: dict = {}  # (repo, slug, key) -> [monotonic start of the wait, gave up waiting]
+
+
+def gate_env(c: Ctx, role: str) -> dict:
+    """The environment of a gate process. ARK_TEST_WORKERS (limits.gate_workers) is always set, so a plan's gate can
+    pass `--maxWorkers=$ARK_TEST_WORKERS`; vitest and pytest-xdist read their own variables, set when the
+    environment does not already have them. A flag in the gate's command line wins over any of these."""
+    env = claude.runner_env(role, repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo))
+    n = str(max(1, int(paths.load_workspace()["limits"].get("gate_workers") or 4)))
+    env["ARK_TEST_WORKERS"] = n
+    env.setdefault("VITEST_MAX_WORKERS", n)  # documented by vitest
+    env.setdefault("PYTEST_XDIST_AUTO_NUM_WORKERS", n)  # what `-n auto` means in pytest-xdist; jest has no variable
+    return env
 
 
 def _start_writer(c: Ctx, job: str, slots: Slots) -> None:
@@ -1970,10 +2019,10 @@ def _next_step(c: Ctx, job: str, j: dict, slots: Slots):
         if slots.writer(repo):
             return lambda: _start_writer(c, job, slots)
     elif s == "needs_gate":
-        if slots.gate(j["heavy"]):
+        if slots.gate(j["heavy"], c.st, job):
             return lambda: start_gate(c, job)
     elif s == "needs_integrate":
-        if slots.gate(j["heavy"]):
+        if slots.gate(j["heavy"], c.st, job):
             return lambda: start_integrate(c, job)
     else:
         step_ = {"needs_push": push_job, "needs_pr": ensure_pr, "needs_review": start_review, "needs_merge": do_merge,
