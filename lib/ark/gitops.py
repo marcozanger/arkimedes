@@ -148,6 +148,29 @@ def push_ref_lease(repo, sha: str, branch: str, expect: str) -> None:
         f"{sha}:refs/heads/{branch}")
 
 
+def delete_branch(repo, branch: str) -> None:
+    """Delete a local ark/* branch, merged or not: the sweep decided it carries nothing that exists nowhere else."""
+    _ark_only(branch)
+    git(repo, "branch", "-q", "-D", "--", branch)
+
+
+def delete_remote_branch(repo, branch: str) -> None:
+    _ark_only(branch)
+    git(repo, "push", "-q", "origin", "--delete", f"refs/heads/{branch}")
+
+
+def worktrees(repo) -> list[tuple[Path, str | None]]:
+    """Every worktree git knows for this repo, the main checkout first: (path, branch), None for a detached HEAD."""
+    out, path = [], None
+    for line in _checked(repo, "worktree", "list", "--porcelain").splitlines():
+        if line.startswith("worktree "):
+            path = Path(line.removeprefix("worktree "))
+            out.append((path, None))
+        elif line.startswith("branch refs/heads/") and out:
+            out[-1] = (path, line.removeprefix("branch refs/heads/"))
+    return out
+
+
 def branch_commits(worktree, base: str) -> list[dict]:
     """The commits of HEAD not in `base`, newest first: sha, subject and number of parents. Read-only."""
     out = _checked(worktree, "log", "--format=%H%x09%P%x09%s", "--end-of-options", f"{base}..HEAD")
