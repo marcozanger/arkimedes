@@ -783,3 +783,29 @@ def test_a_failed_push_is_not_a_refused_path(runner, tmp_path, monkeypatch):
     with pytest.raises(gitops.GitError) as e:
         gitops.commit_file(repo, "ark/x", "docs/x.md", "x\n", "m", tmp_path / "wt" / "s")
     assert not isinstance(e.value, gitops.PathRefused)
+
+
+def test_worktrees_lists_paths_and_branches(runner, tmp_path):
+    repo = runner()
+    base = gitops.rev(repo, "HEAD")
+    gitops.add_worktree(repo, tmp_path / "wt" / "a", "ark/s-a", base)
+    subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", "--detach", str(tmp_path / "wt" / "d"), base],
+                   check=True)
+    got = {p.resolve(): b for p, b in gitops.worktrees(repo)}
+    assert got == {repo.resolve(): "master", (tmp_path / "wt" / "a").resolve(): "ark/s-a",
+                   (tmp_path / "wt" / "d").resolve(): None}
+
+
+def test_delete_branch_local_and_remote(runner, tmp_path):
+    repo = runner()
+    sha = gitops.rev(repo, "HEAD")
+    subprocess.run(["git", "-C", str(repo), "branch", "ark/s-a", sha], check=True)
+    gitops.push_ref(repo, sha, "ark/s-a")
+    gitops.delete_branch(repo, "ark/s-a")
+    assert not gitops.git(repo, "rev-parse", "--verify", "--quiet", "refs/heads/ark/s-a", check=False)
+    assert gitops.remote_sha(repo, "ark/s-a") == sha
+    gitops.delete_remote_branch(repo, "ark/s-a")
+    assert gitops.remote_sha(repo, "ark/s-a") is None
+    for f in (gitops.delete_branch, gitops.delete_remote_branch):
+        with pytest.raises(gitops.GitError):
+            f(repo, "master")
