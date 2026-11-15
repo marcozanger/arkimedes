@@ -466,3 +466,64 @@ def apply(plans: list[RunPlan], forge, now: datetime) -> dict:
             continue
         done(rp, item)
     return {"removed": removed, "errors": errors, "held": held}
+
+
+# --- the daily sweep of ark-loop
+
+DAILY = "sweep.json"    # under runs/: {"day", "held": [item key], "errors": {item key: sweeps in a row it failed}}
+ERROR_DAYS = 3          # an item failing this many sweeps in a row is said once
+
+
+def today() -> str:
+    """The local day: the loop sweeps once in it."""
+    return datetime.now().date().isoformat()
+
+
+def _daily_file() -> Path:
+    return paths.runs_dir() / DAILY
+
+
+def _write_daily(data: dict) -> None:
+    run._atomic(_daily_file(), json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+
+
+def daily(forge, alerts: list[str]) -> None:
+    """The first call of a local day sweeps; the others return at once. A held item is said once while it stays
+    held, and an item failing ERROR_DAYS sweeps in a row is said once. The day is written before the work, so a
+    sweep that raises is not tried again until tomorrow."""
+    if not settings()["enabled"]:
+        return
+    try:
+        old = json.loads(paths.read_regular(_daily_file()).decode("utf-8"))
+    except (OSError, ValueError):
+        old = {}
+    if not isinstance(old, dict):
+        old = {}
+    day = today()
+    if old.get("day") == day:
+        return
+    was_held = set(old.get("held") or []) if isinstance(old.get("held"), list) else set()
+    counts = old.get("errors") if isinstance(old.get("errors"), dict) else {}
+    _write_daily({"day": day, "held": sorted(was_held), "errors": counts})
+    now = datetime.now(timezone.utc)
+    plans, _ = plan(now, forge)
+    res = apply(plans, forge, now)
+    held = []
+    for rp in plans:
+        for item, why in rp.held:
+            key = item.key()
+            if key not in held:
+                held.append(key)
+            if key not in was_held:
+                was_held.add(key)
+                alerts.append(f"sweep: kept {item.target} of {rp.repo}/{rp.slug}: {why}")
+    targets = {i.key(): i.target for rp in plans for i in rp.items}
+    errors: dict[str, int] = {}
+    for key, msg in res["errors"]:
+        if key in errors:
+            continue
+        prev = counts.get(key, 0)
+        errors[key] = (prev if isinstance(prev, int) and not isinstance(prev, bool) else 0) + 1
+        if errors[key] == ERROR_DAYS:
+            alerts.append(f"sweep: {targets.get(key, key)} failed {ERROR_DAYS} days in a row: {msg}")
+    _write_daily({"day": day, "held": held, "errors": errors})
