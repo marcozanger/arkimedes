@@ -43,7 +43,7 @@ def test_the_brief_says_what_the_base_check_found():
 
 def test_an_open_ask_lists_every_then_with_one_line_each():
     p = euk(allowed=["unblock", "ask"])
-    for then in ("go_on", "escalate", "widen", "fix_base", "raise", "stop"):
+    for then in ("go_on", "escalate", "widen", "fix_base", "raise", "accept", "stop"):
         assert sum(1 for line in p.splitlines() if line.startswith(f"  - `{then}`")) == 1, then
     [line] = [x for x in p.splitlines() if '"action": "ask"' in x]
     assert '"then"' in line
@@ -57,3 +57,8 @@ def test_a_way_out_the_runner_cannot_carry_out_goes_in_the_note():
 
 def test_then_shows_only_when_ask_is_open():
     assert "`fix_base`: fix the integration branch" not in euk(allowed=["unblock"])
+
+
+def test_the_accept_line_says_when_to_use_it_and_when_never():
+    p = " ".join(euk(allowed=["ask"]).split())
+    assert "already committed" in p and "narrower form of the job's own gate" in p and "never to skip a red test" in p
