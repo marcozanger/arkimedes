@@ -473,3 +473,76 @@ def test_local_corrupt_file_is_a_forge_error(runner, text):
     f._file(repo).write_bytes(text.encode("latin-1"))
     with pytest.raises(forge.ForgeError):
         f.list(repo)
+
+
+# --- the sweep: open PRs of a branch, and closing one with a comment
+
+
+def test_local_open_by_head_and_close(runner, tmp_path):
+    repo = runner()
+    base = gitops.rev(repo, "HEAD")
+    gitops.push_ref(repo, base, "ark/x")
+    branch_with_file(repo, tmp_path, "ark/x-job", base, "a.txt")
+    f = forge.LocalForge()
+    assert f.open_by_head(repo, "ark/x-job") == []
+    one = f.create(repo, base="ark/x", head="ark/x-job", title="t", body="b")
+    assert f.open_by_head(repo, "ark/x-job") == [{"number": one["number"], "url": one["url"], "base": "ark/x"}]
+    assert f.open_by_head(repo, "ark/other") == []
+    f.close(repo, one["number"], "Closed by the sweep.")
+    pr = f.list(repo)[one["number"] - 1]
+    assert pr["state"] == "CLOSED" and pr["comments"] == ["Closed by the sweep."]
+    assert f.open_by_head(repo, "ark/x-job") == []
+    with pytest.raises(forge.ForgeError):
+        f.close(repo, one["number"], "again")
+    with pytest.raises(forge.ForgeError):
+        f.close(repo, 99, "none")
+
+
+def test_local_open_by_head_any_base(runner):
+    repo = runner()
+    f = forge.LocalForge()
+    f._save(repo, [{"number": 1, "url": "local://demo/pull/1", "base": "ark/a", "head": "ark/h", "state": "OPEN"},
+                   {"number": 2, "url": "local://demo/pull/2", "base": "master", "head": "ark/h", "state": "OPEN"},
+                   {"number": 3, "url": "local://demo/pull/3", "base": "ark/a", "head": "ark/h", "state": "MERGED"}])
+    assert [p["number"] for p in f.open_by_head(repo, "ark/h")] == [1, 2]
+    assert [p["base"] for p in f.open_by_head(repo, "ark/h")] == ["ark/a", "master"]
+
+
+class RecordingGh(forge.GhForge):
+    def __init__(self, out=""):
+        self.calls, self.out = [], out
+
+    def _gh(self, repo, *args, input=None):
+        self.calls.append((args, input))
+        if isinstance(self.out, Exception):
+            raise self.out
+        return self.out
+
+
+def test_gh_open_by_head(tmp_path):
+    rows = [{"url": "https://github.com/o/r/pull/7", "number": 7, "baseRefName": "ark/x", "isCrossRepository": False},
+            {"url": "https://github.com/f/r/pull/8", "number": 8, "baseRefName": "ark/x", "isCrossRepository": True}]
+    g = RecordingGh(json.dumps(rows))
+    assert g.open_by_head(tmp_path, "ark/x-job") == [{"number": 7, "url": "https://github.com/o/r/pull/7",
+                                                      "base": "ark/x"}]
+    assert g.calls == [(("pr", "list", "--head", "ark/x-job", "--state", "open", "--json",
+                         "url,number,baseRefName,isCrossRepository"), None)]
+
+
+@pytest.mark.parametrize("out", ["nope", "{}", json.dumps([{"url": "x"}]),
+                                 json.dumps([{"url": "https://github.com/o/r/pull/7", "number": "7",
+                                              "baseRefName": "b", "isCrossRepository": False}])])
+def test_gh_open_by_head_unreadable(tmp_path, out):
+    with pytest.raises(forge.ForgeError, match="unreadable"):
+        RecordingGh(out).open_by_head(tmp_path, "ark/x-job")
+
+
+def test_gh_close_with_the_comment(tmp_path):
+    g = RecordingGh("")
+    g.close(tmp_path, 7, "Closed by the Arkimedes sweep: run demo/x is aborted.")
+    assert g.calls == [(("pr", "close", "7", "--comment", "Closed by the Arkimedes sweep: run demo/x is aborted."),
+                        None)]
+    with pytest.raises(forge.ForgeError):
+        g.close(tmp_path, 0, "x")
+    with pytest.raises(forge.ForgeError):
+        RecordingGh(forge.ForgeError("gh pr close: boom")).close(tmp_path, 7, "x")

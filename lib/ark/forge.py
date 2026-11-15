@@ -154,6 +154,30 @@ class GhForge:
             raise ForgeError(f"gh pr view {number}: unexpected fields")
         return v
 
+    def open_by_head(self, repo, head: str) -> list[dict]:
+        """The open PRs of this repo whose head is `head`, into any base: [{number, url, base}]."""
+        raw = self._gh(repo, "pr", "list", "--head", head, "--state", "open", "--json",
+                       "url,number,baseRefName,isCrossRepository")
+        try:
+            rows = json.loads(raw)
+            if not isinstance(rows, list):
+                raise TypeError("not a list")
+            out = []
+            for d in rows:
+                if d["isCrossRepository"]:   # a fork's branch can share the name
+                    continue
+                pr = _pr_ref(d["url"])
+                if pr["number"] != _number(d["number"]) or not isinstance(d["baseRefName"], str):
+                    raise TypeError("fields do not agree")
+                out.append({"number": pr["number"], "url": pr["url"], "base": d["baseRefName"]})
+        except (ValueError, KeyError, TypeError, RecursionError, ForgeError) as e:
+            raise ForgeError(f"gh pr list: unreadable output ({type(e).__name__})") from None
+        return out
+
+    def close(self, repo, number: int, comment: str) -> None:
+        """Close the PR, leaving `comment` on it. The comment goes as an argument: `gh pr close` reads no file."""
+        self._gh(repo, "pr", "close", str(_number(number)), "--comment", comment)
+
     def merge(self, repo, number: int, *, subject: str, head_sha: str) -> None:
         _check_mergeable(self.view(repo, number), head_sha)
         self._gh(repo, "pr", "merge", str(number), "--squash", "--subject", subject, "--body", "",
@@ -203,6 +227,20 @@ class LocalForge:
         return {"base": pr["base"], "head": pr["head"],
                 "head_sha": pr.get("head_sha") or gitops.remote_sha(repo, pr["head"]),
                 "state": pr["state"], "url": pr["url"]}
+
+    def open_by_head(self, repo, head: str) -> list[dict]:
+        return [{"number": p["number"], "url": p["url"], "base": p["base"]}
+                for p in self.list(repo) if p["head"] == head and p["state"] == "OPEN"]
+
+    def close(self, repo, number: int, comment: str) -> None:
+        prs = self.list(repo)
+        pr = self._pr(repo, number)
+        if pr["state"] != "OPEN":
+            raise ForgeError(f"PR {number} is {pr['state']}, not open")
+        pr = prs[number - 1]
+        pr["state"] = "CLOSED"
+        pr.setdefault("comments", []).append(comment)
+        self._save(repo, prs)
 
     def merge(self, repo, number: int, *, subject: str, head_sha: str) -> None:
         prs = self.list(repo)
