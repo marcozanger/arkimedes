@@ -11,7 +11,7 @@ from ark import gitops, loop, paths
 @pytest.fixture(autouse=True)
 def start_check(monkeypatch):
     """conftest turns the start check off for the suite; these tests are about it."""
-    monkeypatch.setenv("ARK_START_CHECK", "1")
+    monkeypatch.setattr(loop, "START_CHECK", True)
 
 
 def commit_on(repo, branch, rel, text) -> str:

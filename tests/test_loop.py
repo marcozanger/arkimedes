@@ -18,12 +18,6 @@ from ark.plan import sha256_file
 SLUG = "notes-edit"
 
 
-@pytest.fixture(autouse=True)
-def no_start_check(monkeypatch):
-    """These loop tests predate the start check: a new run counts its base as green."""
-    monkeypatch.setattr(loop, "START_CHECK", False)
-
-
 @pytest.fixture
 def feature(runner, make_feature):
     """Seed a repo, write the plan on the desk and approve it."""

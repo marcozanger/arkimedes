@@ -15,8 +15,7 @@ for _name in ("gh", "claude"):
     _shim = _SANDBOX / "bin" / _name
     _shim.write_text(f'#!/bin/sh\necho "{_name} $*" >> "${{ARK_TRIPWIRE:-{_TRIPWIRE}}}"\nexit 97\n')
     _shim.chmod(0o755)
-os.environ.update(ARK_START_CHECK="0",  # tests that predate the start check; test_refresh_loop turns it back on
-                  HOME=str(_SANDBOX / "home"), ARK_HOME=str(_SANDBOX / "ark"), ARK_WORKTREES=str(_SANDBOX / "wt"),
+os.environ.update(HOME=str(_SANDBOX / "home"), ARK_HOME=str(_SANDBOX / "ark"), ARK_WORKTREES=str(_SANDBOX / "wt"),
                   PATH=f"{_SANDBOX / 'bin'}:{os.environ['PATH']}")
 for _k in ("ARK_CLAUDE", "ARK_FORGE", "ARK_ROLE", "ARK_TRIPWIRE", "FAKE_STATE", "ANTHROPIC_API_KEY", "GH_TOKEN", "GITHUB_TOKEN",
            "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):  # a suite run from a git hook must not act on that repo
@@ -32,6 +31,13 @@ from helpers import approve, plan_text
 
 def git(*args, cwd):
     subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
+@pytest.fixture(autouse=True)
+def no_start_check(monkeypatch):
+    """Tests that predate the start check: a new run counts its base as green. test_refresh_loop turns it on."""
+    from ark import loop
+    monkeypatch.setattr(loop, "START_CHECK", False)
 
 
 @pytest.fixture

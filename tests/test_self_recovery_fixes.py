@@ -8,12 +8,6 @@ from helpers import job, manifest
 from ark import brief, euklides, gitops, loop, run
 
 
-@pytest.fixture(autouse=True)
-def no_start_check(monkeypatch):
-    """These loop tests predate the start check: a new run counts its base as green."""
-    monkeypatch.setattr(loop, "START_CHECK", False)
-
-
 def test_widen_and_fix_base_open_only_after_their_blocks():
     j = {"usd": 0, "tier": "T1"}
     assert "widen" in euklides.allowed("blocked", j, 2, kind="area")
