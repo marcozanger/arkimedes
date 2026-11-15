@@ -1,3 +1,4 @@
+import contextlib
 import json
 
 import pytest
@@ -155,6 +156,32 @@ def test_a_fixed_that_fails_its_check_asks_with_then_stop(tmp_path, ark_home):
     assert j["status"] == "waiting_answer" and j["euklides_ask"]["then"] == "stop"
     loop._answered_worker(c.st, c.st["questions"][0], "ok")
     assert j["status"] == "blocked"
+
+
+def test_a_fix_marco_started_from_a_question_sends_the_worker_on_when_it_lands(tmp_path, ark_home, monkeypatch):
+    c = at_euklides(tmp_path, trigger="question", allowed=("ask",), situation="which file?", session="s1")
+    loop.on_euklides(c, "shell", euk_answer(action="ask", note="delete bad.txt", proposal="fix the base first",
+                                            then="fix_base"))
+    loop._apply_answer(c.st, {"id": "q1", "text": "ok"})
+    assert c.st["jobs"]["shell"]["status"] == "waiting_fix"
+    c.st["jobs"]["ui"] = {**run.new_job(job("ui", ["T1"], ["src/ui/**"])), "status": "waiting_fix", "fix": 1}
+    [f] = c.st["fixes"]
+    f["waiting"]["ui"] = {"trigger": "blocked", "situation": "red", "kind": "integrate", "decision": None,
+                          "proposal": "p"}
+    f.update(status="needs_land", head="h" * 40, files=["bad.txt"])
+    monkeypatch.setattr(loop.merge, "run_lock", lambda d: contextlib.nullcontext())
+    monkeypatch.setattr(gitops, "fetch", lambda repo: None)
+    monkeypatch.setattr(gitops, "rev", lambda repo, ref: "b" * 40)
+    monkeypatch.setattr(gitops, "squash_keep", lambda *a: "s" * 40)
+    monkeypatch.setattr(gitops, "push_ref", lambda *a: None)
+    monkeypatch.setattr(gitops, "_cleanup", lambda *a: None)
+    loop._land_fix(c, f)
+    shell, ui = c.st["jobs"]["shell"], c.st["jobs"]["ui"]
+    assert f["status"] == "landed"
+    assert shell["status"] == "needs_worker" and "fix" not in shell
+    assert f"bring origin/{c.base} into the job's branch first" in shell["resume_msg"]
+    assert "fix the base first" in shell["resume_msg"]
+    assert ui["status"] == "needs_integrate" and ui["integrate_fails"] == 0 and "fix" not in ui
 
 
 def test_a_failed_base_fix_asks_with_then_fix_base(tmp_path, ark_home):
