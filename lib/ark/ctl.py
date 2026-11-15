@@ -8,7 +8,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from . import accounts, answers, claude, daycap, desk, gitops, inbox, paths, proc, questions, run, usage
+from . import accounts, answers, approve, claude, daycap, desk, gitops, inbox, paths, proc, questions, run, usage
 
 FOLLOW_POLL = 1.0   # seconds between looks at a log being followed
 ATTACH_WAIT = 60  # seconds for ark-loop to hand a job over
@@ -203,6 +203,11 @@ def cmd_retry(args) -> int:
     j = run.load(repo, slug)["jobs"][job]
     if j["status"] != "blocked":
         raise CtlError(f"{job} is not blocked: {j['status']}")
+    st = run.load(repo, slug)
+    states = _states()
+    clash = approve.area_clash(st, states) if st.get("closing") == "done" else None
+    if clash:
+        raise CtlError(f"{repo}/{slug} cannot run again: {clash}. Retry once that run ends.")
     inbox.post(repo, slug, "retry", job=job)
     print(f"{job} goes back to its step on the next cycle")
     return 0

@@ -81,6 +81,10 @@ runner writes it under the question as `Answer ok to: …`, so pick the `then` t
   another job's area (the runner refuses that `ok`);
 - `fix_base`: a small worker fixes the integration branch in one `fix(base)` commit; the job waits;
 - `raise` + `usd`: the job's budget grows by that much, with Marco's money, not your margin;
+- `accept` + `gate`: the job's current head, already committed, is accepted on the replacement gate
+  `gate` (a shell command the runner runs itself, with no worker). Green goes on to push, PR and
+  review; red asks Marco again. Use it only when the replacement is a narrower form of the job's
+  own gate (for example a `--changed` run); never to skip a red test;
 - `stop`: the job ends blocked, with your note as the reason.
 
 A way out the runner cannot carry out (a PR to main, a plan edit, a push by hand) goes in `note` as
@@ -117,4 +121,4 @@ win over your own defaults.
 
 The final line of your message is one line of JSON and nothing after it:
 
-{"action": "<one open action>", "note": "<for retry/escalate/unblock: what the next attempt must do differently; for answer: the answer the worker gets; for fixed: what you did; for ask: the question for Marco>", "undo": "job|plan (answer only)", "why": "<one line>", "proposal": "<ask only: what you would do>", "then": "<ask only: go_on|escalate|widen|fix_base|raise|stop, what Marco's ok runs>", "files": ["<widen, or ask with then widen: the files to grant>"], "usd": <raise, or ask with then raise: the dollars to add>}
+{"action": "<one open action>", "note": "<for retry/escalate/unblock: what the next attempt must do differently; for answer: the answer the worker gets; for fixed: what you did; for ask: the question for Marco>", "undo": "job|plan (answer only)", "why": "<one line>", "proposal": "<ask only: what you would do>", "then": "<ask only: go_on|escalate|widen|fix_base|raise|accept|stop, what Marco's ok runs>", "files": ["<widen, or ask with then widen: the files to grant>"], "usd": <raise, or ask with then raise: the dollars to add>, "gate": "<ask with then accept: the replacement gate command>"}
