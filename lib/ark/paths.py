@@ -45,10 +45,18 @@ def run_file(repo: str, slug: str) -> Path:
     return runs_dir() / repo / f"{slug}.md"
 
 
+def default_load_max() -> int:
+    """The 1-minute load average above which a gate waits: 1.25 x the cores, at least 2."""
+    return max(2, round((os.cpu_count() or 1) * 1.25))
+
+
 DEFAULTS = {
     "roots": [],
     "exclude": [],
-    "limits": {"writers_per_repo": 3, "writers_total": 6, "heavy_gates": 1, "refresh_usd": 3},
+    # gate_workers: test processes a gate may spawn (ARK_TEST_WORKERS); load_max: load average above which a gate
+    # waits (0 = no brake); load_wait_max: seconds a gate waits for the load before it starts anyway.
+    "limits": {"writers_per_repo": 3, "writers_total": 6, "heavy_gates": 1, "refresh_usd": 3,
+               "gate_workers": 4, "load_max": default_load_max(), "load_wait_max": 900},
     "tick_minutes": 15,
     "poll_seconds": 15,
     "notify": [],

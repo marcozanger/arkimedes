@@ -61,8 +61,8 @@ jobs:
     area: [packages/shell/src/notes/**]
     after: []                         # job ids merged first
     tier: T1                          # T0 haiku · T1 sonnet · T2 opus
-    gate: pnpm -F shell test
-    heavy: false                      # heavy gates run one at a time
+    gate: pnpm -F shell test          # gates get ARK_TEST_WORKERS (limits.gate_workers): `vitest --maxWorkers=$ARK_TEST_WORKERS`
+    heavy: false                      # heavy gates still run one at a time
     companions: true                  # optional, default true: a few small test/doc files outside the area are allowed; false keeps the area strict
     done:
       - notes.delete removes the file and emits notes.changed

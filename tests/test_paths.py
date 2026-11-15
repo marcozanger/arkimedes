@@ -53,7 +53,8 @@ import json
 
 def test_workspace_defaults_fill_missing_keys(ark_home):
     ws = paths.load_workspace()
-    assert ws["limits"] == {"writers_per_repo": 3, "writers_total": 6, "heavy_gates": 1, "refresh_usd": 3}
+    assert ws["limits"] == {"writers_per_repo": 3, "writers_total": 6, "heavy_gates": 1, "refresh_usd": 3,
+                            "gate_workers": 4, "load_max": paths.default_load_max(), "load_wait_max": 900}
     assert ws["tick_minutes"] == 15 and ws["poll_seconds"] == 15
 
 
@@ -93,3 +94,24 @@ def test_read_regular_of_a_file_closes_it(tmp_path):
     for _ in range(20):
         assert paths.read_regular(tmp_path / "f", 2) == b"he"
     assert open_fds() == before
+
+
+def test_load_max_default_is_a_bit_above_the_cores(monkeypatch):
+    monkeypatch.setattr(os, "cpu_count", lambda: 8)
+    assert paths.default_load_max() == 10
+    monkeypatch.setattr(os, "cpu_count", lambda: 1)
+    assert paths.default_load_max() == 2
+    monkeypatch.setattr(os, "cpu_count", lambda: None)
+    assert paths.default_load_max() == 2
+
+
+def test_an_old_workspace_without_the_new_limits_still_loads(ark_home):
+    (ark_home / "workspace.json").write_text(json.dumps({"roots": [], "limits": {"heavy_gates": 2}}))
+    lim = paths.load_workspace()["limits"]
+    assert lim["heavy_gates"] == 2 and lim["gate_workers"] == 4 and lim["load_wait_max"] == 900
+
+
+def test_workspace_overrides_the_gate_limits(ark_home):
+    (ark_home / "workspace.json").write_text(json.dumps({"roots": [], "limits": {"gate_workers": 2, "load_max": 0}}))
+    lim = paths.load_workspace()["limits"]
+    assert lim["gate_workers"] == 2 and lim["load_max"] == 0
