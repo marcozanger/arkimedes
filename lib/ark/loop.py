@@ -17,10 +17,10 @@ import sys
 import tempfile
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
-from . import accounts, beat, brief, caps, claude, daycap, euklides, forge as forge_mod, gitops, inbox, integrate, merge, notify, paths, proc, questions, reporting, run, usage
+from . import accounts, beat, brief, caps, claude, daycap, euklides, forge as forge_mod, gitops, inbox, integrate, merge, notify, paths, proc, questions, reporting, run, sweep, usage
 from .globs import areas_overlap, match_any
 from .plan import load_plan, sha256_file
 from .validate import validate
@@ -2530,9 +2530,23 @@ def _retry_status(j: dict) -> str:
     return "needs_push" if j.get("head") else "needs_worker"  # blocked by code older than blocked_from
 
 
+def _abandoned(st: dict) -> str | None:
+    """The day an abandoned run became so, or None: such a run is never retried, only planned again."""
+    since = sweep.abandoned(st, datetime.now(timezone.utc))
+    return since.date().isoformat() if since else None
+
+
+def _drop_retry(st: dict, item: dict, since: str) -> None:
+    run.event(st, f"a retry was dropped: the run was abandoned on {since}")
+    inbox.done(item)
+
+
 def _apply_retry(st: dict, item: dict) -> None:
     """`ark retry`: the job goes back to the step it was blocked from, with that step's counters cleared, and every
     job blocked only because it waited on it goes back to pending."""
+    since = _abandoned(st)
+    if since:
+        return _drop_retry(st, item, since)
     job = item.get("job")
     j = st["jobs"].get(job)
     if j is None or j["status"] != "blocked":
@@ -2560,6 +2574,11 @@ def _reopen(st: dict) -> None:
     """A closed blocked run with a retry for one of its blocked jobs runs again; its final PR stays and its
     decisions doc is written again when it closes."""
     items = [i for i in inbox.pending(st["repo"], st["slug"]) if i["kind"] == "retry"]
+    since = _abandoned(st) if items else None
+    if since:
+        for i in items:
+            _drop_retry(st, i, since)
+        return
     if not any((st["jobs"].get(i.get("job")) or {}).get("status") == "blocked" for i in items):
         return
     st.update(status="running", closing=None)
