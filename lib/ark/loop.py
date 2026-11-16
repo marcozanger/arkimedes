@@ -240,6 +240,8 @@ def try_start(st: dict, others: list[dict], forge) -> bool:
             if existing and existing != st["base_sha"]:
                 reason = f"ark/{st['slug']} already exists on origin: delete it, or approve under another slug"
             for job in () if reason else mjobs:
+                if st["jobs"].get(job["id"], {}).get("status") not in (None, "pending"):
+                    continue  # merged or blocked under an earlier version: its branch is history
                 branch = f"ark/{st['slug']}-{job['id']}"
                 if gitops.remote_sha(repo, branch):  # a job's push could never fast-forward over it
                     reason = f"{branch} already exists on origin: delete it, or approve under another slug"
@@ -263,8 +265,9 @@ def try_start(st: dict, others: list[dict], forge) -> bool:
         st["refresh"] = _new_refresh(0, base, None)  # no job before a check is green on the base
     st.update(main_seen=base, base_green=not START_CHECK)
     st.setdefault("refreshes", [])
-    for mj in mjobs:
-        st["jobs"][mj["id"]] = run.new_job(mj)
+    for mj in mjobs:  # a run that starts again under a new version keeps the jobs it already has
+        if mj["id"] not in st["jobs"]:
+            st["jobs"][mj["id"]] = run.new_job(mj)
     _first_version(st)
     run.event(st, f"started: ark/{st['slug']} from {default} @ {base[:8]}")
     return True
@@ -3037,6 +3040,16 @@ def step(st: dict, states: list[dict], forge, slots: Slots, hold: bool = False) 
         maybe_close(c)
 
 
+def _first_refusal(st: dict, a: dict, reason: str) -> bool:
+    """True the first time this approval is refused for this reason: he hears each reason once, and a new one
+    after another (an area that overlaps, then one that does not validate) is heard too."""
+    key = f"{a['sha256']}:{reason}"
+    if st.get("reapprove_refused") == key:
+        return False
+    st["reapprove_refused"] = key
+    return True
+
+
 def _old_plan(st: dict):
     """The frozen text this run follows now, or None when it was never kept."""
     v = versions.by_sha(st["repo"], st["slug"], st["plan_sha"])
@@ -3095,8 +3108,7 @@ def _adopt_version(st: dict, a: dict, states: list[dict], forge) -> None:
                 why = f"its area overlaps the {o['status']} plan {o['slug']}"
                 break
     if why:
-        if st.get("reapprove_refused") != a["sha256"]:
-            st["reapprove_refused"] = a["sha256"]
+        if _first_refusal(st, a, why):
             run.alert(st, f"it cannot take v{a['version']}: {why}. It goes on with the version it follows.")
         return
     repo = paths.find_repo(st["repo"])
@@ -3145,7 +3157,23 @@ def _adopt_version(st: dict, a: dict, states: list[dict], forge) -> None:
 
 
 def _restart_finished(st: dict, forge, repo) -> None:
-    raise NotImplementedError
+    """A done or blocked run takes a new version. An open final PR keeps ark/<slug> and grows with the
+    new work; otherwise main already holds what merged, so the run starts again from main."""
+    pr = st.get("final_pr")
+    is_open = False
+    if pr:
+        try:
+            is_open = forge.view(repo, pr["number"])["state"] == "OPEN"
+        except forge_mod.ForgeError:
+            is_open = True  # unsure: keep the branch, never lose work
+    for k in ("decisions_sha", "decisions_ticks", "closing_wait", "closing_errors", "closing_error", "closed_at"):
+        st.pop(k, None)
+    st.update(closing=None, reason="")
+    if is_open:
+        st["status"] = "running"
+        return
+    gitops.delete_remote(repo, f"ark/{st['slug']}")
+    st.update(status="waiting", base_sha=None, final_pr=None)
 
 
 def status_line(states: list[dict]) -> str:
