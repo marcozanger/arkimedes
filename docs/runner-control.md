@@ -321,6 +321,14 @@ Its `version` field changes when the shape does. It reads:
 - each job's `phase`, from the processes it has running: `developing` (worker, Euklides), `testing` (job or
   integration gate) or `reviewing`, with `since` and, for a gate, `usual_min`, the median of that run's finished
   gates. A job with no process running has none.
+- `wait`, per plan and per job that is not running: why nothing moves, as `{kind, text}`. The plan's `wait` is
+  `machine` (the load brake of `ark-loop`, read from the run's events, with `load`, `limit` and `busy_with`, the other
+  runs with a job working) until a later event of the same step; a job's is `machine`, `dependency` (a job in its `after`
+  has not merged), `answer` (a question is open) or `queue`. Null when the run is not running.
+- `estimate`, per plan and per job: the budget minutes split into `developing`, `testing`, `reviewing` and `other`
+  by the shares of the repo's earlier steps (`lib/ark/phases.py`, from `runs/<repo>/*/steps.jsonl`; every repo's when
+  the repo has under 60 min of history; null with none). A history, not a budget. Time waiting for the machine or for
+  Marco is not in a budget, so it is not in the split.
 
 - per plan, for the Dashboard: `account` (the account its repo spends on), `euklides` (`decisions` Euklides took for the
   plan and how many of them were `asked`, a question for Marco; from `history/euklides/decisions.jsonl`) and, in `cost`,

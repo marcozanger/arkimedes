@@ -104,7 +104,14 @@
           "phase": null,
           "area": [
             "src/**"
-          ]
+          ],
+          "wait": null,
+          "estimate": {
+            "developing": 12.4,
+            "testing": 4.6,
+            "reviewing": 2.4,
+            "other": 0.6
+          }
         },
         {
           "id": "api",
@@ -145,7 +152,14 @@
           "phase": null,
           "area": [
             "src/**"
-          ]
+          ],
+          "wait": null,
+          "estimate": {
+            "developing": 18.6,
+            "testing": 6.9,
+            "reviewing": 3.6,
+            "other": 0.9
+          }
         },
         {
           "id": "ui-edit",
@@ -191,7 +205,14 @@
           "phase": null,
           "area": [
             "src/**"
-          ]
+          ],
+          "wait": null,
+          "estimate": {
+            "developing": 24.8,
+            "testing": 9.2,
+            "reviewing": 4.8,
+            "other": 1.2
+          }
         },
         {
           "id": "review-ui",
@@ -232,7 +253,14 @@
           "phase": null,
           "area": [
             "src/**"
-          ]
+          ],
+          "wait": null,
+          "estimate": {
+            "developing": 9.3,
+            "testing": 3.5,
+            "reviewing": 1.8,
+            "other": 0.4
+          }
         },
         {
           "id": "docs",
@@ -273,7 +301,17 @@
           "phase": null,
           "area": [
             "src/**"
-          ]
+          ],
+          "wait": {
+            "kind": "machine",
+            "text": "Not started: the run waits for the machine."
+          },
+          "estimate": {
+            "developing": 6.2,
+            "testing": 2.3,
+            "reviewing": 1.2,
+            "other": 0.3
+          }
         }
       ],
       "cost": {
@@ -296,6 +334,27 @@
       "euklides": {
         "decisions": 2,
         "asked": 1
+      },
+      "wait": {
+        "kind": "machine",
+        "since": "2026-11-07T10:05:00+00:00",
+        "step": "refresh",
+        "load": 17.8,
+        "limit": 12.0,
+        "busy_with": [
+          "demo/other-plan"
+        ],
+        "text": "The refresh gate waits for the machine: load 17.8 is above the limit of 12.0. It starts by itself when the load drops; other runs are using it (demo/other-plan)."
+      },
+      "estimate": {
+        "basis": "humanharness",
+        "history_min": 1200,
+        "minutes": {
+          "developing": 71.3,
+          "testing": 26.5,
+          "reviewing": 13.8,
+          "other": 3.4
+        }
       }
     },
     {
@@ -393,7 +452,14 @@
           "phase": null,
           "area": [
             "src/**"
-          ]
+          ],
+          "wait": null,
+          "estimate": {
+            "developing": 24.8,
+            "testing": 9.2,
+            "reviewing": 4.8,
+            "other": 1.2
+          }
         },
         {
           "id": "copy",
@@ -436,7 +502,14 @@
           "phase": null,
           "area": [
             "src/**"
-          ]
+          ],
+          "wait": null,
+          "estimate": {
+            "developing": 31.0,
+            "testing": 11.5,
+            "reviewing": 6.0,
+            "other": 1.5
+          }
         }
       ],
       "cost": {
@@ -459,6 +532,17 @@
       "euklides": {
         "decisions": 1,
         "asked": 0
+      },
+      "wait": null,
+      "estimate": {
+        "basis": "arkimedes",
+        "history_min": 1200,
+        "minutes": {
+          "developing": 55.8,
+          "testing": 20.7,
+          "reviewing": 10.8,
+          "other": 2.7
+        }
       }
     },
     {
@@ -534,7 +618,14 @@
           "phase": null,
           "area": [
             "src/**"
-          ]
+          ],
+          "wait": null,
+          "estimate": {
+            "developing": 12.4,
+            "testing": 4.6,
+            "reviewing": 2.4,
+            "other": 0.6
+          }
         },
         {
           "id": "screens",
@@ -575,7 +666,14 @@
           "phase": null,
           "area": [
             "src/**"
-          ]
+          ],
+          "wait": null,
+          "estimate": {
+            "developing": 18.6,
+            "testing": 6.9,
+            "reviewing": 3.6,
+            "other": 0.9
+          }
         },
         {
           "id": "polish",
@@ -614,7 +712,14 @@
           "phase": null,
           "area": [
             "src/**"
-          ]
+          ],
+          "wait": null,
+          "estimate": {
+            "developing": 6.2,
+            "testing": 2.3,
+            "reviewing": 1.2,
+            "other": 0.3
+          }
         }
       ],
       "cost": {
@@ -637,6 +742,17 @@
       "euklides": {
         "decisions": 0,
         "asked": 0
+      },
+      "wait": null,
+      "estimate": {
+        "basis": "muscleapp",
+        "history_min": 1200,
+        "minutes": {
+          "developing": 37.2,
+          "testing": 13.8,
+          "reviewing": 7.2,
+          "other": 1.8
+        }
       }
     },
     {
@@ -708,7 +824,14 @@
           "phase": null,
           "area": [
             "src/**"
-          ]
+          ],
+          "wait": null,
+          "estimate": {
+            "developing": 27.9,
+            "testing": 10.3,
+            "reviewing": 5.4,
+            "other": 1.3
+          }
         },
         {
           "id": "api",
@@ -747,7 +870,14 @@
           "phase": null,
           "area": [
             "src/**"
-          ]
+          ],
+          "wait": null,
+          "estimate": {
+            "developing": 31.0,
+            "testing": 11.5,
+            "reviewing": 6.0,
+            "other": 1.5
+          }
         }
       ],
       "cost": {
@@ -770,6 +900,17 @@
       "euklides": {
         "decisions": 0,
         "asked": 0
+      },
+      "wait": null,
+      "estimate": {
+        "basis": "socrates",
+        "history_min": 1200,
+        "minutes": {
+          "developing": 58.9,
+          "testing": 21.8,
+          "reviewing": 11.4,
+          "other": 2.8
+        }
       }
     },
     {
@@ -844,7 +985,14 @@
           "phase": null,
           "area": [
             "src/**"
-          ]
+          ],
+          "wait": null,
+          "estimate": {
+            "developing": 15.5,
+            "testing": 5.8,
+            "reviewing": 3.0,
+            "other": 0.8
+          }
         },
         {
           "id": "tests",
@@ -883,7 +1031,14 @@
           "phase": null,
           "area": [
             "src/**"
-          ]
+          ],
+          "wait": null,
+          "estimate": {
+            "developing": 12.4,
+            "testing": 4.6,
+            "reviewing": 2.4,
+            "other": 0.6
+          }
         }
       ],
       "cost": {
@@ -906,6 +1061,17 @@
       "euklides": {
         "decisions": 3,
         "asked": 1
+      },
+      "wait": null,
+      "estimate": {
+        "basis": "socrates",
+        "history_min": 1200,
+        "minutes": {
+          "developing": 27.9,
+          "testing": 10.4,
+          "reviewing": 5.4,
+          "other": 1.4
+        }
       }
     },
     {
@@ -960,6 +1126,17 @@
       "euklides": {
         "decisions": 0,
         "asked": 0
+      },
+      "wait": null,
+      "estimate": {
+        "basis": "cockpit",
+        "history_min": 1200,
+        "minutes": {
+          "developing": 0.0,
+          "testing": 0.0,
+          "reviewing": 0.0,
+          "other": 0.0
+        }
       }
     },
     {
@@ -1034,7 +1211,14 @@
           "phase": null,
           "area": [
             "src/**"
-          ]
+          ],
+          "wait": null,
+          "estimate": {
+            "developing": 15.5,
+            "testing": 5.8,
+            "reviewing": 3.0,
+            "other": 0.8
+          }
         },
         {
           "id": "tests",
@@ -1073,7 +1257,14 @@
           "phase": null,
           "area": [
             "src/**"
-          ]
+          ],
+          "wait": null,
+          "estimate": {
+            "developing": 12.4,
+            "testing": 4.6,
+            "reviewing": 2.4,
+            "other": 0.6
+          }
         }
       ],
       "cost": {
@@ -1096,6 +1287,17 @@
       "euklides": {
         "decisions": 0,
         "asked": 0
+      },
+      "wait": null,
+      "estimate": {
+        "basis": "socrates",
+        "history_min": 1200,
+        "minutes": {
+          "developing": 27.9,
+          "testing": 10.4,
+          "reviewing": 5.4,
+          "other": 1.4
+        }
       }
     },
     {
@@ -1170,7 +1372,14 @@
           "phase": null,
           "area": [
             "src/**"
-          ]
+          ],
+          "wait": null,
+          "estimate": {
+            "developing": 15.5,
+            "testing": 5.8,
+            "reviewing": 3.0,
+            "other": 0.8
+          }
         },
         {
           "id": "tests",
@@ -1209,7 +1418,14 @@
           "phase": null,
           "area": [
             "src/**"
-          ]
+          ],
+          "wait": null,
+          "estimate": {
+            "developing": 12.4,
+            "testing": 4.6,
+            "reviewing": 2.4,
+            "other": 0.6
+          }
         }
       ],
       "cost": {
@@ -1232,6 +1448,17 @@
       "euklides": {
         "decisions": 4,
         "asked": 2
+      },
+      "wait": null,
+      "estimate": {
+        "basis": "humanharness",
+        "history_min": 1200,
+        "minutes": {
+          "developing": 27.9,
+          "testing": 10.4,
+          "reviewing": 5.4,
+          "other": 1.4
+        }
       }
     },
     {
@@ -1304,7 +1531,14 @@
           "phase": null,
           "area": [
             "src/**"
-          ]
+          ],
+          "wait": null,
+          "estimate": {
+            "developing": 15.5,
+            "testing": 5.8,
+            "reviewing": 3.0,
+            "other": 0.8
+          }
         },
         {
           "id": "tests",
@@ -1343,7 +1577,14 @@
           "phase": null,
           "area": [
             "src/**"
-          ]
+          ],
+          "wait": null,
+          "estimate": {
+            "developing": 12.4,
+            "testing": 4.6,
+            "reviewing": 2.4,
+            "other": 0.6
+          }
         }
       ],
       "cost": {
@@ -1366,6 +1607,17 @@
       "euklides": {
         "decisions": 0,
         "asked": 0
+      },
+      "wait": null,
+      "estimate": {
+        "basis": "arkimedes",
+        "history_min": 1200,
+        "minutes": {
+          "developing": 27.9,
+          "testing": 10.4,
+          "reviewing": 5.4,
+          "other": 1.4
+        }
       }
     }
   ]
