@@ -174,9 +174,10 @@ class GhForge:
             raise ForgeError(f"gh pr list: unreadable output ({type(e).__name__})") from None
         return out
 
-    def close(self, repo, number: int, comment: str) -> None:
-        """Close the PR, leaving `comment` on it. The comment goes as an argument: `gh pr close` reads no file."""
-        self._gh(repo, "pr", "close", str(_number(number)), "--comment", comment)
+    def close(self, repo, number: int, comment: str = "") -> None:
+        """Close the PR, leaving `comment` on it when there is one. The comment goes as an argument: `gh pr close`
+        reads no file."""
+        self._gh(repo, "pr", "close", str(_number(number)), *(("--comment", comment) if comment else ()))
 
     def merge(self, repo, number: int, *, subject: str, head_sha: str) -> None:
         _check_mergeable(self.view(repo, number), head_sha)
@@ -232,14 +233,15 @@ class LocalForge:
         return [{"number": p["number"], "url": p["url"], "base": p["base"]}
                 for p in self.list(repo) if p["head"] == head and p["state"] == "OPEN"]
 
-    def close(self, repo, number: int, comment: str) -> None:
+    def close(self, repo, number: int, comment: str = "") -> None:
         prs = self.list(repo)
         pr = self._pr(repo, number)
         if pr["state"] != "OPEN":
             raise ForgeError(f"PR {number} is {pr['state']}, not open")
         pr = prs[number - 1]
         pr["state"] = "CLOSED"
-        pr.setdefault("comments", []).append(comment)
+        if comment:
+            pr.setdefault("comments", []).append(comment)
         self._save(repo, prs)
 
     def merge(self, repo, number: int, *, subject: str, head_sha: str) -> None:

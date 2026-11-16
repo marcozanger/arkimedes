@@ -154,6 +154,13 @@ def delete_branch(repo, branch: str) -> None:
     git(repo, "branch", "-q", "-D", "--", branch)
 
 
+def delete_remote(repo, branch: str) -> None:
+    """Delete an ark/* branch on origin; nothing when it is not there."""
+    _ark_only(branch)
+    if remote_sha(repo, branch):
+        delete_remote_branch(repo, branch)
+
+
 def delete_remote_branch(repo, branch: str) -> None:
     _ark_only(branch)
     git(repo, "push", "-q", "origin", "--delete", f"refs/heads/{branch}")
