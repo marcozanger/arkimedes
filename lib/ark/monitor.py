@@ -4,6 +4,7 @@ The app reads only this, never runs/ itself, so the state format stays private t
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from datetime import datetime, timezone
@@ -321,6 +322,20 @@ def _safe(repo: str, slug: str, a: dict | None, now: datetime, rows: list[dict] 
         return p
 
 
+def _machine() -> dict:
+    """How loaded the machine is: the 1, 5 and 15 minute load averages, the cores, and the load above which a gate
+    waits (`limits.load_max`, 0 = no brake)."""
+    try:
+        load = [round(x, 1) for x in os.getloadavg()]
+    except OSError:
+        load = None
+    try:
+        limit = (paths.load_workspace().get("limits") or {}).get("load_max")
+    except Exception:  # a broken workspace.json is reported elsewhere
+        limit = None
+    return {"load": load, "cores": os.cpu_count() or 1, "limit": limit if isinstance(limit, (int, float)) else paths.default_load_max()}
+
+
 def build(now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
     approvals = _approvals()
@@ -331,7 +346,7 @@ def build(now: datetime | None = None) -> dict:
         rows = []
     euk = _euklides_counts()
     busy = _busy(keys)
-    return {"version": VERSION, "generated": _iso(now), "loop": beat.read(now.timestamp()), "alerts": _alerts(),
+    return {"version": VERSION, "generated": _iso(now), "loop": beat.read(now.timestamp()), "machine": _machine(), "alerts": _alerts(),
             "plans": [_safe(r, s, approvals.get((r, s)), now, rows, euk, busy) for r, s in keys]}
 
 

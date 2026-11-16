@@ -401,3 +401,7 @@ Run these by hand after the merge; the suite uses a fake claude:
 4. `ark attach` resumes the session and sees the work.
 5. A `steer` resumes the session and the worker follows it.
 6. The notifier reaches the Mac, and the phone once its service is chosen.
+
+- `machine`, at the top of the feed: `load` (the 1, 5 and 15 minute load averages), `cores` and `limit`, the load
+  above which a gate waits (`limits.load_max`). The menu shows it under the loop: free, busy (over 70% of the limit) or
+  overloaded (over the limit, gates wait).

@@ -33,3 +33,9 @@ def test_a_finished_run_waits_for_nothing(make_feature):
     _events([HOLD])
     [p] = monitor.build()["plans"]
     assert p["wait"] is None and all(j["wait"] is None for j in p["jobs"])
+
+
+def test_the_feed_carries_the_machine_load(ark_home, monkeypatch):
+    monkeypatch.setattr("os.getloadavg", lambda: (17.84, 12.6, 10.3))
+    m = monitor.build()["machine"]
+    assert m["load"] == [17.8, 12.6, 10.3] and m["cores"] >= 1 and m["limit"] > 0

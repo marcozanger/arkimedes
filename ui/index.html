@@ -49,6 +49,7 @@ h1, h2, h3 { margin: 0; }
 .foot { margin-top: auto; display: grid; gap: 4px; padding: 10px 8px 0; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); margin-right: 6px; vertical-align: 1px; }
 .dot.off { background: var(--bad); }
+.dot.warn { background: var(--attn-ink); }
 .main { padding: 18px 22px 96px; display: grid; gap: 16px; align-content: start; min-width: 0; }
 .screen-head { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; justify-content: space-between; }
 .screen-head h1 { font-size: 20px; font-weight: 650; }
@@ -756,6 +757,17 @@ function banner() {
   return null;
 }
 
+// The machine's load next to the loop, to judge whether to start or wait: free under 70% of the limit above which a
+// gate waits, busy up to it, overloaded above (gates wait). The tip has the 1, 5 and 15 minute averages.
+function machineLoad(m) {
+  if (!m || !Array.isArray(m.load)) return "";
+  const [l1, l5, l15] = m.load, lim = m.limit || 0;
+  const lvl = !lim ? "free" : l1 > lim ? "overloaded" : l1 > lim * 0.7 ? "busy" : "free";
+  const word = { free: "Machine free", busy: "Machine busy", overloaded: "Machine overloaded" }[lvl];
+  const tip = `Load average 1 / 5 / 15 min: ${m.load.join(" / ")} on ${m.cores} cores.${lim ? ` A gate waits above ${lim}.` : " No brake."}`;
+  return `<span title="${esc(tip)}"><i class="dot ${lvl === "free" ? "" : lvl === "busy" ? "warn" : "off"}"></i>${word} · load ${esc(l1)}${lim ? ` of ${esc(lim)}` : ""}${l5 > l1 ? " ↓" : l5 < l1 ? " ↑" : ""}</span>`;
+}
+
 function menu() {
   const r = S.route.screen;
   const nav = (href, label, on, extra = "") => `<a class="nav" href="${href}"${on ? ' aria-current="page"' : ""}>${label}${extra}</a>`;
@@ -763,12 +775,13 @@ function menu() {
   const loop = S.data ? (S.data.loop.alive
     ? `<span><i class="dot"></i>Loop running · beat ${esc(clock(ms(S.data.loop.last_beat)))}</span>`
     : '<span><i class="dot off"></i>Loop stopped</span>') : "<span>Loop: no data yet</span>";
+  const mc = machineLoad(S.data && S.data.machine);
   return `<span class="brand">Arkimedes</span>
     ${nav("#/", "Home", r === "home" || r === "plan" || r === "draft", n ? `<span class="count" title="${n} ${n === 1 ? "plan waits" : "plans wait"} for you: blocked, paused, or with a question">${n}</span>` : "")}
     ${nav("#/dashboard", "Dashboard", r === "dashboard")}
     ${nav("#/history", "History", r === "history")}
     ${nav("#/euklides", "Euklides", r === "euklides")}
-    <div class="foot">${loop}<span>Today: $${esc(todaySpend().toFixed(2))}</span></div>`;
+    <div class="foot">${loop}${mc}<span>Today: $${esc(todaySpend().toFixed(2))}</span></div>`;
 }
 
 // ---- home
