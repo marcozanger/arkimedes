@@ -1436,7 +1436,7 @@ def test_a_plan_that_no_longer_validates_never_starts(feature):
     assert gitops.remote_sha(repo, f"ark/{SLUG}") is None
 
 
-SLOT_LIMITS = {"writers_per_repo": 1, "writers_total": 2, "heavy_gates": 1}
+SLOT_LIMITS = {"writers_per_repo": 1, "writers_total": 2, "heavy_gates": 1, "gates_total": 2}
 
 
 def _slot_state(status, heavy=False, repo="a"):
@@ -1454,14 +1454,15 @@ def test_slots_hold_the_writers_in_total():
 
 
 def test_slots_hold_the_heavy_gates_and_never_the_light_ones():
-    s = loop.Slots([], SLOT_LIMITS)
+    s = loop.Slots([], {**SLOT_LIMITS, "gates_total": 9})
     assert s.gate(False) and s.gate(True) and not s.gate(True) and s.gate(False)
 
 
 @pytest.mark.parametrize("status", ["gating", "integrating"])
 def test_slots_count_the_heavy_gates_already_running(status):
     assert not loop.Slots([_slot_state(status, heavy=True)], SLOT_LIMITS).gate(True)
-    assert loop.Slots([_slot_state(status)], SLOT_LIMITS).gate(True)
+    # an integration gate is heavy whatever its job says; a light job's job gate is not
+    assert loop.Slots([_slot_state(status)], SLOT_LIMITS).gate(True) == (status == "gating")
 
 
 def test_slots_count_the_workers_already_running():

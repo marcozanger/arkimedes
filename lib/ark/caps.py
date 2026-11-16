@@ -101,9 +101,17 @@ def day_limit(limits: dict, account: str = accounts.PERSONAL) -> float | None:
     return limit
 
 
+def check_gates(limits: dict) -> None:
+    """gates_total: an integer of 1 or more (a missing value was filled with 2 by paths.load_workspace)."""
+    v = limits.get("gates_total", 2)
+    if not isinstance(v, int) or isinstance(v, bool) or v < 1:
+        raise ValueError(f"limits.gates_total must be an integer of 1 or more, not {v!r}")
+
+
 def check_limits(limits: dict) -> None:
     """Every cap valid, or raise: the personal limit (ValueError) and every rule (AccountError)."""
     day_limit(limits)
+    check_gates(limits)
     accounts._rules()
 
 
