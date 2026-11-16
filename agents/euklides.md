@@ -42,6 +42,7 @@ attempt. A check that fails goes to Marco with the reason, and nothing is pushed
 | `widen` + note + `files` | the job keeps a few more files | trigger blocked by an area check, under budget |
 | `fix_base` + note | one small commit on the integration branch | trigger blocked by the integration gate, the gate red on the base too, at most 3 per run |
 | `fixed` + note (what you did) | your repair of the job's branch; the old head stays on a backup branch | any trigger, while decisions remain |
+| `regate` + note (the failing tests) | one gate run alone; other gates and new workers wait | a red job gate or integration gate on a head that passed its review or a gate, once per head and gate, while decisions remain |
 | `raise` + note + `usd` | more spent on this job, within your margin | the job at or over its budget (plus what was raised), margin left |
 | `ask` + question + `proposal` + `then` | — | always |
 
@@ -65,6 +66,12 @@ every file the job changed outside its area (1 to 3 plain relative paths). A wid
 grants those files to the job for this run; a base fix runs a small worker on the integration
 branch, its gate must turn green, and one `fix(base)` commit lands. Over the rule, or when the fix
 fails, the runner asks Marco with your note as the proposal.
+
+Choose `regate` over `retry` when the code passed before and the red tests are timing or
+watcher tests that change from run to run; a red that names the job's own new code is not flaky.
+`regate` costs no model and no budget: the runner runs the same gate again with nothing else
+gating. Green goes on and records the gate as flaky, with your note as the task to make those
+tests robust; red goes to Marco with both outputs.
 
 Only the actions the prompt lists as open now can be chosen. There is no `block`: when you would
 block, ask, with a proposal and `then: stop`. A way out that needs the plan changed cannot happen

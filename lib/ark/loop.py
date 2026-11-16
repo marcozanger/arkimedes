@@ -1794,13 +1794,21 @@ def _dependents(c: Ctx, job: str) -> list[str]:
     return [m["id"] for m in c.plan.manifest["jobs"] if job in (m.get("after") or [])]
 
 
+def regate_open(j: dict, e: dict) -> bool:
+    """A red gate on a head that passed a gate or a CLEAN review, not yet re-run for this gate and head."""
+    red = e.get("red")
+    return bool(red) and red.get("head") in (j.get("green_heads") or []) \
+        and f"{red['kind']}:{red['head']}" not in (j.get("regated") or [])
+
+
 def start_euklides(c: Ctx, job: str) -> None:
     j = c.st["jobs"][job]
     e, mj = j["euklides"], c.mjobs[job]
     cfg = euklides.settings()
     e["allowed"] = euklides.allowed(e["trigger"], j, mj["budget"]["usd"], cfg["budget_margin"],  # fixed now: the
                                     kind=e.get("kind"), base_red=bool(e.get("base_red")),  # answer is checked
-                                    fixes_used=c.st.get("fix_base_count", 0))  # against it
+                                    fixes_used=c.st.get("fix_base_count", 0),  # against it
+                                    regate=regate_open(j, e))
     wt = c.wt(job)
     commits, changed = _branch_lists(wt, f"origin/{c.base}")
     prompt = brief.euklides_prompt(c.st, job, j, mj, c.plan, trigger=e["trigger"], situation=e["situation"],

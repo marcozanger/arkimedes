@@ -40,3 +40,37 @@ def test_green_heads_keep_the_last_ten_without_repeats():
         loop._passed(j, h)
     assert len(j["green_heads"]) == loop.GREEN_HEADS and j["green_heads"][-1] == "5" \
         and j["green_heads"].count("5") == 1
+
+
+# -- T5: Euklides may choose regate
+
+from ark import brief, euklides  # noqa: E402
+
+
+def job_state(**over):
+    return {"usd": 20.0, "tier": "T2", "euklides_count": 0, **over}
+
+
+def test_regate_opens_on_a_red_head_that_passed_even_over_budget():
+    assert "regate" in euklides.allowed("failure", job_state(), 10, regate=True)
+
+
+def test_regate_is_closed_without_the_runners_say_so():
+    assert "regate" not in euklides.allowed("failure", job_state(), 10)
+
+
+def test_regate_is_closed_after_the_decision_limit():
+    assert euklides.allowed("failure", job_state(euklides_count=99), 10, regate=True) == ["ask"]
+
+
+def test_the_loop_opens_regate_only_once_per_head_and_gate():
+    red = {"kind": "gate", "head": "abc", "tail": "x"}
+    assert loop.regate_open({"green_heads": ["abc"]}, {"red": red})
+    assert not loop.regate_open({"green_heads": ["zzz"]}, {"red": red})
+    assert not loop.regate_open({"green_heads": ["abc"], "regated": ["gate:abc"]}, {"red": red})
+    assert loop.regate_open({"green_heads": ["abc"], "regated": ["integrate:abc"]}, {"red": red})
+    assert not loop.regate_open({"green_heads": ["abc"]}, {})
+
+
+def test_euklides_reads_what_regate_does():
+    assert "regate" in brief.EUKLIDES_ACTIONS and "alone" in brief.EUKLIDES_ACTIONS["regate"]

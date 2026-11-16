@@ -184,6 +184,11 @@ EUKLIDES_ACTIONS = {
     "raise": "`raise`: add `usd` (a positive number) to this job's budget and let it go on; `note` says why the "
              "job is worth it and what it does next. Your margin is a total across all your raises on this job, not "
              "per decision; a raise past what is left of it becomes a question to Marco, the only way past it.",
+    "regate": "`regate`: the gate is red on a head that already passed its review or a gate, and the failures "
+              "look like load (timeouts, timing, file watchers, tests that differ from run to run), not this "
+              "job's code. The runner runs the same gate command again, alone on the machine, with no model and "
+              "no budget. Green: the job goes on and the gate is recorded as flaky. Red: Marco gets both outputs. "
+              "`note` names the failing tests as the log shows them: it becomes the task to make them robust.",
     "ask": "`ask`: Marco decides; `note` is the question, `proposal` what you would do, `then` the one runner "
            "action his `ok` carries out (the runner writes it under the question as `Answer ok to: ...`). Pick "
            "the `then` that does your proposal:",
