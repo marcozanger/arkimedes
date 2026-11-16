@@ -167,3 +167,41 @@ def test_a_job_sent_to_euklides_or_blocked_drops_its_regate(tmp_path):
     c.st["jobs"]["shell"]["regate"] = {"kind": "gate"}
     loop._block(c.st, "shell", "x")
     assert "regate" not in c.st["jobs"]["shell"]
+
+
+# -- T7: a replay of the two cases, end to end
+
+from helpers import manifest  # noqa: E402
+from test_loop import drive, feature, jobs_settled, state  # noqa: E402,F401
+
+
+def test_an_integration_gate_red_under_load_goes_on_without_a_question(feature, monkeypatch, tmp_path):
+    busy = tmp_path / "busy"
+    busy.write_text("load")
+    monkeypatch.setenv("FAKE_EUKLIDES", '{"action": "regate", "note": "watch.test.ts times out under load"}')
+    monkeypatch.setenv("FAKE_EUKLIDES_RUN", f'rm -f "{busy}"')
+    feature(manifest(integration_gate=f'[ ! -f "{busy}" ]'))
+    drive(jobs_settled)
+    st = state()
+    assert all(j["status"] == "merged" for j in st["jobs"].values())
+    assert not st.get("questions")
+    assert [f["kind"] for f in st["flaky"]] == ["integrate"]
+
+
+def test_a_job_gate_red_under_load_on_a_head_that_passed_goes_on_without_a_question(feature, monkeypatch, tmp_path):
+    """The integration gate is red once (and loads the machine: `busy` appears), so the job goes back to its
+    worker; the attempt changes nothing, so its job gate runs on the head that passed, and is red."""
+    from helpers import job
+    busy, once = tmp_path / "busy", tmp_path / "once"
+    monkeypatch.setenv("FAKE_EUKLIDES", '{"action": "regate", "note": "timing.test.ts is slow under load"}')
+    monkeypatch.setenv("FAKE_EUKLIDES_RUN", f'rm -f "{busy}"')
+    monkeypatch.setenv("FAKE_EMPTY", "shell:2")
+    integration = f'if [ ! -f "{once}" ]; then touch "{once}" "{busy}"; exit 1; fi'
+    feature(manifest(integration_gate=integration, jobs=[
+        job("shell", ["T1", "T2"], ["src/shell/**"], gate=f'[ ! -f "{busy}" ]'),
+        job("ui", ["T3"], ["src/ui/**"], after=["shell"])]))
+    drive(jobs_settled)
+    st = state()
+    assert all(j["status"] == "merged" for j in st["jobs"].values())
+    assert not st.get("questions")
+    assert [(f["job"], f["kind"]) for f in st["flaky"]] == [("shell", "gate")]

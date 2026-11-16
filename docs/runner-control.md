@@ -265,6 +265,17 @@ files and 30 changed lines, no binary file, and no file inside another job's are
   `fix(base): … (Euklides fix <n>)` commit lands on `ark/<slug>` under the run's merge lock, and every job waiting
   on it (`waiting_fix`, `ark ps` shows "waiting for base fix <n>") integrates again. Only one fix runs at a time;
   a job that hits a red base meanwhile waits on the same fix.
+- `regate` opens on a red job gate or integration gate whose head already passed a gate or a CLEAN review (the job
+  keeps its last 10 such heads in `green_heads`), once per head and gate (`regated`), while decisions remain; it
+  ignores the budget, because it costs no model and no money. Euklides picks it when the red tests look like load
+  (timeouts, timing, file watchers), and his `note` names them. The job returns to its gate with a `regate` flag:
+  while any job carries one, across all runs, no new gate (job, integration, refresh or base fix) and no new worker
+  starts, and the re-run itself starts only when no gate of any kind is running. The same command runs again on the
+  same head. Green: the job goes on as after any green gate, and the run records the gate in `flaky` (job, kind,
+  head, note, the first red tail). Red, a head that moved, a start that fails, or no free machine before the gate's
+  own deadline (the job's minutes; for the integration gate, its timeout): Marco gets a question with both red
+  outputs, and the flag is dropped. A job that leaves its gate another way (blocked, sent to Euklides) drops the flag
+  too, so the machine never stays quiet.
 
 Over the rule, or when the fix fails (its worker, its gate, or a step failing five times), every job concerned
 becomes a question to Marco with Euklides' proposal and the reason. For a widen over the rule, `ok` grants the
