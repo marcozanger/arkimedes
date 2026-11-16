@@ -18,6 +18,13 @@ from ark.plan import sha256_file
 SLUG = "notes-edit"
 
 
+@pytest.fixture(autouse=True)
+def quiet_machine(monkeypatch):
+    """The load brake must not make these tests depend on how busy the machine running them is."""
+    loop._load_wait.clear()
+    monkeypatch.setattr(os, "getloadavg", lambda: (0.0, 0.0, 0.0))
+
+
 @pytest.fixture
 def feature(runner, make_feature):
     """Seed a repo, write the plan on the desk and approve it."""
