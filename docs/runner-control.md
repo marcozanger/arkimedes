@@ -338,10 +338,12 @@ finished, the budget for what runs and what is left. Delay is forecast end minus
 | Limit | Default | What |
 |---|---|---|
 | `heavy_gates` | 1 | gates of `heavy: true` jobs that run at once |
+| `gates_total` | 2 | gates (job, integration, refresh and base fix gates) that run at once, across all runs; 1 or more |
 | `gate_workers` | 4 | test processes a gate may spawn |
 | `load_max` | cores x 1.25 (min 2) | 1-minute load average above which a gate waits; `0` turns the brake off |
 | `load_wait_max` | 900 | seconds a gate waits for the load before it starts anyway |
 
+- Integration gates and base fix gates always take a `heavy_gates` slot, whatever the job's `heavy` says.
 - Every gate (job, integration, refresh and base-fix gates) runs with `ARK_TEST_WORKERS=<gate_workers>`, so a plan's
   gate can say `vitest --maxWorkers=$ARK_TEST_WORKERS`. It also sets `VITEST_MAX_WORKERS` and
   `PYTEST_XDIST_AUTO_NUM_WORKERS` (what `-n auto` means) when the environment does not already have them. Jest has no

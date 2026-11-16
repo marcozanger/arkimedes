@@ -874,7 +874,7 @@ def _move_fixes(c: Ctx, slots: Slots) -> None:
                     if f["status"] != "working":
                         slots.release_writer(c.st["repo"])
             elif f["status"] == "needs_gate":
-                if not slots.gate(False, c.st, "fix"):
+                if not slots.gate(True, c.st, "fix"):
                     continue
                 _start_fix_gate(c, f)
             else:
@@ -1985,24 +1985,32 @@ def publish(c: Ctx) -> None:
 # ---- scheduling -------------------------------------------------------------------------------
 
 class Slots:
-    """Writers (workers alive) per repo and in total, and heavy gates, across every run."""
+    """Writers (workers alive) per repo and in total, and gates (all of them, and the heavy ones), across every
+    run. Integration gates and base fix gates run the whole suite: they always count as heavy."""
 
     def __init__(self, states, limits: dict):
-        self.limits, self.writers, self.heavy = limits, {}, 0
+        self.limits, self.writers, self.gates, self.heavy = limits, {}, 0, 0
         names = {accounts.account_of(st["repo"]) for st in states} | {accounts.PERSONAL}
         self.capped_accounts = {a for a in names if caps.capped(a, limits)}
         for st in states:
             for j in st["jobs"].values():
                 if j["status"] == "working":
                     self.writers[st["repo"]] = self.writers.get(st["repo"], 0) + 1
-                if j.get("heavy") and j["status"] in ("gating", "integrating"):
-                    self.heavy += 1
-            for f in st.get("fixes") or []:  # a base-fix worker writes too
-                if f["status"] == "working":
+                if j["status"] in ("gating", "integrating"):
+                    self.gates += 1
+                    if j["status"] == "integrating" or j.get("heavy"):
+                        self.heavy += 1
+            for f in st.get("fixes") or []:
+                if f["status"] == "working":  # a base-fix worker writes too
                     self.writers[st["repo"]] = self.writers.get(st["repo"], 0) + 1
+                if f["status"] == "gating":  # its gate is the integration gate
+                    self.gates += 1
+                    self.heavy += 1
             r = st.get("refresh")
-            if r and r.get("status") in ("checking", "gating") and _plan_heavy(st):
-                self.heavy += 1
+            if r and r.get("status") in ("checking", "gating"):
+                self.gates += 1
+                if _plan_heavy(st):
+                    self.heavy += 1
             if r and r.get("status") == "working":  # a refresh worker writes too
                 self.writers[st["repo"]] = self.writers.get(st["repo"], 0) + 1
 
@@ -2021,13 +2029,12 @@ class Slots:
 
     def gate(self, heavy: bool, st: dict | None = None, key: str = "") -> bool:
         """May a gate start now? `st` and `key` (the run, and what gates in it) turn the load brake on."""
-        if not heavy and st is None:
-            return True
         if st is not None and self._load_hold(st, key):
             return False
+        if self.gates >= self.limits.get("gates_total", 2) or (heavy and self.heavy >= self.limits["heavy_gates"]):
+            return False
+        self.gates += 1
         if heavy:
-            if self.heavy >= self.limits["heavy_gates"]:
-                return False
             self.heavy += 1
         if st is not None:
             _load_wait.pop((st["repo"], st["slug"], key), None)  # it starts: the next one waits afresh
@@ -2102,7 +2109,7 @@ def _next_step(c: Ctx, job: str, j: dict, slots: Slots):
         if slots.gate(j["heavy"], c.st, job):
             return lambda: start_gate(c, job)
     elif s == "needs_integrate":
-        if slots.gate(j["heavy"], c.st, job):
+        if slots.gate(True, c.st, job):
             return lambda: start_integrate(c, job)
     else:
         step_ = {"needs_push": push_job, "needs_pr": ensure_pr, "needs_review": start_review, "needs_merge": do_merge,
