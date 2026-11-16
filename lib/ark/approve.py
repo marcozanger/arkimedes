@@ -6,7 +6,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import paths, validate
+from . import paths, validate, versions
 from .globs import overlap
 from .plan import load_plan, set_status, sha256_file
 
@@ -52,12 +52,16 @@ def approve_plan(path: Path, expect_sha: str | None = None) -> dict:
     if sha256_file(path) != sha_now:
         raise ApproveError("changed", "the plan changed while it was being approved.")
     set_status(path, "closed")
-    sha = sha256_file(path)
     repo, slug = str(plan.frontmatter["repo"]), str(plan.frontmatter["slug"])
     f = paths.approval_file(repo, slug)
     f.parent.mkdir(parents=True, exist_ok=True)
-    rec = {"repo": repo, "slug": slug, "plan": str(path.resolve()), "sha256": sha,
-           "approved_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    try:
+        v = versions.freeze(path, at)
+    except FileExistsError as e:
+        raise ApproveError("read", f"version folder exists: {e}")
+    rec = {"repo": repo, "slug": slug, "plan": v["plan"], "desk_plan": str(path.resolve()),
+           "sha256": v["sha256"], "version": v["version"], "approved_at": at}
     tmp = f.with_name(f.name + ".tmp")
     tmp.write_text(json.dumps(rec, indent=2) + "\n", encoding="utf-8")
     tmp.replace(f)
