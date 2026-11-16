@@ -4,11 +4,13 @@ The app reads only this, never runs/ itself, so the state format stays private t
 from __future__ import annotations
 
 import json
+import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import accounts, beat, desk, euklides, history, paths, proc, run, steps, timing
+from . import accounts, beat, desk, euklides, history, paths, phases, proc, run, steps, timing
 from .plan import load_plan, task_texts
 
 VERSION = 1
@@ -108,7 +110,7 @@ def _cost(p: dict, rows: list[dict]) -> dict:
 def _empty(repo: str, slug: str) -> dict:
     return {"repo": repo, "slug": slug, "title": slug, "status": "waiting", "reason": "", "error": None,
             "approval": "-", "approved_at": None, "plan_path": "", "plan_sha": None, "spec": None, "created": None,
-            "progress": {"merged": 0, "total": 0}, "times": None, "jobs": [], "events": [], "final_pr": None,
+            "progress": {"merged": 0, "total": 0}, "times": None, "jobs": [], "events": [], "final_pr": None, "wait": None, "estimate": None,
             "plan_file": "", "decisions": "", "questions": [], "answers": [], "spec_file": "", "account": "", "euklides": {"decisions": 0, "asked": 0}, "cost": _cost_zero(), "manifest": {"setup": [], "integration_gate": "", "final_pr_title": ""}}
 
 
@@ -168,6 +170,83 @@ def _phases(repo: str, slug: str, jobs: list[dict]) -> None:
         j["phase"] = {"kind": kind, "since": steps.iso(info.get("start")), "usual_min": (usual or None) if kind == "testing" else None}
 
 
+LOAD_HOLD = re.compile(r"^(\S+) · (\S+(?: \d+)?): a gate waits for the machine \(load ([\d.]+) above ([\d.]+)\)")
+
+
+def _busy(keys: list[tuple[str, str]]) -> list[str]:
+    """The runs that have a job working now: where the machine's load comes from."""
+    out = []
+    for r, s in keys:
+        try:
+            st = run.load(r, s) or {}
+        except Exception:
+            continue
+        if st.get("status") == "running" and any(isinstance(j, dict) and j.get("status") in ("working", "gating", "reviewing")
+                                                 for j in (st.get("jobs") or {}).values()):
+            out.append(f"{r}/{s}")
+    return out
+
+
+def _wait(p: dict, jobs: list[dict], busy: list[str]) -> None:
+    """Why nothing moves, in words: `p["wait"]` for the run ({kind, text, ...} or None) and `wait` on each job that
+    is not running. The load brake is read from the run's events: it holds until a later event of the same step."""
+    p["wait"] = None
+    for j in jobs:
+        j["wait"] = None
+    if p["status"] != "running":
+        return
+    ev = p["events"]
+    for i in range(len(ev) - 1, -1, -1):
+        m = LOAD_HOLD.match(str(ev[i]))
+        if not m:
+            continue
+        key = m.group(2)
+        if any(str(e).partition(" · ")[2].partition(":")[0].split(" ")[0] == key.split(" ")[0] for e in ev[i + 1:]):
+            break
+        others = [b for b in busy if b != f"{p['repo']}/{p['slug']}"]
+        p["wait"] = {"kind": "machine", "since": m.group(1), "step": key, "load": float(m.group(3)), "limit": float(m.group(4)),
+                     "busy_with": others,
+                     "text": f"The {key} gate waits for the machine: load {m.group(3)} is above the limit of {m.group(4)}. "
+                             "It starts by itself when the load drops" + (f"; other runs are using it ({', '.join(others)})." if others else ".")}
+        break
+    done = {j["id"] for j in jobs if j["status"] == "merged"}
+    for j in jobs:
+        if j["status"] == "merged" or j.get("phase"):
+            continue
+        pend = [a for a in j["after"] if a not in done]
+        if j["question"] or any(q.get("job") == j["id"] for q in p["questions"]):
+            j["wait"] = {"kind": "answer", "text": "Waits for your answer."}
+        elif j["status"] in run.UNSTARTED and pend:
+            j["wait"] = {"kind": "dependency", "text": f"Waits for {', '.join(pend)} to merge."}
+        elif j["status"] in run.UNSTARTED and p["wait"]:
+            j["wait"] = {"kind": "machine", "text": "Not started: the run waits for the machine."}
+        elif j["status"] in run.UNSTARTED:
+            j["wait"] = {"kind": "queue", "text": "Next in line: starts once the run's base is checked."}
+
+
+def _split(p: dict, jobs: list[dict]) -> None:
+    """Each job's budget minutes cut into developing / testing / reviewing / other by what earlier jobs of the repo
+    took (phases.shares); the plan gets the sum. `estimate` is None with no history. Time waiting for the machine or
+    for Marco is not in a budget, so it is not here either."""
+    p["estimate"] = None
+    for j in jobs:
+        j["estimate"] = None
+    try:
+        sh = phases.shares(p["repo"])
+        if not sh:
+            return
+        tot = dict.fromkeys(phases.ORDER, 0.0)
+        for j in jobs:
+            s = phases.split(j["budget"]["minutes"], sh)
+            if s:
+                j["estimate"] = s
+                for k, v in s.items():
+                    tot[k] += v
+        p["estimate"] = {"basis": sh["basis"], "history_min": sh["minutes"], "minutes": {k: round(v, 1) for k, v in tot.items()}}
+    except Exception:  # an estimate never breaks a plan
+        pass
+
+
 def _euklides_counts() -> dict[tuple[str, str], dict]:
     """Per plan: how many decisions Euklides took and how many of them were a question for Marco."""
     out: dict[tuple[str, str], dict] = {}
@@ -183,7 +262,7 @@ def _euklides_counts() -> dict[tuple[str, str], dict]:
 
 
 def _plan(repo: str, slug: str, a: dict | None, now: datetime, rows: list[dict] | None = None,
-          euk: dict | None = None) -> dict:
+          euk: dict | None = None, busy: list[str] | None = None) -> dict:
     p = _empty(repo, slug)
     p["euklides"] = (euk or {}).get((repo, slug)) or p["euklides"]
     try:
@@ -224,6 +303,8 @@ def _plan(repo: str, slug: str, a: dict | None, now: datetime, rows: list[dict] 
         j.update({k: _iso(v) for k, v in t["jobs"][j["id"]].items()})
     _phases(repo, slug, jobs)
     p["jobs"] = jobs
+    _wait(p, jobs, busy or [])
+    _split(p, jobs)
     p["progress"] = {"merged": sum(j["status"] == "merged" for j in jobs), "total": len(jobs)}
     p["times"] = {"started": _iso(t["origin"]), "estimated_end": _iso(t["estimated_end"]),
                   "forecast_end": _iso(t["forecast_end"]), "delay_min": t["delay_min"], "left_min": t["left_min"]}
@@ -232,13 +313,27 @@ def _plan(repo: str, slug: str, a: dict | None, now: datetime, rows: list[dict] 
 
 
 def _safe(repo: str, slug: str, a: dict | None, now: datetime, rows: list[dict] | None = None,
-          euk: dict | None = None) -> dict:
+          euk: dict | None = None, busy: list[str] | None = None) -> dict:
     try:
-        return _plan(repo, slug, a, now, rows, euk)
+        return _plan(repo, slug, a, now, rows, euk, busy)
     except Exception as e:  # one broken plan never hides the others
         p = _empty(repo, slug)
         p["error"] = str(e) if isinstance(e, run.StateCorrupt) else f"{type(e).__name__}: {e}"
         return p
+
+
+def _machine() -> dict:
+    """How loaded the machine is: the 1, 5 and 15 minute load averages, the cores, and the load above which a gate
+    waits (`limits.load_max`, 0 = no brake)."""
+    try:
+        load = [round(x, 1) for x in os.getloadavg()]
+    except OSError:
+        load = None
+    try:
+        limit = (paths.load_workspace().get("limits") or {}).get("load_max")
+    except Exception:  # a broken workspace.json is reported elsewhere
+        limit = None
+    return {"load": load, "cores": os.cpu_count() or 1, "limit": limit if isinstance(limit, (int, float)) else paths.default_load_max()}
 
 
 def build(now: datetime | None = None) -> dict:
@@ -250,8 +345,9 @@ def build(now: datetime | None = None) -> dict:
     except Exception:
         rows = []
     euk = _euklides_counts()
-    return {"version": VERSION, "generated": _iso(now), "loop": beat.read(now.timestamp()), "alerts": _alerts(),
-            "plans": [_safe(r, s, approvals.get((r, s)), now, rows, euk) for r, s in keys]}
+    busy = _busy(keys)
+    return {"version": VERSION, "generated": _iso(now), "loop": beat.read(now.timestamp()), "machine": _machine(), "alerts": _alerts(),
+            "plans": [_safe(r, s, approvals.get((r, s)), now, rows, euk, busy) for r, s in keys]}
 
 
 def cmd_runs(args) -> int:
