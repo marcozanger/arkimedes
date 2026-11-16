@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import accounts, paths
+from . import accounts, caps, paths
 from .globs import areas_overlap
 from .plan import PlanError, load_plan, sha256_file, split_frontmatter, task_groups
 
@@ -61,6 +61,10 @@ def validate(path, *, approved: bool = False) -> list[Problem]:
     except UnicodeDecodeError as e:
         return [Problem("frontmatter", f"cannot read {path}: not valid UTF-8 ({e.reason})")]
     fm = plan.frontmatter
+    try:
+        caps.check_gates(paths.load_workspace()["limits"])
+    except ValueError as e:
+        add("workspace", str(e))
     repo_path = _check_frontmatter(path, fm, add)
     _check_spec(path, fm, repo_path, add)
     for name in REQUIRED_SECTIONS:

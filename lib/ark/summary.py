@@ -78,4 +78,5 @@ def summarize(st: dict, rows: list[dict], mjobs: dict) -> dict:
         "budget_usd": _budget(mjobs, "usd"), "budget_minutes": _budget(mjobs, "minutes"),
         "final_pr": (st.get("final_pr") or {}).get("url"),
         "estimated": any(r["estimated"] for r in procs),
+        "flaky": list(st.get("flaky") or []), "queue_error": st.get("queue_error"),
         "jobs": jobs, "by_kind": _group(procs, "kind"), "by_model": _group(procs, "model")}

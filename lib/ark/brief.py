@@ -184,6 +184,11 @@ EUKLIDES_ACTIONS = {
     "raise": "`raise`: add `usd` (a positive number) to this job's budget and let it go on; `note` says why the "
              "job is worth it and what it does next. Your margin is a total across all your raises on this job, not "
              "per decision; a raise past what is left of it becomes a question to Marco, the only way past it.",
+    "regate": "`regate`: the gate is red on a head that already passed its review or a gate, and the failures "
+              "look like load (timeouts, timing, file watchers, tests that differ from run to run), not this "
+              "job's code. The runner runs the same gate command again, alone on the machine, with no model and "
+              "no budget. Green: the job goes on and the gate is recorded as flaky. Red: Marco gets both outputs. "
+              "`note` names the failing tests as the log shows them: it becomes the task to make them robust.",
     "ask": "`ask`: Marco decides; `note` is the question, `proposal` what you would do, `then` the one runner "
            "action his `ok` carries out (the runner writes it under the question as `Answer ok to: ...`). Pick "
            "the `then` that does your proposal:",
@@ -386,6 +391,12 @@ def _answers(st: dict) -> str:
                      for a in st.get("answers") or [])
 
 
+def _flaky_lines(st: dict) -> list[str]:
+    return [f"- `{f['job']}` · {'integration gate' if f['kind'] == 'integrate' else 'job gate'} on "
+            f"`{str(f['head'])[:8]}`: {_no_mentions(' '.join(str(f['note']).split()))}"
+            for f in st.get("flaky") or []]
+
+
 def decisions_prompt(st: dict, reports: dict[str, str]) -> str:
     jobs = []
     for jid, j in st["jobs"].items():
@@ -408,6 +419,8 @@ def decisions_prompt(st: dict, reports: dict[str, str]) -> str:
         DECISIONS_FORMAT,
         f"Plan: {st['plan']} · approved {st['approved_at'][:10]} · closed {date.today().isoformat()}",
         _untrusted("Run events", "\n".join(st["events"][-60:]) or "(none)"),
+        *([_untrusted("Gates red under load and green alone on the machine (flaky); record each as a decision, "
+                      "author arkimedes", "\n".join(_flaky_lines(st)))] if st.get("flaky") else []),
         _untrusted("Marco's answers to the run's questions (each is a decision to record)", _answers(st) or "(none)"),
         "Jobs and their reports:",
         *jobs,
@@ -429,6 +442,8 @@ def fallback_decisions(st: dict, reports: dict[str, str]) -> str:
         found = _section(reports.get(jid, ""), "DECISIONS")
         if found:
             lines += [found, ""]
+    if st.get("flaky"):
+        lines += ["## Flaky gates", "", *_flaky_lines(st), ""]
     if st.get("answers"):
         lines += ["## Answers from Marco", "", _answers(st), ""]
     return "\n".join(lines).rstrip() + "\n"
@@ -478,6 +493,9 @@ def final_pr_body(st: dict, summary_md: str = "") -> str:
              "| job | status | PR |", "|---|---|---|", *rows]
     if blocked:
         parts += ["", "**Blocked jobs** (not in this PR):", *blocked]
+    if st.get("flaky"):
+        parts += ["", "## Flaky tests", "", "Red under load, green alone on the machine; queued to be made robust.",
+                  "", *_flaky_lines(st)]
     if summary_md:
         parts += ["", summary_md.rstrip("\n")]
     return "\n".join(parts) + "\n"

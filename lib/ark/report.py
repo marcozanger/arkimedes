@@ -178,6 +178,19 @@ def _refreshes(s: dict) -> str:
             + f"<p>Refreshes landed: {landed} · workers used: {workers} · merge budget spent: {spent}</p>")
 
 
+def _flaky(s: dict) -> str:
+    if not s.get("flaky"):
+        return ""
+    rows = "".join(
+        f"<tr><td>{_e(f['job'])}</td><td>{'integration gate' if f['kind'] == 'integrate' else 'job gate'}</td>"
+        f"<td>{_e(str(f['head'])[:8])}</td><td>{_e(f['note'])}</td></tr>" for f in s["flaky"])
+    out = ("<h2>Flaky gates</h2><table><tr><th>job</th><th>gate</th><th>head</th><th>note</th></tr>"
+           f"{rows}</table>")
+    if s.get("queue_error"):
+        out += f"<p class=muted>The coach queue item is missing: {_e(s['queue_error'])}</p>"
+    return out
+
+
 def render_html(s: dict, rows: list[dict], decisions: str | None) -> str:
     title = f"Report · {s['repo']}/{s['slug']}"
     head = (f"<h1>{_e(title)}</h1><p class=muted>{_status(s['status'])} · from {_e(s['started'])} "
@@ -186,6 +199,7 @@ def render_html(s: dict, rows: list[dict], decisions: str | None) -> str:
         head,
         "<h2>Summary</h2>", _summary(s),
         "<h2>Decisions</h2>", decisions_html(decisions),
+        _flaky(s),
         "<h2>By PR</h2>", _per_pr(s),
         _refreshes(s),
         "<h2>Timeline</h2>", _timeline(rows),

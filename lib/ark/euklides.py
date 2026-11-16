@@ -87,12 +87,13 @@ def run_margin_left(st: dict, planned: float, margin: float) -> float:
 
 
 def allowed(trigger: str, j: dict, budget_usd: float, margin: float = 0.0, kind: str | None = None,
-            base_red: bool = False, fixes_used: int = 0) -> list[str]:
+            base_red: bool = False, fixes_used: int = 0, regate: bool = False) -> list[str]:
     """The actions open now, `ask` always last. Spending past the budget and its margin, changing the plan
     and blocking are never actions: they can only be proposed to Marco. `raise` opens when the job is at or
     over its budget (plus what was raised) and margin is left. `widen` opens only after an area block,
     `fix_base` only after an integration gate red on the base too, at most MAX_FIX_BASE a run.
-    `fixed` (Euklides repaired the branch himself) is open while decisions remain."""
+    `fixed` (Euklides repaired the branch himself) is open while decisions remain. `regate` opens when the
+    loop says the red head passed before; it ignores the budget."""
     if j.get("euklides_count", 0) >= settings()["decisions_per_job"]:
         return ["ask"]
     under = j["usd"] < budget_usd + j.get("usd_raised", 0)
@@ -111,6 +112,8 @@ def allowed(trigger: str, j: dict, budget_usd: float, margin: float = 0.0, kind:
         out.append("fix_base")  # the base's fix is not paid from the job's budget
     if not under and margin_left(j, budget_usd, margin) > 1e-9:
         out.append("raise")
+    if regate:
+        out.append("regate")  # the same gate again, alone on the machine: no model, no budget
     return out + ["fixed", "ask"]  # fixed: Euklides repaired the branch himself; the runner checks it
 
 
