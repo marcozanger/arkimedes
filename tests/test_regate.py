@@ -74,3 +74,96 @@ def test_the_loop_opens_regate_only_once_per_head_and_gate():
 
 def test_euklides_reads_what_regate_does():
     assert "regate" in brief.EUKLIDES_ACTIONS and "alone" in brief.EUKLIDES_ACTIONS["regate"]
+
+
+# -- T6: the quiet re-run in the loop
+
+LIMITS = {"writers_per_repo": 3, "writers_total": 6, "heavy_gates": 1, "gates_total": 2}
+
+
+def test_regate_holds_new_gates_and_new_workers_and_waits_for_every_gate():
+    busy = {"repo": "a", "jobs": {"x": {"status": "gating", "heavy": False},
+                                  "y": {"status": "needs_gate", "heavy": False, "regate": {"kind": "gate"}}}}
+    slots = loop.Slots([busy], LIMITS)
+    assert not slots.gate(False) and not slots.writer("a") and not slots.regate()
+    idle = {"repo": "a", "jobs": {"y": {"status": "needs_gate", "heavy": False, "regate": {"kind": "gate"}}}}
+    slots = loop.Slots([idle], LIMITS)
+    assert slots.regate() and not slots.regate() and not slots.gate(False)
+
+
+def test_slots_with_no_jobs_are_not_quiet():
+    assert loop.Slots([], LIMITS).gate(False)
+
+
+def test_a_regate_decision_sends_the_job_back_to_its_gate(tmp_path, monkeypatch):
+    red = {"kind": "gate", "head": "abc", "tail": "FAIL a.test.ts"}
+    c = bare(tmp_path, "euklides", head="abc", green_heads=["abc"],
+             euklides={"trigger": "failure", "situation": "red", "kind": None, "red": red,
+                       "allowed": ["regate", "ask"]})
+    monkeypatch.setattr(loop.euklides, "record", lambda *a, **k: "demo/notes-edit/shell/1")
+    loop.on_euklides(c, "shell", receipt('{"action": "regate", "note": "a.test.ts times out under load"}'))
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "needs_gate" and j["regate"]["head"] == "abc" and j["regated"] == ["gate:abc"]
+    assert j["euklides_count"] == 1
+
+
+def test_a_green_regate_goes_on_and_is_recorded_flaky(tmp_path):
+    rg = {"kind": "gate", "head": "abc", "first_tail": "FAIL a", "note": "a.test.ts", "ctx": {}, "decision": None,
+          "until": 9e9}
+    c = bare(tmp_path, "gating", head="abc", regate=rg)
+    loop.on_gate(c, "shell", receipt())
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "needs_pr" and "regate" not in j
+    assert c.st["flaky"][0]["job"] == "shell" and c.st["flaky"][0]["note"] == "a.test.ts"
+
+
+def test_a_red_regate_asks_marco_with_both_outputs(tmp_path):
+    rg = {"kind": "gate", "head": "abc", "first_tail": "FIRST RED", "note": "a.test.ts",
+          "ctx": {"trigger": "failure", "situation": "red", "kind": None}, "decision": None, "until": 9e9}
+    c = bare(tmp_path, "gating", head="abc", regate=rg)
+    loop.on_gate(c, "shell", receipt("SECOND RED", exit=1))
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "waiting_answer" and "regate" not in j
+    text = c.st["questions"][-1]["text"]
+    assert "FIRST RED" in text and "SECOND RED" in text
+
+
+def test_a_red_integration_regate_asks_marco_with_both_outputs(tmp_path):
+    rg = {"kind": "integrate", "head": "abc", "first_tail": "FIRST RED", "note": "w.test.ts",
+          "ctx": {"trigger": "blocked", "situation": "red", "kind": "integrate"}, "decision": None, "until": 9e9}
+    c = bare(tmp_path, "integrating", head="abc", regate=rg)
+    out = {"ok": False, "base": "b1", "head": "abc", "reason": "red", "tail": "SECOND RED", "base_red": True}
+    loop.on_integrate(c, "shell", receipt(json.dumps(out)))
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "waiting_answer" and "regate" not in j
+    text = c.st["questions"][-1]["text"]
+    assert "FIRST RED" in text and "SECOND RED" in text
+
+
+def test_a_regate_past_its_deadline_asks_marco(tmp_path):
+    rg = {"kind": "gate", "head": "abc", "first_tail": "FIRST RED", "note": "n",
+          "ctx": {"trigger": "failure", "situation": "red", "kind": None}, "decision": None, "until": 0}
+    c = bare(tmp_path, "needs_gate", head="abc", regate=rg)
+    slots = loop.Slots([c.st], LIMITS)
+    loop._next_step(c, "shell", c.st["jobs"]["shell"], slots)()
+    assert c.st["jobs"]["shell"]["status"] == "waiting_answer"
+    assert "deadline" in c.st["questions"][-1]["text"]
+
+
+def test_a_regate_on_a_moved_head_asks_marco(tmp_path):
+    rg = {"kind": "gate", "head": "abc", "first_tail": "FIRST RED", "note": "n",
+          "ctx": {"trigger": "failure", "situation": "red", "kind": None}, "decision": None, "until": 9e9}
+    c = bare(tmp_path, "needs_gate", head="def", regate=rg)
+    slots = loop.Slots([c.st], LIMITS)
+    loop._next_step(c, "shell", c.st["jobs"]["shell"], slots)()
+    assert c.st["jobs"]["shell"]["status"] == "waiting_answer" and "regate" not in c.st["jobs"]["shell"]
+    assert "could not start" in c.st["questions"][-1]["text"]
+
+
+def test_a_job_sent_to_euklides_or_blocked_drops_its_regate(tmp_path):
+    c = bare(tmp_path, "gating", head="abc", regate={"kind": "gate"})
+    loop._to_euklides(c.st, "shell", "blocked", "x")
+    assert "regate" not in c.st["jobs"]["shell"]
+    c.st["jobs"]["shell"]["regate"] = {"kind": "gate"}
+    loop._block(c.st, "shell", "x")
+    assert "regate" not in c.st["jobs"]["shell"]

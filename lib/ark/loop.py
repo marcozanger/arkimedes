@@ -293,6 +293,7 @@ def fail(c: Ctx, job: str, why: str, **extra) -> None:
 def _block(st: dict, job: str, why: str, critical: bool = False) -> None:
     why = _clean(why)
     j = st["jobs"][job]
+    j.pop("regate", None)  # a job that leaves its gate another way never keeps the machine quiet
     j.update(status="blocked", reason=why, blocked_from=j["status"])
     run.alert(st, f"{job} blocked: {why}", critical=critical)
 
@@ -302,6 +303,7 @@ def block(c: Ctx, job: str, why: str, critical: bool = False) -> None:
 
 
 def _to_euklides(st: dict, job: str, trigger: str, situation: str, kind: str | None = None, **extra) -> None:
+    st["jobs"][job].pop("regate", None)  # a job that leaves its gate another way never keeps the machine quiet
     st["jobs"][job].update(status="needs_euklides", euklides={
         "trigger": trigger, "situation": _clean(situation)[:questions.MAX_TEXT], "kind": kind, **extra})
 
@@ -443,10 +445,15 @@ def on_gate(c: Ctx, job: str, r: dict) -> None:
     accepted = j.pop("accept_gate", None)  # it applies to one run of the gate: a red one asks again
     extra = {"accepted_gate": accepted} if accepted else {}
     merge.record(c.dir, job, "gate", {"ok": ok, "head": r["meta"].get("head"), "exit": r["exit"], "tail": tail, **extra})
+    rg = j.pop("regate", None) if ok else None
     if ok:
         _passed(j, r["meta"].get("head"))
+        if rg:
+            _flaky(c, job, rg)
         j["status"] = "needs_pr"
         run.event(c.st, f"{job}: job gate green" + (f" (the replacement gate `{_clean(accepted)[:200]}`)" if accepted else ""))
+    elif j.get("regate"):
+        return _regate_ask(c, job, "the job gate is red again, alone on the machine", tail)
     elif accepted:
         why = (f"the replacement gate `{_clean(accepted)[:200]}` is red on head {str(r['meta'].get('head'))[:8]} "
                f"(exit {r['exit']}{', ' + r['reason'] if r['reason'] else ''})")
@@ -516,9 +523,15 @@ def on_integrate(c: Ctx, job: str, r: dict) -> None:
                                            "head": out.get("head") or r["meta"].get("head"),
                                            "reason": reason, "tail": out.get("tail", "")})
     if ok:
+        rg = j.pop("regate", None)
+        if rg:
+            _flaky(c, job, rg)
         j["status"] = "needs_merge"
         run.event(c.st, f"{job}: integration gate green on {out['base'][:8]}")
         return
+    if j.get("regate"):
+        return _regate_ask(c, job, "the integration gate is red again, alone on the machine",
+                           str(out.get("tail", "")))
     red = {"kind": "integrate", "head": out.get("head") or r["meta"].get("head"),
            "tail": str(out.get("tail", ""))[-2000:]}
     if out.get("base_red") is True:  # not the job's doing: a second worker attempt would only fail the same way
@@ -684,6 +697,8 @@ def on_euklides(c: Ctx, job: str, r: dict) -> None:
         return _fix_base(c, job, e, d, decision)
     if d["action"] == "raise":
         return _raise(c, job, e, d, decision)
+    if d["action"] == "regate":
+        return _regate(c, job, e, d, decision)
     j["euklides_count"] = j.get("euklides_count", 0) + 1
     if d["action"] == "fixed":
         return _fixed(c, job, e, d, decision)
@@ -710,6 +725,65 @@ def _raise(c: Ctx, job: str, e: dict, d: dict, decision) -> None:
 
 
 FIXED_PROPOSAL = ":stop, or say what the job should do"
+
+
+# ---- regate: the same gate again, alone on the machine ----------------------------------------
+
+GATE_NAMES = {"gate": "job gate", "integrate": "integration gate"}
+REGATE_STATUSES = ("needs_gate", "needs_integrate", "gating", "integrating")  # a flag here keeps the machine quiet
+REGATE_PROPOSAL = ":stop, or say what the job should do (its gate is red even alone on the machine)"
+
+
+def _regate_minutes(c: Ctx, job: str, kind: str) -> float:
+    return c.mjobs[job]["budget"]["minutes"] if kind == "gate" else 2 * integrate.GATE_TIMEOUT / 60 + 30
+
+
+def _regate(c: Ctx, job: str, e: dict, d: dict, decision) -> None:
+    """The same gate again, alone on the machine: it waits for every gate to end and holds new gates and
+    workers meanwhile (Slots.quiet). At most the gate's own deadline to get the machine."""
+    j, red = c.st["jobs"][job], e["red"]
+    j["euklides_count"] = j.get("euklides_count", 0) + 1
+    j["regated"] = (j.get("regated") or []) + [f"{red['kind']}:{red['head']}"]
+    j["regate"] = {"kind": red["kind"], "head": red["head"], "first_tail": str(red.get("tail", ""))[-1200:],
+                   "note": d["note"], "decision": decision, "ctx": {k: v for k, v in e.items() if k != "allowed"},
+                   "until": time.time() + _regate_minutes(c, job, red["kind"]) * 60}
+    j["status"] = "needs_gate" if red["kind"] == "gate" else "needs_integrate"
+    run.event(c.st, f"{job}: the {GATE_NAMES[red['kind']]} runs again alone on the machine; new gates and "
+                    f"workers wait")
+
+
+def _start_regate(c: Ctx, job: str, start) -> None:
+    j = c.st["jobs"][job]
+    try:
+        if j["head"] != j["regate"]["head"]:
+            raise RuntimeError(f"the job is on {str(j['head'])[:8]}, not on {j['regate']['head'][:8]} any more")
+        start(c, job)
+    except Exception as e:
+        return _regate_ask(c, job, f"the quiet re-run could not start: {type(e).__name__}: {_clean(str(e))}")
+    if j["status"] not in ("gating", "integrating"):  # start_integrate found the job merged already
+        j.pop("regate", None)
+        return
+    run.event(c.st, f"{job}: quiet re-run started; nothing else is gating")
+
+
+def _regate_ask(c: Ctx, job: str, why: str, tail: str = "") -> None:
+    """Marco decides, with both red outputs."""
+    j = c.st["jobs"][job]
+    rg = j.pop("regate")
+    second = f"\n\nThe quiet re-run:\n{_clean(tail)[-1200:]}" if tail else ""
+    situation = f"{why}\n\nThe first red run:\n{rg['first_tail']}{second}"
+    run.event(c.st, f"{job}: {why}")
+    _euklides_ask(c.st, job, {**rg["ctx"], "situation": situation},
+                  {"action": "ask", "note": f"regate: {rg['note']}", "undo": None, "why": "",
+                   "proposal": REGATE_PROPOSAL}, rg.get("decision"))
+
+
+def _flaky(c: Ctx, job: str, rg: dict) -> None:
+    """A gate red under load and green alone: the run keeps it for decisions.md, the report, the final PR and
+    the coach queue."""
+    c.st.setdefault("flaky", []).append({"job": job, "kind": rg["kind"], "head": rg["head"], "note": rg["note"],
+                                         "tail": rg["first_tail"][-600:], "at": run.now()})
+    run.event(c.st, f"{job}: green alone on the machine: its {GATE_NAMES[rg['kind']]} is recorded as flaky")
 
 
 def _fixed(c: Ctx, job: str, e: dict, d: dict, decision) -> None:
@@ -2013,6 +2087,7 @@ class Slots:
 
     def __init__(self, states, limits: dict):
         self.limits, self.writers, self.gates, self.heavy = limits, {}, 0, 0
+        self.quiet = False  # a quiet re-run (regate) waits or runs: nothing new starts
         names = {accounts.account_of(st["repo"]) for st in states} | {accounts.PERSONAL}
         self.capped_accounts = {a for a in names if caps.capped(a, limits)}
         for st in states:
@@ -2036,11 +2111,15 @@ class Slots:
                     self.heavy += 1
             if r and r.get("status") == "working":  # a refresh worker writes too
                 self.writers[st["repo"]] = self.writers.get(st["repo"], 0) + 1
+        self.quiet = any(j.get("regate") and j["status"] in REGATE_STATUSES
+                         for st in states for j in st["jobs"].values())
 
     def capped(self, repo: str) -> bool:
         return accounts.account_of(repo) in self.capped_accounts
 
     def writer(self, repo: str) -> bool:
+        if self.quiet:
+            return False
         if self.writers.get(repo, 0) >= self.limits["writers_per_repo"] or \
                 sum(self.writers.values()) >= self.limits["writers_total"]:
             return False
@@ -2052,6 +2131,8 @@ class Slots:
 
     def gate(self, heavy: bool, st: dict | None = None, key: str = "") -> bool:
         """May a gate start now? `st` and `key` (the run, and what gates in it) turn the load brake on."""
+        if self.quiet:
+            return False
         if st is not None and self._load_hold(st, key):
             return False
         if self.gates >= self.limits.get("gates_total", 2) or (heavy and self.heavy >= self.limits["heavy_gates"]):
@@ -2061,6 +2142,14 @@ class Slots:
             self.heavy += 1
         if st is not None:
             _load_wait.pop((st["repo"], st["slug"], key), None)  # it starts: the next one waits afresh
+        return True
+
+    def regate(self) -> bool:
+        """A quiet re-run takes the machine: it starts only when no gate of any kind runs."""
+        if self.gates:
+            return False
+        self.gates += 1
+        self.heavy += 1
         return True
 
     def _load_hold(self, st: dict, key: str) -> bool:
@@ -2128,12 +2217,15 @@ def _next_step(c: Ctx, job: str, j: dict, slots: Slots):
             return None
         if slots.writer(repo):
             return lambda: _start_writer(c, job, slots)
-    elif s == "needs_gate":
-        if slots.gate(j["heavy"], c.st, job):
-            return lambda: start_gate(c, job)
-    elif s == "needs_integrate":
-        if slots.gate(True, c.st, job):
-            return lambda: start_integrate(c, job)
+    elif s in ("needs_gate", "needs_integrate"):
+        start = start_gate if s == "needs_gate" else start_integrate
+        rg = j.get("regate")
+        if rg and time.time() > rg["until"]:
+            return lambda: _regate_ask(c, job, "the quiet re-run waited past the gate's deadline for the machine")
+        if rg and slots.regate():
+            return lambda: _start_regate(c, job, start)
+        if not rg and slots.gate(j["heavy"] or s == "needs_integrate", c.st, job):
+            return lambda: start(c, job)
     else:
         step_ = {"needs_push": push_job, "needs_pr": ensure_pr, "needs_review": start_review, "needs_merge": do_merge,
                  "needs_euklides": start_euklides}.get(s)
