@@ -33,11 +33,19 @@ class _Cycle(Exception):
 
 
 def desk_location(path: Path) -> tuple[str, str] | None:
-    """(repo, slug) when the plan sits at desk/<repo>/<slug>/plan.md."""
+    """(repo, slug) when the plan sits at desk/<repo>/<slug>/plan.md, or is a frozen snapshot at
+    approvals/<repo>/<slug>/v<N>/plan.md."""
+    parent = path.resolve().parent
     try:
-        rel = path.resolve().parent.relative_to(paths.desk_dir().resolve())
+        rel = parent.relative_to(paths.desk_dir().resolve())
     except ValueError:
-        return None
+        try:
+            rel = parent.relative_to(paths.approvals_dir().resolve())
+        except ValueError:
+            return None
+        if len(rel.parts) < 3 or not re.fullmatch(r"v\d+", rel.parts[-1]):
+            return None
+        rel = Path(*rel.parts[:-1])
     if len(rel.parts) < 2:
         return None
     return "/".join(rel.parts[:-1]), rel.parts[-1]
@@ -402,7 +410,7 @@ def _check_approval(path, fm, add):
     if not isinstance(rec, dict):
         add("approval", "approval file unreadable: not a JSON object")
         return
-    if rec.get("plan") != str(path.resolve()):
+    if str(path.resolve()) not in {rec.get("plan"), rec.get("desk_plan")}:
         add("approval", f"approval record is for another plan ({rec.get('plan')})")
     if rec.get("sha256") != sha256_file(path):
         add("approval", "the plan changed after approval; run `ark approve` again")

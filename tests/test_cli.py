@@ -28,7 +28,7 @@ def test_approve_closes_the_plan_and_writes_the_approval(make_feature, capsys):
     assert load_plan(p).frontmatter["status"] == "closed"
     rec = json.loads(paths.approval_file("demo", "notes-edit").read_text())
     assert rec["sha256"] == sha256_file(p)
-    assert rec["plan"] == str(p.resolve())
+    assert rec["desk_plan"] == str(p.resolve())
     assert run(capsys, "validate", "demo/notes-edit", "--approved")[0] == 0
 
 
