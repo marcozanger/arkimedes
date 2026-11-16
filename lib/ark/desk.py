@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import estimate, paths, run as runmod
+from . import estimate, paths, run as runmod, versions
 from .plan import PlanError, load_plan, sha256_file, split_frontmatter
 
 
@@ -21,6 +21,7 @@ class Feature:
     run: str       # Status: line of runs/<repo>/<slug>.md, "-" when there is no run
     elapsed: str = "-"  # since the run started; frozen at its last update once it is not live
     eta: str = "-"      # "~<time>" left, "?" when a budget is missing, "-" when not live
+    version: str = "-"  # "v<N>" of the last frozen version, "-" when never approved
 
 
 def _status(f: Path) -> str:
@@ -109,6 +110,13 @@ def _times(repo: str, slug: str, now: datetime) -> tuple[str, str]:
     return _elapsed(state, now), (_eta(state, manifest, writers) if manifest else "?" if state.get("status") in LIVE else "-")
 
 
+def _version(repo: str, slug: str) -> str:
+    last = versions.latest(repo, slug)
+    if last:
+        return f"v{last['version']}"
+    return "v1" if paths.approval_file(repo, slug).exists() else "-"
+
+
 def features(now: datetime | None = None) -> list[Feature]:
     now = now or datetime.now(timezone.utc)
     root = paths.desk_dir()
@@ -123,5 +131,5 @@ def features(now: datetime | None = None) -> list[Feature]:
         repo, slug = "/".join(rel.parts[:-1]), rel.parts[-1]
         out.append(Feature(repo, slug, d, _status(d / "spec.md"), _status(d / "plan.md"),
                            _approval(repo, slug, d / "plan.md"), _run(repo, slug),
-                           *_times(repo, slug, now)))
+                           *_times(repo, slug, now), _version(repo, slug)))
     return out
