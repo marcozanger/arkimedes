@@ -273,11 +273,21 @@ def try_start(st: dict, others: list[dict], forge) -> bool:
 
 # ---- job transitions ---------------------------------------------------------------------------
 
-def fail(c: Ctx, job: str, why: str) -> None:
+GREEN_HEADS = 10  # heads a job keeps as passed; older ones are forgotten
+
+
+def _passed(j: dict, head) -> None:
+    """A head that passed a gate or a CLEAN review: a later red on it may be load, not code."""
+    if head:
+        heads = [h for h in j.get("green_heads") or [] if h != head] + [head]
+        j["green_heads"] = heads[-GREEN_HEADS:]
+
+
+def fail(c: Ctx, job: str, why: str, **extra) -> None:
     j, why = c.st["jobs"][job], _clean(why)
     j.update(failure=why, tier_attempts=j["tier_attempts"] + 1)
     run.event(c.st, f"{job} failed ({j['tier']}, attempt {j['tier_attempts']} at this tier): {why}")
-    to_euklides(c, job, "failure", why)
+    to_euklides(c, job, "failure", why, **extra)
 
 
 def _block(st: dict, job: str, why: str, critical: bool = False) -> None:
@@ -434,6 +444,7 @@ def on_gate(c: Ctx, job: str, r: dict) -> None:
     extra = {"accepted_gate": accepted} if accepted else {}
     merge.record(c.dir, job, "gate", {"ok": ok, "head": r["meta"].get("head"), "exit": r["exit"], "tail": tail, **extra})
     if ok:
+        _passed(j, r["meta"].get("head"))
         j["status"] = "needs_pr"
         run.event(c.st, f"{job}: job gate green" + (f" (the replacement gate `{_clean(accepted)[:200]}`)" if accepted else ""))
     elif accepted:
@@ -444,7 +455,8 @@ def on_gate(c: Ctx, job: str, r: dict) -> None:
                       {"note": f"Accepting the head on the replacement gate failed: {why}.",
                        "proposal": ":stop, or say what the job should do", "then": "stop"}, None)
     else:
-        fail(c, job, f"job gate red (exit {r['exit']}{', ' + r['reason'] if r['reason'] else ''}): {tail[-600:]}")
+        fail(c, job, f"job gate red (exit {r['exit']}{', ' + r['reason'] if r['reason'] else ''}): {tail[-600:]}",
+             red={"kind": "gate", "head": r["meta"].get("head"), "tail": tail})
 
 
 def _review_answer(r: dict) -> tuple[str, list] | None:
@@ -474,6 +486,7 @@ def on_review(c: Ctx, job: str, r: dict) -> None:
     verdict, findings = answer[0], [str(f) for f in answer[1]][:20]
     merge.record(c.dir, job, "verdict", {"verdict": verdict, "head": r["meta"].get("head"), "findings": findings})
     if verdict == "CLEAN":
+        _passed(j, r["meta"].get("head"))
         j["status"] = "needs_integrate"
         run.event(c.st, f"{job}: review CLEAN")
         return
@@ -506,13 +519,15 @@ def on_integrate(c: Ctx, job: str, r: dict) -> None:
         j["status"] = "needs_merge"
         run.event(c.st, f"{job}: integration gate green on {out['base'][:8]}")
         return
+    red = {"kind": "integrate", "head": out.get("head") or r["meta"].get("head"),
+           "tail": str(out.get("tail", ""))[-2000:]}
     if out.get("base_red") is True:  # not the job's doing: a second worker attempt would only fail the same way
         return to_euklides(c, job, "blocked", f"integration gate red, and red on {c.base} without the job too: "
-                           f"{reason}\n\n{str(out.get('tail', ''))[-1500:]}", "integrate", base_red=True)
+                           f"{reason}\n\n{str(out.get('tail', ''))[-1500:]}", "integrate", base_red=True, red=red)
     j["integrate_fails"] += 1
     if j["integrate_fails"] >= 2:
         return to_euklides(c, job, "blocked", f"integration gate failed twice: {reason}\n\n"
-                           f"{str(out.get('tail', ''))[-1500:]}", "integrate")
+                           f"{str(out.get('tail', ''))[-1500:]}", "integrate", red=red)
     j["resume_msg"] = brief.resume_message("integrate", f"{reason}\n\n{out.get('tail', '')}", c.st["slug"])
     j["status"] = "needs_worker"
     run.event(c.st, f"{job}: integration gate red ({reason}); back to the worker")
