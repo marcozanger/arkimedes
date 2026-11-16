@@ -21,7 +21,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import accounts, approve, beat, brief, caps, claude, companions, daycap, euklides, forge as forge_mod, gitops, inbox, integrate, merge, notify, paths, proc, questions, reporting, run, sweep, usage
+from . import accounts, approve, beat, brief, caps, claude, coachqueue, companions, daycap, euklides, forge as forge_mod, gitops, inbox, integrate, merge, notify, paths, proc, questions, reporting, run, sweep, usage
 from .globs import areas_overlap, match_any
 from .plan import load_plan, sha256_file
 from .validate import validate
@@ -2012,6 +2012,7 @@ def _stop_closing(c: Ctx, why: str) -> None:
     _forget_retries(st)
     st.update(status="blocked")
     _closed(st)
+    _queue_flaky(c)
     _close_report(c, record=True)
     file = f"The decisions file is on ark/{st['slug']}" if st.get("decisions_sha") else \
         f"The decisions file was not committed; its text, if it could be written, is at {c.dir / 'decisions.md'}"
@@ -2034,6 +2035,20 @@ def _closing_failed(c: Ctx, e: Exception) -> None:
                       f"tries: {text}")
     if n >= ERROR_ALERT_AFTER:
         st["closing_wait"] = time.time() + BACKOFF_MAX
+
+
+def _queue_flaky(c: Ctx) -> None:
+    """One coach queue item per run with flaky gates. A failed write never stops the close: the report says it."""
+    st = c.st
+    if not st.get("flaky") or st.get("flaky_queued") or st.get("queue_error"):
+        return
+    try:
+        f = coachqueue.add_flaky(c.repo, st)
+    except OSError as e:
+        st["queue_error"] = _clean(f"{type(e).__name__}: {e}")[:300]
+        return run.event(st, f"the coach queue item for the flaky gates was not written: {st['queue_error']}")
+    st["flaky_queued"] = True
+    run.event(st, f"flaky gates queued in {f}")
 
 
 def _close_report(c: Ctx, *, record: bool) -> str:
@@ -2061,6 +2076,7 @@ def publish(c: Ctx) -> None:
                 c.repo, c.base, f"docs/decisions/{st['slug']}.md", _decisions_text(c),
                 f"docs: decisions for {st['slug']}", paths.worktrees_dir() / st["repo"] / st["slug"] / "_decisions")
             run.event(st, f"decisions file committed on ark/{st['slug']}")
+        _queue_flaky(c)
         merged = any(j["status"] == "merged" for j in st["jobs"].values())
         if merged and not st["final_pr"]:
             md = _close_report(c, record=False)

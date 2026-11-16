@@ -40,6 +40,26 @@ When main moved during the run, the report has a Base refreshes section: one row
 USD, time) and the totals: refreshes landed, workers used, and the merge budget spent against the plan's `merge`
 budget when it has one. A run with no refresh after the start has no section.
 
+## Flaky gates
+
+A gate that was red under load and green when Euklides' `regate` ran it again alone is recorded in the run state as
+flaky. It shows in four places:
+
+- `report.html`: a "Flaky gates" section after Decisions, one row per entry (job, gate, head sha8, note). When the
+  coach queue item could not be written, the section also says "The coach queue item is missing" and why. The run
+  closes anyway.
+- The final PR: a "Flaky tests" section naming each job, gate and note.
+- `docs/decisions/<slug>.md`: one decision per flaky gate (author arkimedes); the runner's fallback file has a
+  "Flaky gates" section with one line each.
+- The coach queue of the repo, `~/.claude/coach/queue/<basename of the main checkout>.md`: one line per run, written
+  once at close, in the queue format:
+
+```
+- [ ] 2026-11-13 · Make these tests robust: they failed under load and passed alone in the ark run humanharness/self-checking-docs: docs-check (integration gate): watch.test.ts and clock.test.ts time out (from: ark:humanharness/self-checking-docs)
+```
+
+A run with no flaky gate has none of these.
+
 ## Commands
 
 | Command | What |
