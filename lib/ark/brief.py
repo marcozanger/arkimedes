@@ -391,6 +391,12 @@ def _answers(st: dict) -> str:
                      for a in st.get("answers") or [])
 
 
+def _flaky_lines(st: dict) -> list[str]:
+    return [f"- `{f['job']}` · {'integration gate' if f['kind'] == 'integrate' else 'job gate'} on "
+            f"`{str(f['head'])[:8]}`: {_no_mentions(' '.join(str(f['note']).split()))}"
+            for f in st.get("flaky") or []]
+
+
 def decisions_prompt(st: dict, reports: dict[str, str]) -> str:
     jobs = []
     for jid, j in st["jobs"].items():
@@ -413,6 +419,8 @@ def decisions_prompt(st: dict, reports: dict[str, str]) -> str:
         DECISIONS_FORMAT,
         f"Plan: {st['plan']} · approved {st['approved_at'][:10]} · closed {date.today().isoformat()}",
         _untrusted("Run events", "\n".join(st["events"][-60:]) or "(none)"),
+        *([_untrusted("Gates red under load and green alone on the machine (flaky); record each as a decision, "
+                      "author arkimedes", "\n".join(_flaky_lines(st)))] if st.get("flaky") else []),
         _untrusted("Marco's answers to the run's questions (each is a decision to record)", _answers(st) or "(none)"),
         "Jobs and their reports:",
         *jobs,
@@ -434,6 +442,8 @@ def fallback_decisions(st: dict, reports: dict[str, str]) -> str:
         found = _section(reports.get(jid, ""), "DECISIONS")
         if found:
             lines += [found, ""]
+    if st.get("flaky"):
+        lines += ["## Flaky gates", "", *_flaky_lines(st), ""]
     if st.get("answers"):
         lines += ["## Answers from Marco", "", _answers(st), ""]
     return "\n".join(lines).rstrip() + "\n"
@@ -483,6 +493,9 @@ def final_pr_body(st: dict, summary_md: str = "") -> str:
              "| job | status | PR |", "|---|---|---|", *rows]
     if blocked:
         parts += ["", "**Blocked jobs** (not in this PR):", *blocked]
+    if st.get("flaky"):
+        parts += ["", "## Flaky tests", "", "Red under load, green alone on the machine; queued to be made robust.",
+                  "", *_flaky_lines(st)]
     if summary_md:
         parts += ["", summary_md.rstrip("\n")]
     return "\n".join(parts) + "\n"
