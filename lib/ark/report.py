@@ -153,10 +153,10 @@ def _per_pr(s: dict) -> str:
                      f'{minutes(j["minutes"])} / {minutes(j["budget_minutes"])}', tokens(j["tokens"]),
                      f'{usd(j["usd"])} / {usd(j["budget_usd"])}{_est(j["estimated"])}', pr, _e(j["reason"] or "")])
     for k, status in (s.get("retired") or {}).items():
-        rows.append([_e(k), "", _status(status)] + [""] * 10)
+        rows.append([_e(k), "", _status(status)] + [""] * 11)
     return _table(["job", "Version", "status", "tiers", "attempts", "steers", "reviews", "failed gates",
                    "failed integrations", "minutes / budget", "tokens", "USD / budget", "PR", "reason"],
-                  rows, wrap=12)
+                  rows, wrap=13)
 
 
 def _timeline(rows: list[dict]) -> str:

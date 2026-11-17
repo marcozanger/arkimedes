@@ -49,3 +49,17 @@ def test_history_keeps_the_version(report_state):
     st, rows, mjobs_ = report_state
     s = summary.summarize(_st_with_versions(st), rows, mjobs_)
     assert history.plan_row(s)["version"] == 2
+
+
+def test_by_pr_rows_have_one_cell_per_column_and_wrap_the_reason(report_state):
+    import re
+    st, rows, mjobs_ = report_state
+    s = summary.summarize(_st_with_versions(st), rows, mjobs_)
+    table = report._per_pr(s)
+    heads = len(re.findall(r"<th>", table))
+    trs = re.findall(r"<tr>(.*?)</tr>", table.split("<tbody>")[1])
+    assert len(trs) == len(s["jobs"]) + 1
+    for tr in trs:
+        assert len(re.findall(r"<td", tr)) == heads
+        cells = re.findall(r"<td[^>]*>", tr)
+        assert [c for c in cells if "wrap" in c] == [cells[-1]]
