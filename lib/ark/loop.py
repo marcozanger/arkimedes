@@ -3118,6 +3118,9 @@ def _adopt_version(st: dict, a: dict, states: list[dict], forge) -> None:
     prev = versions.by_sha(st["repo"], st["slug"], st["plan_sha"])
     old_n = prev["version"] if prev else a["version"] - 1
     changes = versions.job_changes(old, new) if st["jobs"] else {}
+    for jid in st["jobs"]:  # a legacy run has no kept text: a job the new manifest lacks is removed
+        if jid not in mjobs:
+            changes.setdefault(jid, "removed")
     retired = st.setdefault("retired_jobs", {})
     told = []
     for jid, kind in changes.items():

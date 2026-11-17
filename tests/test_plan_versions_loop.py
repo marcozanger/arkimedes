@@ -161,3 +161,19 @@ def test_v2_of_a_blocked_run_leaves_unchanged_blocked_jobs_blocked(runner, make_
     loop.cycle()
     st = state()
     assert st["jobs"]["a"]["status"] == "blocked" and st["jobs"]["b"]["status"] != "blocked"
+
+
+def test_a_legacy_run_drops_a_job_its_first_version_removes(runner, make_feature, monkeypatch):
+    from helpers import approve as legacy_approve
+    monkeypatch.setenv("FAKE_SLEEP", "30")
+    runner("demo")
+    p = make_feature(plan_text(M1, slug=SLUG), slug=SLUG, create_repo=False)
+    legacy_approve(p, slug=SLUG)
+    loop.cycle()
+    assert state()["status"] == "running"
+    _v(p, manifest(jobs=[job("a", ["T1"], ["a/**"]), job("b", ["T2"], ["b/**"])]))
+    loop.cycle()
+    loop.cycle()
+    st = state()
+    assert "c" not in st["jobs"] and "c" in st["retired_jobs"]
+    assert st["versions"][-1]["changes"]["c"] == "removed"
