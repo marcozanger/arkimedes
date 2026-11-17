@@ -79,6 +79,21 @@ def _section(text: str, name: str) -> str:
     return m.group(1).strip() if m else ""
 
 
+def _followup_block(st: dict, job_id: str) -> list[str]:
+    f = (st.get("jobs", {}).get(job_id) or {}).get("followup")
+    if not isinstance(f, dict):
+        return []
+    diff = re.sub(r"[\x00-\x08\x0b-\x1f]", "", str(f.get("diff", "")))
+    fence = "`" * max(3, max((len(m) for m in CLOSING_FENCE.findall(diff)), default=0) + 1)
+    return [
+        f"This job is a follow-up: it merged under v{f.get('from_version')} of this plan, and the plan "
+        "changed it since. The base branch already holds that earlier work. Read it first, then do only "
+        "what is missing for the text below; do not redo or revert what is there unless the new text says so.",
+        "What changed in this job's text since that version (unified diff):",
+        f"{fence}diff\n{diff}\n{fence}",
+    ]
+
+
 def worker_brief(st: dict, job_id: str, mj: dict, plan: Plan, *, worktree, report,
                  note: str | None = None, previous_report: str | None = None) -> str:
     slug = st["slug"]
@@ -86,6 +101,7 @@ def worker_brief(st: dict, job_id: str, mj: dict, plan: Plan, *, worktree, repor
         f"You are the worker for job `{job_id}` of the plan `{slug}` in the repo `{st['repo']}`.",
         f"Plan goal: {plan.sections.get('Goal', '').strip()}",
         "## Your job",
+        *_followup_block(st, job_id),
         *_job_block(mj, plan, _grants(st, job_id)),
         "## Rules",
         _bullets([
