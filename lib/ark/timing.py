@@ -67,8 +67,21 @@ def compute(jobs: list[dict], status: str, now: datetime) -> dict:
         left = None
     else:
         left = max(0, _minutes(fc_end - now))
+    def job_left(j):
+        """Minutes this job still needs, from the forecast: 0 when it is over, None when it never started or is stuck.
+        `over` is a job past its budget: the forecast has no better guess than "now", so the UI says so instead of 0."""
+        if j["status"] in TERMINAL:
+            return {"left_min": 0 if j["status"] == "merged" else None, "over": False}
+        end = fc[j["id"]][1]
+        if end is None:
+            return {"left_min": None, "over": False}
+        started = parse(j.get("started"))
+        over = bool(started and now > started + timedelta(minutes=j.get("minutes") or 0))
+        return {"left_min": max(0, _minutes(end - now)), "over": over}
+
+    byid = {j["id"]: j for j in jobs}
     return {
         "origin": origin, "estimated_end": est_end, "forecast_end": fc_end, "delay_min": delay, "left_min": left,
-        "jobs": {jid: {"plan_start": est[jid][0], "plan_end": est[jid][1], "fc_start": fc[jid][0], "fc_end": fc[jid][1]}
-                 for jid in est},
+        "jobs": {jid: {"plan_start": est[jid][0], "plan_end": est[jid][1], "fc_start": fc[jid][0], "fc_end": fc[jid][1],
+                       **job_left(byid[jid])} for jid in est},
     }

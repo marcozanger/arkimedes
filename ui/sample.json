@@ -88,6 +88,8 @@
           "finished": "2026-11-07T06:30:00+00:00",
           "fc_start": null,
           "fc_end": null,
+          "left_min": null,
+          "over": false,
           "usd": 0,
           "tier": "sonnet",
           "tier_path": [
@@ -136,6 +138,8 @@
           "finished": "2026-11-07T07:15:00+00:00",
           "fc_start": null,
           "fc_end": null,
+          "left_min": null,
+          "over": false,
           "usd": 0,
           "tier": "sonnet",
           "tier_path": [
@@ -184,6 +188,8 @@
           "finished": null,
           "fc_start": "2026-11-07T10:05:00+00:00",
           "fc_end": "2026-11-07T10:27:00+00:00",
+          "left_min": null,
+          "over": false,
           "usd": 3.4,
           "tier": "sonnet",
           "tier_path": [
@@ -237,6 +243,8 @@
           "finished": null,
           "fc_start": "2026-11-07T10:05:00+00:00",
           "fc_end": "2026-11-07T10:15:00+00:00",
+          "left_min": null,
+          "over": false,
           "usd": 0.8,
           "tier": "sonnet",
           "tier_path": [
@@ -285,6 +293,8 @@
           "finished": null,
           "fc_start": "2026-11-07T10:27:00+00:00",
           "fc_end": "2026-11-07T10:39:00+00:00",
+          "left_min": null,
+          "over": false,
           "usd": 0,
           "tier": "sonnet",
           "tier_path": [
@@ -436,6 +446,8 @@
           "finished": "2026-11-07T08:40:00+00:00",
           "fc_start": null,
           "fc_end": null,
+          "left_min": null,
+          "over": false,
           "usd": 1.9,
           "tier": "sonnet",
           "tier_path": [
@@ -484,6 +496,8 @@
           "finished": null,
           "fc_start": null,
           "fc_end": "2026-11-07T11:24:00+00:00",
+          "left_min": null,
+          "over": false,
           "usd": 1.2,
           "tier": "sonnet",
           "tier_path": [
@@ -604,6 +618,8 @@
           "finished": "2026-11-07T09:05:00+00:00",
           "fc_start": null,
           "fc_end": null,
+          "left_min": null,
+          "over": false,
           "usd": 0,
           "tier": "sonnet",
           "tier_path": [
@@ -650,6 +666,8 @@
           "finished": "2026-11-07T10:00:00+00:00",
           "fc_start": null,
           "fc_end": null,
+          "left_min": null,
+          "over": false,
           "usd": 2.9,
           "tier": "sonnet",
           "tier_path": [
@@ -698,6 +716,8 @@
           "finished": null,
           "fc_start": null,
           "fc_end": null,
+          "left_min": null,
+          "over": false,
           "usd": 0,
           "tier": "sonnet",
           "tier_path": [
@@ -810,6 +830,8 @@
           "finished": null,
           "fc_start": null,
           "fc_end": null,
+          "left_min": null,
+          "over": false,
           "usd": 0,
           "tier": "sonnet",
           "tier_path": [
@@ -856,6 +878,8 @@
           "finished": null,
           "fc_start": null,
           "fc_end": null,
+          "left_min": null,
+          "over": false,
           "usd": 0,
           "tier": "sonnet",
           "tier_path": [
@@ -973,6 +997,8 @@
           "finished": "2026-11-07T03:30:00+00:00",
           "fc_start": null,
           "fc_end": null,
+          "left_min": null,
+          "over": false,
           "usd": 0,
           "tier": "sonnet",
           "tier_path": [
@@ -1017,6 +1043,8 @@
           "finished": "2026-11-07T03:55:00+00:00",
           "fc_start": null,
           "fc_end": null,
+          "left_min": null,
+          "over": false,
           "usd": 0,
           "tier": "sonnet",
           "tier_path": [
@@ -1199,6 +1227,8 @@
           "finished": "2026-11-07T03:30:00+00:00",
           "fc_start": null,
           "fc_end": null,
+          "left_min": null,
+          "over": false,
           "usd": 3.2,
           "tier": "T1",
           "tier_path": [
@@ -1243,6 +1273,8 @@
           "finished": "2026-11-07T03:55:00+00:00",
           "fc_start": null,
           "fc_end": null,
+          "left_min": null,
+          "over": false,
           "usd": 3.2,
           "tier": "T1",
           "tier_path": [
@@ -1360,6 +1392,8 @@
           "finished": "2026-11-07T03:30:00+00:00",
           "fc_start": null,
           "fc_end": null,
+          "left_min": null,
+          "over": false,
           "usd": 5.9,
           "tier": "T2",
           "tier_path": [
@@ -1404,6 +1438,8 @@
           "finished": "2026-11-07T03:55:00+00:00",
           "fc_start": null,
           "fc_end": null,
+          "left_min": null,
+          "over": false,
           "usd": 5.9,
           "tier": "T2",
           "tier_path": [
@@ -1519,6 +1555,8 @@
           "finished": "2026-11-07T03:30:00+00:00",
           "fc_start": null,
           "fc_end": null,
+          "left_min": null,
+          "over": false,
           "usd": 0.0,
           "tier": "T0",
           "tier_path": [
@@ -1563,6 +1601,8 @@
           "finished": "2026-11-07T03:55:00+00:00",
           "fc_start": null,
           "fc_end": null,
+          "left_min": null,
+          "over": false,
           "usd": 0.0,
           "tier": "T0",
           "tier_path": [
