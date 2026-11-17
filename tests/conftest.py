@@ -40,6 +40,17 @@ def no_start_check(monkeypatch):
     monkeypatch.setattr(loop, "START_CHECK", False)
 
 
+@pytest.fixture(autouse=True)
+def no_load_brake(monkeypatch):
+    """The machine's load never holds a test's gate, and no load wait leaks from one test to the next.
+    Tests of the brake set their own load (test_gate_brake's clock)."""
+    from ark import loop
+    loop._load_wait.clear()
+    monkeypatch.setattr(os, "getloadavg", lambda: (0.0, 0.0, 0.0))
+    yield
+    loop._load_wait.clear()
+
+
 @pytest.fixture
 def ark_home(tmp_path, monkeypatch):
     """An empty Arkimedes home whose only workspace root is tmp_path/ws."""
