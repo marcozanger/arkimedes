@@ -2409,8 +2409,9 @@ def reconcile(st: dict) -> None:
 # ---- sleep --------------------------------------------------------------------------------------
 
 def clocks() -> tuple[float, float]:
-    """(wall, uptime). The uptime clock does not advance while the Mac sleeps; CLOCK_MONOTONIC does on macOS."""
-    return time.time(), time.clock_gettime(time.CLOCK_UPTIME_RAW)
+    """(wall, uptime). The uptime clock does not advance while the Mac sleeps; CLOCK_MONOTONIC does on macOS.
+    Linux (CI) has no CLOCK_UPTIME_RAW, and there CLOCK_MONOTONIC already stops during suspend."""
+    return time.time(), time.clock_gettime(getattr(time, "CLOCK_UPTIME_RAW", time.CLOCK_MONOTONIC))
 
 
 def slept_between(before: tuple[float, float], after: tuple[float, float]) -> float:
