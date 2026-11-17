@@ -7,12 +7,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import approve, ctl, desk, estimate, forge, monitor, paths, reporting, review, sweep, validate
-from .plan import load_plan, sha256_file
+from . import approve, ctl, desk, estimate, forge, monitor, paths, reporting, review, run, sweep, validate, versions
+from .plan import load_plan, set_status, sha256_file
 from .report import minutes, usd
 
 
@@ -36,7 +37,7 @@ def cmd_status(args) -> int:
         if f.repo != repo:
             repo = f.repo
             print(repo)
-        print(f"  {f.slug:<28} spec {f.spec:<9} plan {f.plan:<7} status {f.run:<8} elapsed {f.elapsed:<6} eta {f.eta}")
+        print(f"  {f.slug:<28} spec {f.spec:<9} plan {f.plan:<7} version {f.version:<4} status {f.run:<8} elapsed {f.elapsed:<6} eta {f.eta}")
     return 0
 
 
@@ -45,9 +46,9 @@ def cmd_plans(args) -> int:
     if not fs:
         print("No plans in the desk.")
         return 0
-    print(f"{'repo/slug':<40} {'plan':<7} {'approval':<11} run")
+    print(f"{'repo/slug':<40} {'plan':<7} {'approval':<11} {'version':<8} run")
     for f in fs:
-        print(f"{f.repo + '/' + f.slug:<40} {f.plan:<7} {f.approval:<11} {f.run}")
+        print(f"{f.repo + '/' + f.slug:<40} {f.plan:<7} {f.approval:<11} {f.version:<8} {f.run}")
     return 0
 
 
@@ -97,6 +98,9 @@ def cmd_approve(args) -> int:
         return 1
     plan = load_plan(path)
     print(_pr_table(plan.manifest))
+    t = _change_table(path)
+    if t:
+        print(t)
     if interactive:
         answer = input("Approve this plan? [y/N] ").strip().lower()
         if answer not in ("s", "si", "sí", "y", "yes"):
@@ -111,6 +115,84 @@ def cmd_approve(args) -> int:
             print(f"ark approve: {e}", file=sys.stderr)
         return 1
     print(f"Approved {rec['repo']}/{rec['slug']} · sha256 {rec['sha256'][:12]}")
+    return 0
+
+
+def _change_table(path: Path) -> str:
+    """What approving this draft does to each job of the approved version and its run."""
+    fm = load_plan(path).frontmatter
+    repo, slug = str(fm["repo"]), str(fm["slug"])
+    last = versions.latest(repo, slug)
+    old = versions.plan_path(repo, slug, last["version"]) if last else None
+    n = last["version"] if last else 1
+    if last is None and not paths.approval_file(repo, slug).exists():
+        return ""
+    st = run.load(repo, slug) or {"jobs": {}}
+    rows = [f"Changes from v{n} to v{n + 1}:"]
+    for jid, kind in versions.job_changes(old, path).items():
+        merged = (st["jobs"].get(jid) or {}).get("status") == "merged"
+        what = {"unchanged": "unchanged, keeps its state",
+                "added": "added",
+                "changed": f"merged in v{n}, re-runs as a follow-up" if merged else "changed, restarts",
+                "removed": f"removed; merged in v{n}, stays in main" if merged else "removed, its PR is closed"}[kind]
+        rows.append(f"  {jid:<18}{what}")
+    return "\n".join(rows)
+
+
+def cmd_replan(args) -> int:
+    path = _resolve(args.target)
+    try:
+        fm = load_plan(path).frontmatter
+    except Exception as e:
+        print(f"ark replan: cannot read {path}: {e}", file=sys.stderr)
+        return 1
+    repo, slug = str(fm.get("repo")), str(fm.get("slug"))
+    a = paths.approval_file(repo, slug)
+    if not a.exists():
+        print(f"ark replan: {repo}/{slug} is not approved; edit the draft and approve it.", file=sys.stderr)
+        return 1
+    if not versions.versions(repo, slug) and not (path.parent / versions.LEGACY_PLAN).exists():
+        shutil.copyfile(path, path.parent / versions.LEGACY_PLAN)  # the approved text, before any edit
+        spec = path.parent / "spec.md"
+        if spec.is_file():
+            shutil.copyfile(spec, path.parent / versions.LEGACY_SPEC)
+    if fm.get("status") == "closed":
+        set_status(path, "draft")
+    last = versions.latest(repo, slug)
+    n = (last["version"] if last else 1) + 1
+    print(f"{repo}/{slug}: the plan is the draft of v{n}. The run keeps following the approved version "
+          f"until `ark approve {repo}/{slug}` freezes v{n}.")
+    return 0
+
+
+def _vnum(s: str) -> int:
+    return int(s.lstrip("vV"))
+
+
+def cmd_diff(args) -> int:
+    repo, _, slug = args.target.rstrip("/").rpartition("/")
+    vs = versions.versions(repo, slug)
+    nums = [v["version"] for v in vs]
+    if args.a and args.b:
+        try:
+            a, b = _vnum(args.a), _vnum(args.b)
+        except ValueError:
+            print(f"ark diff: versions look like v1, v2: got {args.a} {args.b}", file=sys.stderr)
+            return 1
+    elif len(nums) >= 2:
+        a, b = nums[-2], nums[-1]
+    else:
+        print(f"ark diff: {repo}/{slug} has only one version." if nums else
+              f"ark diff: {repo}/{slug} has no versions.", file=sys.stderr)
+        return 1
+    missing = [f"v{n}" for n in (a, b) if n not in nums]
+    if missing:
+        print(f"ark diff: no {', '.join(missing)} for {repo}/{slug}", file=sys.stderr)
+        return 1
+    for v in vs:
+        if v["version"] in (a, b) and v.get("kept") is False:
+            print(f"v{v['version']} was approved before versions existed; its text was not kept.")
+    print(versions.diff(repo, slug, a, b), end="")
     return 0
 
 
@@ -242,6 +324,14 @@ def main(argv=None) -> int:
     s = sub.add_parser("approve", help="close a plan (Marco confirms)")
     s.add_argument("target", help="<repo>/<slug>")
     s.set_defaults(fn=cmd_approve)
+    s = sub.add_parser("replan", help="reopen an approved plan as the draft of its next version")
+    s.add_argument("target", help="<repo>/<slug>")
+    s.set_defaults(fn=cmd_replan)
+    s = sub.add_parser("diff", help="what changed between two versions of a plan (spec first)")
+    s.add_argument("target", help="<repo>/<slug>")
+    s.add_argument("a", nargs="?", help="older version, e.g. v1 (default: the one before the last)")
+    s.add_argument("b", nargs="?", help="newer version, e.g. v2 (default: the last)")
+    s.set_defaults(fn=cmd_diff)
     s = sub.add_parser("estimate", help="a plan's budget and end-to-end time")
     s.add_argument("target", help="<repo>/<slug> or path to plan.md")
     s.add_argument("--json", action="store_true", help="the same data as JSON")
