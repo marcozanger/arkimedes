@@ -5,8 +5,8 @@ import { readFileSync } from "node:fs";
 const html = readFileSync(process.argv[2], "utf8");
 const START = "// ---- logic: start ----", END = "// ---- logic: end ----";
 const code = html.split(START)[1].split(END)[0];
-const { decide, titleFor, readPlan, segments, etaText, spendText, flagOf, parseRoute, dur, draftHeader, docSections, jobCount, homeGroups, topTier, dashTime, dashRows, dashStats, dashDelta, dashKpis, dashSpendByDay, dashStatusCounts, dashSpendByRepo, dashActive, dashSet, dashFresh, dashIsFresh, dashChoices } =
-  new Function(code + "; return {decide, titleFor, readPlan, segments, etaText, spendText, flagOf, parseRoute, dur, draftHeader, docSections, jobCount, homeGroups, topTier, dashTime, dashRows, dashStats, dashDelta, dashKpis, dashSpendByDay, dashStatusCounts, dashSpendByRepo, dashActive, dashSet, dashFresh, dashIsFresh, dashChoices};")();
+const { decide, titleFor, readPlan, segments, etaText, jobLeft, spendText, flagOf, parseRoute, dur, draftHeader, docSections, jobCount, homeGroups, topTier, dashTime, dashRows, dashStats, dashDelta, dashKpis, dashSpendByDay, dashStatusCounts, dashSpendByRepo, dashActive, dashSet, dashFresh, dashIsFresh, dashChoices } =
+  new Function(code + "; return {decide, titleFor, readPlan, segments, etaText, jobLeft, spendText, flagOf, parseRoute, dur, draftHeader, docSections, jobCount, homeGroups, topTier, dashTime, dashRows, dashStats, dashDelta, dashKpis, dashSpendByDay, dashStatusCounts, dashSpendByRepo, dashActive, dashSet, dashFresh, dashIsFresh, dashChoices};")();
 
 const fresh = () => ({ lastAlert: null, loopDown: false, stale: false, done: [], unread: [] });
 const ok = { stale: false, error: "" };
@@ -120,6 +120,16 @@ const snap = (alerts = [], over = {}) => ({ version: 1, loop: { alive: true }, a
   assert.equal(etaText({ status: "done", times: { left_min: 0, delay_min: 5 } }), "Finished · 5m late");
   assert.equal(etaText({ status: "waiting", times: { left_min: 95, delay_min: 0 } }), "Not started · ~1h35m of work");
   assert.equal(etaText({ status: "held", times: { left_min: 40, delay_min: 0 } }), "Paused");
+}
+
+// 9b. per-job time left
+{
+  const b = { minutes: 100 };
+  assert.equal(jobLeft({ status: "working", started: "x", left_min: 100, budget: b }), "~1h40m left");
+  assert.equal(jobLeft({ status: "pending", left_min: 100, budget: b }), "~1h40m of work");
+  assert.equal(jobLeft({ status: "working", started: "x", left_min: 0, over: true, budget: b }), "over budget");
+  assert.equal(jobLeft({ status: "merged", left_min: 0, budget: b }), "");
+  assert.equal(jobLeft({ status: "blocked", budget: b }), "stopped");
 }
 
 // 10. spend text
