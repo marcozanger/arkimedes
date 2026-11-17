@@ -21,7 +21,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import accounts, approve, beat, brief, caps, claude, coachqueue, companions, daycap, euklides, forge as forge_mod, gitops, inbox, integrate, merge, notify, paths, proc, questions, reporting, run, sweep, usage
+from . import accounts, approve, beat, brief, caps, claude, coachqueue, companions, daycap, euklides, forge as forge_mod, gitops, inbox, integrate, merge, notify, paths, proc, questions, reporting, run, sweep, usage, versions
 from .globs import areas_overlap, match_any
 from .plan import load_plan, sha256_file
 from .validate import validate
@@ -53,8 +53,6 @@ RUNNING = {"working": "worker", "gating": "gate", "reviewing": "review", "integr
            "euklides": "euklides"}
 WAITING = {"worker": "needs_worker", "gate": "needs_gate", "review": "needs_review",
            "integrate": "needs_integrate", "euklides": "needs_euklides"}
-CHECK_KINDS = ("gate", "review", "integrate")  # what a new approval makes a job earn again
-REWOUND = ("gating", "needs_pr", "needs_review", "reviewing", "needs_integrate", "integrating", "needs_merge")
 WAITS_FOR_MARCO = ("waiting_answer", "attached")  # statuses only Marco can move
 STEERED = "steered"
 INTERVENED = "stopped by the intervene tick"
@@ -242,6 +240,8 @@ def try_start(st: dict, others: list[dict], forge) -> bool:
             if existing and existing != st["base_sha"]:
                 reason = f"ark/{st['slug']} already exists on origin: delete it, or approve under another slug"
             for job in () if reason else mjobs:
+                if st["jobs"].get(job["id"], {}).get("status") not in (None, "pending"):
+                    continue  # merged or blocked under an earlier version: its branch is history
                 branch = f"ark/{st['slug']}-{job['id']}"
                 if gitops.remote_sha(repo, branch):  # a job's push could never fast-forward over it
                     reason = f"{branch} already exists on origin: delete it, or approve under another slug"
@@ -265,8 +265,10 @@ def try_start(st: dict, others: list[dict], forge) -> bool:
         st["refresh"] = _new_refresh(0, base, None)  # no job before a check is green on the base
     st.update(main_seen=base, base_green=not START_CHECK)
     st.setdefault("refreshes", [])
-    for mj in mjobs:
-        st["jobs"][mj["id"]] = run.new_job(mj)
+    for mj in mjobs:  # a run that starts again under a new version keeps the jobs it already has
+        if mj["id"] not in st["jobs"]:
+            st["jobs"][mj["id"]] = run.new_job(mj)
+    _first_version(st)
     run.event(st, f"started: ark/{st['slug']} from {default} @ {base[:8]}")
     return True
 
@@ -3016,9 +3018,8 @@ def step(st: dict, states: list[dict], forge, slots: Slots, hold: bool = False) 
     if merge.plan_reason(st):  # the same question ark-merge asks: a run it would refuse takes no step
         if st["status"] != "held":
             st["status"] = "held"
-            run.alert(st, "the plan changed after its approval: nothing new is dispatched. Running processes "
-                          "finish; their results wait. Restore the approved text, or approve the new text: then "
-                          "every job not merged passes its checks again.")
+            run.alert(st, "the plan changed after its approval: nothing new is dispatched. Approve the new text "
+                          "(`ark approve`) and the run takes it as the next version.")
         questions.ask(st, "plan_changed", "The plan changed after its approval, so this run is held. To go on, restore "
                                           "the approved text or approve the new one. Answer `stop` to end the run.",
                       quiet=True)  # the alert above says it; ask again finds the same one
@@ -3042,7 +3043,7 @@ def step(st: dict, states: list[dict], forge, slots: Slots, hold: bool = False) 
 
 def _first_refusal(st: dict, a: dict, reason: str) -> bool:
     """True the first time this approval is refused for this reason: he hears each reason once, and a new one
-    after another (a run that finished, then an area that overlaps) is heard too."""
+    after another (an area that overlaps, then one that does not validate) is heard too."""
     key = f"{a['sha256']}:{reason}"
     if st.get("reapprove_refused") == key:
         return False
@@ -3050,68 +3051,133 @@ def _first_refusal(st: dict, a: dict, reason: str) -> bool:
     return True
 
 
-def _adopt_reapproval(st: dict, a: dict, states: list[dict], forge) -> None:
-    """Marco edited a held run's plan and approved it again: that releases it, if the new plan still
-    describes this run. The old text is gone, so nobody can say what the edit changed: every job not merged
-    earns its checks again under the plan approved now, and a merged job, which cannot, refuses the approval.
-    A plan with other jobs, or one running into another run's area, is a new run. A refusal leaves it held
-    and he hears why once."""
-    if a["sha256"] == st["plan_sha"]:
+def _old_plan(st: dict):
+    """The frozen text this run follows now, or None when it was never kept."""
+    v = versions.by_sha(st["repo"], st["slug"], st["plan_sha"])
+    return versions.plan_path(st["repo"], st["slug"], v["version"]) if v and v.get("kept") else None
+
+
+def _drop_job_work(st: dict, job: str, j: dict, forge, repo, *, close_pr: bool) -> None:
+    """Stop a job's processes, close its PR, delete its branch and worktree: its work is stale."""
+    d = paths.run_dir(st["repo"], st["slug"])
+    for info in proc.job_processes(d, job):
+        name = info.get("name") or ""
+        if name:
+            proc.stop(d, name, run.REPLANNED)
+            proc.discard(d, name)
+    pr = j.get("pr")
+    if close_pr and isinstance(pr, dict) and type(pr.get("number")) is int:
+        try:
+            if forge.view(repo, pr["number"])["state"] == "OPEN":
+                forge.close(repo, pr["number"], f"Closed by Arkimedes: a new version of the plan {st['slug']} "
+                                                f"changed or removed the job {job}.")
+        except forge_mod.ForgeError as e:
+            run.alert(st, f"could not close the PR of {job} ({pr.get('url')}): {_clean(str(e))}")
+    gitops.delete_remote(repo, f"ark/{st['slug']}-{job}")
+    gitops.remove_worktree(repo, _wt(st, job))
+    merge.drop_records(d, job)
+
+
+def _first_version(st: dict) -> None:
+    """The version a run starts under, when its approval was versioned: st["versions"] begins there."""
+    if not st.get("versions"):
+        v = versions.by_sha(st["repo"], st["slug"], st["plan_sha"])
+        if v:
+            st["versions"] = [{"version": v["version"], "approved_at": st["approved_at"], "changes": {}}]
+
+
+def _adopt_version(st: dict, a: dict, states: list[dict], forge) -> None:
+    """A newer approved version of this plan: apply only what changed, in any run state but aborted. An
+    unchanged job goes on as it is; a changed one starts over from the new text (a merged one as a follow-up);
+    a removed one loses its processes, PR and branch (a merged one stays in main, and Marco hears it); an
+    added one is scheduled. A done or blocked run starts again under the same slug. A refusal is said once."""
+    if a["sha256"] == st["plan_sha"] or type(a.get("version")) is not int or st["status"] == "aborted":
         return
-    if st["status"] in run.FINISHED:  # only a plan with no run file runs: he must not wait for this one
-        if _first_refusal(st, a, "finished"):
-            run.alert(st, f"this run already finished ({st['status']}): the new approval starts nothing. "
-                          "To run the new plan, approve it under another slug")
+    new = Path(a["plan"])
+    if not new.is_file() or sha256_file(new) != a["sha256"]:
         return
-    if st["status"] != "held":
-        return
-    plan = Path(a["plan"])
-    if not plan.is_file() or sha256_file(plan) != a["sha256"]:  # edited since: not what was approved
-        return
-    why, area, jobs = "", [], []
-    problems = validate(plan, approved=True)
+    why, area, mjobs = "", [], {}
+    problems = validate(new, approved=True)
     if problems:
         why = f"it does not validate: {problems[0].message}"
     else:
-        jobs = load_plan(plan).manifest["jobs"]
-        area = [g for j in jobs for g in j["area"]]
-        merged = [job for job, j in st["jobs"].items() if j["status"] == "merged"]
-        if {j["id"] for j in jobs} != set(st["jobs"]):
-            why = "it changes the run's jobs"
-        elif merged and not set(st.get("area") or []) <= set(area):
-            # an edit that only widens the area cannot undo what a merged job passed; any other edit might
-            why = f"{', '.join(merged)} already merged under the old plan and cannot pass the new one's checks"
+        mjobs = {mj["id"]: mj for mj in load_plan(new).manifest["jobs"]}
+        area = [g for mj in mjobs.values() for g in mj["area"]]
         for o in states:
-            if not why and o is not st and o["repo"] == st["repo"] and o["status"] in ("running", "held") \
+            if o is not st and o["repo"] == st["repo"] and o["status"] in ("running", "held") \
                     and areas_overlap(area, o.get("area") or []):
-                why = f"its area overlaps the running plan {o['slug']}"
+                why = f"its area overlaps the {o['status']} plan {o['slug']}"
+                break
     if why:
         if _first_refusal(st, a, why):
-            run.alert(st, f"it cannot take the new approval: {why}. It stays held. To go on with this run, restore "
-                          "the approved text and approve it again; for a different run, approve under another "
-                          "slug (this one keeps its area until it ends)")
+            run.alert(st, f"it cannot take v{a['version']}: {why}. It goes on with the version it follows.")
         return
-    d = paths.run_dir(st["repo"], st["slug"])
-    done = proc.finished(d)
-    if any(n.rpartition(".")[2] in CHECK_KINDS and n not in done for n in proc.active(d)):
-        return  # a check under the old plan still runs. It has a time limit, so this retries soon
-    consume_receipts(Ctx(st, forge))  # a stop from Marco or a block still counts; a green no longer does
-    for mj in jobs:
-        j = st["jobs"][mj["id"]]
-        if j["status"] == "merged":
-            continue  # its checks passed and it is in the branch: a plan that only widened the area keeps it
-        if j["status"] == "pending":
-            st["jobs"][mj["id"]] = run.new_job(mj)  # nothing done yet: all it copied comes from the new plan
+    repo = paths.find_repo(st["repo"])
+    if repo is None:
+        raise gitops.GitError(f"repo {st['repo']} not found under a workspace root")
+    old = _old_plan(st)
+    prev = versions.by_sha(st["repo"], st["slug"], st["plan_sha"])
+    old_n = prev["version"] if prev else a["version"] - 1
+    changes = versions.job_changes(old, new) if st["jobs"] else {}
+    for jid in st["jobs"]:  # a legacy run has no kept text: a job the new manifest lacks is removed
+        if jid not in mjobs:
+            changes.setdefault(jid, "removed")
+    retired = st.setdefault("retired_jobs", {})
+    told = []
+    for jid, kind in changes.items():
+        j = st["jobs"].get(jid)
+        if kind == "added" or j is None:
+            if jid in mjobs:
+                st["jobs"][jid] = run.new_job(mjobs[jid])
             continue
-        j["heavy"] = bool(mj.get("heavy"))
-        if j["status"] in REWOUND:
-            j["status"] = "needs_gate"
-            j.pop("accept_gate", None)  # the new plan's gate decides, not a replacement accepted under the old one
-        merge.drop_records(d, mj["id"])  # before the new sha can reach disk: no old green under a new plan
+        if kind == "unchanged":
+            j["heavy"] = bool(mjobs[jid].get("heavy"))
+            continue
+        merged = j["status"] == "merged"
+        _drop_job_work(st, jid, j, forge, repo, close_pr=not merged)
+        if kind == "removed":
+            retired[f"{jid}@v{old_n}" if merged else jid] = {**j, "removed_in": a["version"]}
+            del st["jobs"][jid]
+            if merged:
+                told.append(f"{jid} was removed in v{a['version']} but merged under v{old_n}: it stays in main")
+            continue
+        fresh = run.new_job(mjobs[jid])  # changed
+        if merged:
+            retired[f"{jid}@v{old_n}"] = j
+            fresh["followup"] = {"from_version": old_n, "diff": versions.job_diff(old, new, jid)}
+        st["jobs"][jid] = fresh
+    if not st.get("versions"):
+        st["versions"] = [{"version": old_n, "approved_at": st["approved_at"], "changes": {}}]
+    st["versions"].append({"version": a["version"], "approved_at": a["approved_at"], "changes": changes})
     st.pop("reapprove_refused", None)
     st.update(plan=a["plan"], plan_sha=a["sha256"], approved_at=a["approved_at"], area=area)
-    run.event(st, f"approved again ({a['sha256'][:8]}): the run takes the new plan, and every job not merged "
-                  "passes its checks again")
+    if st["status"] in ("done", "blocked"):
+        _restart_finished(st, forge, repo)
+    for line in told:
+        run.alert(st, line)
+    summary = ", ".join(f"{k} {', '.join(sorted(j for j, c in changes.items() if c == k))}"
+                        for k in ("changed", "added", "removed") if k in changes.values()) or "no job changed"
+    run.event(st, f"v{a['version']} adopted: {summary}")
+
+
+def _restart_finished(st: dict, forge, repo) -> None:
+    """A done or blocked run takes a new version. An open final PR keeps ark/<slug> and grows with the
+    new work; otherwise main already holds what merged, so the run starts again from main."""
+    pr = st.get("final_pr")
+    is_open = False
+    if pr:
+        try:
+            is_open = forge.view(repo, pr["number"])["state"] == "OPEN"
+        except forge_mod.ForgeError:
+            is_open = True  # unsure: keep the branch, never lose work
+    for k in ("decisions_sha", "decisions_ticks", "closing_wait", "closing_errors", "closing_error", "closed_at"):
+        st.pop(k, None)
+    st.update(closing=None, reason="")
+    if is_open:
+        st["status"] = "running"
+        return
+    gitops.delete_remote(repo, f"ark/{st['slug']}")
+    st.update(status="waiting", base_sha=None, final_pr=None)
 
 
 def status_line(states: list[dict]) -> str:
@@ -3288,11 +3354,11 @@ def cycle(forge=None) -> tuple[str, list[str], bool]:
         _said.discard((str(paths.ark_home()), "unreadable", *key))
         before[key] = json.dumps(st, sort_keys=True) if st else ""
         states[key] = st or run.new_state(a)
-        if states[key]["status"] == "waiting":  # nothing started yet: a newer approval simply replaces the older
+        if states[key]["status"] == "waiting" and not states[key]["jobs"]:  # nothing started: the newer wins
             states[key].update(plan=a["plan"], plan_sha=a["sha256"], approved_at=a["approved_at"])
     _orphans(approved, alerts)
     for key, st in states.items():
-        _guarded(st, "reapprove_error", lambda st=st, a=approved[key]: _adopt_reapproval(st, a, list(states.values()), forge))
+        _guarded(st, "reapprove_error", lambda st=st, a=approved[key]: _adopt_version(st, a, list(states.values()), forge))
     for st in states.values():
         _guarded(st, "reconcile_error", lambda st=st: reconcile(st))
     slots = Slots(states.values(), limits)

@@ -546,3 +546,11 @@ def test_gh_close_with_the_comment(tmp_path):
         g.close(tmp_path, 0, "x")
     with pytest.raises(forge.ForgeError):
         RecordingGh(forge.ForgeError("gh pr close: boom")).close(tmp_path, 7, "x")
+
+
+def test_local_close_marks_the_pr_closed(make_repo):
+    repo = make_repo("demo")
+    f = forge.LocalForge()
+    pr = f.create(repo, base="main", head="ark/x-a", title="t", body="b")
+    f.close(repo, pr["number"])
+    assert f.view(repo, pr["number"])["state"] == "CLOSED"

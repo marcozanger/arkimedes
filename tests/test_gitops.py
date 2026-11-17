@@ -809,3 +809,17 @@ def test_delete_branch_local_and_remote(runner, tmp_path):
     for f in (gitops.delete_branch, gitops.delete_remote_branch):
         with pytest.raises(gitops.GitError):
             f(repo, "master")
+
+
+def test_delete_remote_removes_an_ark_branch(runner):
+    repo = runner()
+    sha = gitops.rev(repo, "HEAD")
+    gitops.push_ref(repo, sha, "ark/x-a")
+    gitops.delete_remote(repo, "ark/x-a")
+    assert gitops.remote_sha(repo, "ark/x-a") is None
+    gitops.delete_remote(repo, "ark/x-a")  # already gone: no error
+
+
+def test_delete_remote_refuses_non_ark_branches(runner):
+    with pytest.raises(gitops.GitError):
+        gitops.delete_remote(runner(), "master")
