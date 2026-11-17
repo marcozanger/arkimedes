@@ -133,15 +133,28 @@ def _summary(s: dict) -> str:
                                             for k, v in tiles) + "</div>" + final)
 
 
+def _versions(s: dict) -> str:
+    rows = []
+    for v in s.get("versions") or []:
+        ch = v.get("changes") or {}
+        what = "; ".join(f"{k}: {', '.join(sorted(j for j, c in ch.items() if c == k))}"
+                         for k in ("changed", "added", "removed") if k in ch.values()) or "first version"
+        rows.append([f"v{v['version']}", _e(v["approved_at"][:16].replace("T", " ")), _e(what),
+                     usd(v["usd"]), minutes(v["minutes"])])
+    return _table(["Version", "Approved", "What it did", "USD", "Working"], rows)
+
+
 def _per_pr(s: dict) -> str:
     rows = []
     for jid, j in s["jobs"].items():
         pr = f'<a href="{_e(j["pr"])}">PR</a>' if j["pr"] else "–"
-        rows.append([_e(jid), _status(j["status"]), _e(" → ".join(map(str, j["tiers"]))), str(j["attempts"]),
+        rows.append([_e(jid), f'v{s.get("version", 1)}', _status(j["status"]), _e(" → ".join(map(str, j["tiers"]))), str(j["attempts"]),
                      str(j["steers"]), str(j["reviews"]), str(j["gate_fails"]), str(j["integrate_fails"]),
                      f'{minutes(j["minutes"])} / {minutes(j["budget_minutes"])}', tokens(j["tokens"]),
                      f'{usd(j["usd"])} / {usd(j["budget_usd"])}{_est(j["estimated"])}', pr, _e(j["reason"] or "")])
-    return _table(["job", "status", "tiers", "attempts", "steers", "reviews", "failed gates",
+    for k, status in (s.get("retired") or {}).items():
+        rows.append([_e(k), "", _status(status)] + [""] * 10)
+    return _table(["job", "Version", "status", "tiers", "attempts", "steers", "reviews", "failed gates",
                    "failed integrations", "minutes / budget", "tokens", "USD / budget", "PR", "reason"],
                   rows, wrap=12)
 
@@ -198,6 +211,7 @@ def render_html(s: dict, rows: list[dict], decisions: str | None) -> str:
     body = "".join([
         head,
         "<h2>Summary</h2>", _summary(s),
+        *(["<h2>Versions</h2>", _versions(s)] if len(s.get("versions") or []) > 1 else []),
         "<h2>Decisions</h2>", decisions_html(decisions),
         _flaky(s),
         "<h2>By PR</h2>", _per_pr(s),

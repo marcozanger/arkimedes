@@ -163,3 +163,19 @@ def job_diff(old_plan, new_plan, job_id: str) -> str:
     old = _jobs(old_plan).get(job_id) if old_plan else None
     new = _jobs(new_plan).get(job_id)
     return _udiff(old, new, f"job {job_id}", "before", "after")
+
+
+def by_version(rows: list[dict], timeline: list[dict]) -> list[dict]:
+    """Each version's cost and working minutes: a step belongs to the newest version approved before
+    it started. Steps with no start count for the first version."""
+    tl = sorted(timeline, key=lambda v: v["version"])
+    out = [{"version": v["version"], "approved_at": v["approved_at"], "usd": 0.0, "minutes": 0.0} for v in tl]
+    for r in rows if out else []:
+        start = r.get("start") or ""
+        i = 0
+        for k, v in enumerate(tl):
+            if start and start >= v["approved_at"]:
+                i = k
+        out[i]["usd"] = round(out[i]["usd"] + (r.get("usd") or 0), 4)
+        out[i]["minutes"] = round(out[i]["minutes"] + (r.get("minutes") or 0), 2)
+    return out

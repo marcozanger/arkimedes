@@ -85,7 +85,7 @@ def job_rows(st: dict, s: dict, mjobs: dict, repo_dir) -> list[dict]:
 def plan_row(s: dict) -> dict:
     keys = ("repo", "status", "started", "ended", "wall_minutes", "working_minutes", "waiting_minutes",
             "merged", "blocked", "integrate_fails", "usd", "tokens", "budget_usd", "budget_minutes", "estimated")
-    return {"plan": s["slug"], "jobs": len(s["jobs"]), **{k: s[k] for k in keys}}
+    return {"plan": s["slug"], "jobs": len(s["jobs"]), "version": s.get("version", 1), **{k: s[k] for k in keys}}
 
 
 def record(st: dict, s: dict, mjobs: dict, repo_dir) -> None:
