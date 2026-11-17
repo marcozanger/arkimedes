@@ -116,7 +116,7 @@ h1, h2, h3 { margin: 0; }
 .legend span { display: inline-flex; align-items: center; gap: 5px; }
 .swatch { display: inline-block; width: 16px; height: 8px; border-radius: 2px; }
 .hatch { background: repeating-linear-gradient(135deg, var(--accent) 0 2px, transparent 2px 6px); }
-.row, .axis { display: grid; grid-template-columns: 140px minmax(0, 1fr) 84px; gap: 10px; align-items: center; }
+.row, .axis { display: grid; grid-template-columns: 140px minmax(0, 1fr) 104px; gap: 10px; align-items: center; }
 .row { width: 100%; border: 0; background: transparent; padding: 4px; text-align: left; border-radius: 5px; }
 .row:hover { background: var(--wait-soft); }
 .row[aria-pressed="true"] { background: var(--accent-soft); }
@@ -440,6 +440,14 @@ function etaText(p) {
   if (p.status === "waiting") return t.left_min != null ? `Not started · ~${dur(t.left_min)} of work` : "Not started";
   if (t.left_min == null) return "Not estimated";
   return `~${dur(t.left_min)} left · ${lateText(t.delay_min) || "on time"}`;
+}
+// How long a job still needs, from the forecast: "~1h40 left", "over budget" for a job past its minutes.
+function jobLeft(j) {
+  if (j.status === "merged") return "";
+  if (j.status === "blocked") return "stopped";
+  if (j.over) return "over budget";
+  if (j.left_min == null) return "";
+  return j.started ? `~${dur(j.left_min)} left` : `~${dur(j.budget.minutes)} of work`;
 }
 function money(n) {
   const v = Number(n || 0);
@@ -873,7 +881,7 @@ function timeline(p) {
     }
     const line = live && now <= t0 + T ? `<span class="now-line" style="left:${pct(now)}"></span>` : "";
     const d = fe != null && pe != null ? Math.round((fe - pe) / 60e3) : null;
-    return `<button class="row" data-job="${esc(j.id)}" aria-pressed="${S.job === j.id}" type="button"><span class="job-cell"><span class="mono">${esc(j.id)}</span><small>${esc(j.status)}</small>${phaseChip(j)}${waitChip(j)}</span><span class="track">${bars}${line}</span><span class="delta ${d > 2 ? "late" : ""}">${esc(lateText(d) || "–")}</span></button>`;
+    return `<button class="row" data-job="${esc(j.id)}" aria-pressed="${S.job === j.id}" type="button"><span class="job-cell"><span class="mono">${esc(j.id)}</span><small>${esc(j.status)}</small>${phaseChip(j)}${waitChip(j)}</span><span class="track">${bars}${line}</span><span class="delta ${d > 2 ? "late" : ""}">${esc(jobLeft(j))}<br>${esc(lateText(d) || "–")}</span></button>`;
   }).join("");
   const axis = `<div class="axis"><span></span><div class="ticks"><span style="left:0">${esc(clock(t0))}</span><span class="last" style="left:100%">${esc(clock(t0 + T))}</span></div><span></span></div>`;
   const job = p.jobs.find(j => j.id === S.job);
@@ -890,7 +898,7 @@ function detail(j) {
   const spent = j.started ? `${Math.round(((ms(j.finished) ?? NOW()) - ms(j.started)) / 60e3)} of ${j.budget.minutes} min` : "not started";
   return `<div class="card"><div class="card-top"><strong>${esc(j.pr_title || j.id)}</strong><span class="pill ${kind(j)}">${esc(j.status)}</span>${phaseChip(j)}${waitChip(j)}</div>
     ${j.wait ? `<div class="reason">${esc(j.wait.text)}</div>` : ""}${j.reason ? `<div class="reason">${esc(j.reason)}</div>` : ""}${j.question ? `<div class="reason">Question: ${esc(j.question)}</div>` : ""}
-    <div class="metrics"><span>${esc(spent)}</span><span>usd ${esc(Number(j.usd || 0).toFixed(2))} of ${esc(j.budget.usd)}</span><span>tier ${esc((j.tier_path || [j.tier]).join(" → "))}</span><span>${esc(j.attempts)} attempts</span><span>${pr}</span><span>after: ${esc((j.after || []).join(", ") || "none")}</span></div>
+    <div class="metrics"><span>${esc(spent)}</span>${jobLeft(j) ? `<span>${esc(jobLeft(j))}</span>` : ""}<span>usd ${esc(Number(j.usd || 0).toFixed(2))} of ${esc(j.budget.usd)}</span><span>tier ${esc((j.tier_path || [j.tier]).join(" → "))}</span><span>${esc(j.attempts)} attempts</span><span>${pr}</span><span>after: ${esc((j.after || []).join(", ") || "none")}</span></div>
     ${estimateBar(j.estimate)}
     <div class="facts">${list("Tasks", j.tasks || [])}${list("Done", j.done || [])}${list("Includes", j.includes || "")}${list("Excludes", j.excludes || "")}</div></div>`;
 }

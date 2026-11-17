@@ -300,7 +300,7 @@ def _plan(repo: str, slug: str, a: dict | None, now: datetime, rows: list[dict] 
     t = timing.compute([{"id": j["id"], "after": j["after"], "minutes": j["budget"]["minutes"], "status": j["status"],
                          "started": j["started"], "finished": j["finished"]} for j in jobs], p["status"], now)
     for j in jobs:
-        j.update({k: _iso(v) for k, v in t["jobs"][j["id"]].items()})
+        j.update({k: (v if k in ("left_min", "over") else _iso(v)) for k, v in t["jobs"][j["id"]].items()})
     _phases(repo, slug, jobs)
     p["jobs"] = jobs
     _wait(p, jobs, busy or [])

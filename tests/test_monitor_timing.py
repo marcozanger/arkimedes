@@ -80,3 +80,16 @@ def test_no_jobs():
     t = timing.compute([], "waiting", T0)
     assert t["estimated_end"] is None and t["forecast_end"] is None
     assert t["delay_min"] is None and t["left_min"] is None and t["jobs"] == {}
+
+
+def test_every_job_says_how_long_it_still_needs():
+    jobs = [J("a", 60, "working", started=at(0)), J("b", 30, after=["a"]), J("c", 20, "merged", started=at(0), finished=at(15))]
+    t = timing.compute(jobs, "running", mins(20))["jobs"]
+    assert (t["a"]["left_min"], t["a"]["over"]) == (40, False)
+    assert (t["b"]["left_min"], t["b"]["over"]) == (70, False)   # waits for a, then its own budget
+    assert t["c"]["left_min"] == 0
+
+
+def test_a_job_past_its_budget_is_flagged_over():
+    t = timing.compute([J("a", 30, "working", started=at(0))], "running", mins(45))["jobs"]["a"]
+    assert t["over"] is True and t["left_min"] == 0
