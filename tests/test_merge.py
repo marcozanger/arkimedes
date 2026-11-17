@@ -378,7 +378,9 @@ def test_gh_not_merged_never_reads_as_merged(fake_gh, mode):
 # --- I3: wrong-shape data is a reason or a FAIL, never a raw exception -----------------------------
 
 @pytest.mark.parametrize("kind", ["gate", "verdict", "integrate"])
-@pytest.mark.parametrize("text", ["[1]", "1", "null", '"ok"', "{not json", "[" * 1000000])
+# The 1 MB param needs a short id: pytest puts the id in PYTEST_CURRENT_TEST, and on Linux an environment
+# string over 128 KB makes every subprocess fail with E2BIG.
+@pytest.mark.parametrize("text", ["[1]", "1", "null", '"ok"', "{not json", pytest.param("[" * 1000000, id="deeply-nested")])
 def test_a_record_of_the_wrong_shape_is_no_record(ready, kind, text):
     r = ready()
     (r[3] / f"shell.{kind}.json").write_text(text)
@@ -386,7 +388,7 @@ def test_a_record_of_the_wrong_shape_is_no_record(ready, kind, text):
     assert reason_of(r)
 
 
-@pytest.mark.parametrize("text", ["[]", "1", "null", '{"sha256": null}', "{}", "[" * 1000000])
+@pytest.mark.parametrize("text", ["[]", "1", "null", '{"sha256": null}', "{}", pytest.param("[" * 1000000, id="deeply-nested")])
 def test_an_approval_of_the_wrong_shape_is_a_reason(ready, text):
     r = ready()
     paths.approval_file("demo", SLUG).write_text(text)

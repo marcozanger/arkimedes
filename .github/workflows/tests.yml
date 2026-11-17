@@ -1,8 +1,9 @@
 name: tests
 
-# Manual only until the suite is green on Linux (see PR); then restore
-# pull_request and push triggers and require the check on main.
 on:
+  pull_request:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -25,10 +26,30 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - run: pip install -r requirements.txt pytest-timeout==2.3.1
+      # bin/ wrappers run .venv/bin/python, same setup as CLAUDE.md
+      - run: |
+          python -m venv .venv
+          .venv/bin/pip install -r requirements.txt pytest-timeout==2.3.1
       - name: git identity (tests make commits)
         run: |
           git config --global user.name ci
           git config --global user.email ci@example.invalid
           git config --global init.defaultBranch main
-      - run: python -m pytest -q --timeout=30 --tb=line -rfE
+      # Output and report go to a file outside the checkout, and are uploaded on failure: test output can hold
+      # lines starting with "::" or "##[", which the Actions log treats as commands and stops showing the rest.
+      - name: pytest
+        run: |
+          set +e
+          .venv/bin/python -m pytest --timeout=60 --junitxml="$RUNNER_TEMP/report.xml" > "$RUNNER_TEMP/pytest.out" 2>&1 < /dev/null
+          code=$?
+          echo "pytest exit code: $code"
+          tail -n 5 "$RUNNER_TEMP/pytest.out" | sed -E 's/^(::|##\[)/ \1/'
+          exit $code
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: pytest-output
+          path: |
+            ${{ runner.temp }}/pytest.out
+            ${{ runner.temp }}/report.xml
+          retention-days: 7
