@@ -29,7 +29,7 @@ jobs:
       # bin/ wrappers run .venv/bin/python, same setup as CLAUDE.md
       - run: |
           python -m venv .venv
-          .venv/bin/pip install -r requirements.txt pytest-timeout==2.3.1
+          .venv/bin/pip install -r requirements.txt pytest-timeout==2.3.1 pytest-xdist==3.6.1
       - name: git identity (tests make commits)
         run: |
           git config --global user.name ci
@@ -40,7 +40,7 @@ jobs:
       - name: pytest
         run: |
           set +e
-          .venv/bin/python -m pytest --timeout=60 --junitxml="$RUNNER_TEMP/report.xml" > "$RUNNER_TEMP/pytest.out" 2>&1 < /dev/null
+          .venv/bin/python -m pytest --timeout=60 -n auto --junitxml="$RUNNER_TEMP/report.xml" > "$RUNNER_TEMP/pytest.out" 2>&1 < /dev/null
           code=$?
           echo "pytest exit code: $code"
           tail -n 5 "$RUNNER_TEMP/pytest.out" | sed -E 's/^(::|##\[)/ \1/'
