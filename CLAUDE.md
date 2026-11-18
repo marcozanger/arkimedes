@@ -28,6 +28,8 @@ session (a hook enforces `approvals/`), and only Marco approves plans, from a te
 | `ark plans` | every plan with its approval (`ok`, `stale`, `-`) and run state |
 | `ark validate <repo>/<slug>` | the plan contract; `--approved` also checks the approval |
 | `ark estimate <repo>/<slug>` | budget per job, totals, end-to-end time, plan sha256; `--json` |
+| `ark replan <repo>/<slug>` | reopen an approved plan as the draft of its next version; the run keeps going |
+| `ark diff <repo>/<slug> [vA vB]` | what changed between two plan versions, spec first |
 | `ark approve <repo>/<slug>` | validate, show the PR table, close the plan, write the approval — Marco confirms |
 | `ark report <repo>/<slug> [--open]` | a run's report.html and steps.jsonl; a closed run also goes to `history/` (`--all`: every closed run) |
 | `ark review [<repo>/<slug>] [--all]` | review Euklides' decisions (and, with a target, the run's decisions.md; also a click in `ark ui`'s Decisions tab); new verdicts are distilled into history/euklides/lessons.md |
