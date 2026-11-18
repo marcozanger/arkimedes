@@ -15,6 +15,7 @@ from . import paths
 
 MAX_EVENTS = 200
 TERMINAL = {"merged", "blocked"}
+REPLANNED = "a new plan version changed this job"
 NOT_STARTED = {"pending", "waiting_dep", "needs_worker"}
 UNSTARTED = {"pending", "waiting_dep"}  # with no attempt, a job here never ran
 FINISHED = ("done", "blocked", "aborted")  # a plan status the loop never steps: blocked may be reopened by `ark retry`

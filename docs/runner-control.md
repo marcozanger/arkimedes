@@ -391,6 +391,11 @@ attempt, tier or counter is spent, and a worker resumes its session. Nothing new
 meanwhile the status line is prefixed with a Spanish notice, "waiting for the network after a suspension" (`esperando red tras suspensi\u00f3n` in code, escaped to keep the sources ASCII). A sleep while `ark-loop` is not
 running is not seen.
 
+## Plan versions
+
+Editing a plan after approval never touches a running plan: the runner runs the frozen version.
+`ark replan`, `ark diff` and how a new version is adopted are in `docs/plan-versions.md`.
+
 ## Smoke on a real claude
 
 Run these by hand after the merge; the suite uses a fake claude:

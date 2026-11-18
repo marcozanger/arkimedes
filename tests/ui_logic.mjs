@@ -5,8 +5,8 @@ import { readFileSync } from "node:fs";
 const html = readFileSync(process.argv[2], "utf8");
 const START = "// ---- logic: start ----", END = "// ---- logic: end ----";
 const code = html.split(START)[1].split(END)[0];
-const { decide, titleFor, readPlan, segments, etaText, jobLeft, spendText, flagOf, parseRoute, dur, draftHeader, docSections, jobCount, homeGroups, topTier, dashTime, dashRows, dashStats, dashDelta, dashKpis, dashSpendByDay, dashStatusCounts, dashSpendByRepo, dashActive, dashSet, dashFresh, dashIsFresh, dashChoices } =
-  new Function(code + "; return {decide, titleFor, readPlan, segments, etaText, jobLeft, spendText, flagOf, parseRoute, dur, draftHeader, docSections, jobCount, homeGroups, topTier, dashTime, dashRows, dashStats, dashDelta, dashKpis, dashSpendByDay, dashStatusCounts, dashSpendByRepo, dashActive, dashSet, dashFresh, dashIsFresh, dashChoices};")();
+const { decide, titleFor, readPlan, segments, etaText, jobLeft, spendText, flagOf, parseRoute, dur, draftHeader, docSections, jobCount, homeGroups, topTier, dashTime, dashRows, dashStats, dashDelta, dashKpis, dashSpendByDay, dashStatusCounts, dashSpendByRepo, dashActive, dashSet, dashFresh, dashIsFresh, dashChoices, diffClass } =
+  new Function(code + "; return {decide, titleFor, readPlan, segments, etaText, jobLeft, spendText, flagOf, parseRoute, dur, draftHeader, docSections, jobCount, homeGroups, topTier, dashTime, dashRows, dashStats, dashDelta, dashKpis, dashSpendByDay, dashStatusCounts, dashSpendByRepo, dashActive, dashSet, dashFresh, dashIsFresh, dashChoices, diffClass};")();
 
 const fresh = () => ({ lastAlert: null, loopDown: false, stale: false, done: [], unread: [] });
 const ok = { stale: false, error: "" };
@@ -358,3 +358,11 @@ console.log("ui logic ok");
   assert.deepEqual(shown.map(p => p.slug).sort(), ["held", "runq"]);
   assert.ok(titleFor(fresh(), snap([], { plans: all }), ok).startsWith("(2) "));
 }
+
+// diff lines: one class per kind
+assert.equal(diffClass("+added"), "diff-add");
+assert.equal(diffClass("-removed"), "diff-del");
+assert.equal(diffClass("@@ -1,2 +1,2 @@"), "diff-hunk");
+assert.equal(diffClass("+++ v2"), "diff-file");
+assert.equal(diffClass("--- v1"), "diff-file");
+assert.equal(diffClass(" context"), "");

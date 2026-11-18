@@ -2,7 +2,7 @@
 and the history all read the same dict."""
 from __future__ import annotations
 
-from . import estimate, paths, usage
+from . import estimate, paths, usage, versions
 from .steps import num, ts
 
 NOT_PROCESSES = ("merge", "wait-marco")
@@ -64,6 +64,7 @@ def summarize(st: dict, rows: list[dict], mjobs: dict) -> dict:
             "estimated": any(r["estimated"] for r in mine)}
     started, ended = ts(st.get("started")), ts(st.get("updated"))
     statuses = [j["status"] for j in jobs.values()]
+    tl = sorted(st.get("versions") or [], key=lambda x: x["version"])
     return {
         "repo": st["repo"], "slug": st["slug"], "status": st.get("status"),
         "started": st.get("started"), "ended": st.get("updated"),
@@ -79,4 +80,7 @@ def summarize(st: dict, rows: list[dict], mjobs: dict) -> dict:
         "final_pr": (st.get("final_pr") or {}).get("url"),
         "estimated": any(r["estimated"] for r in procs),
         "flaky": list(st.get("flaky") or []), "queue_error": st.get("queue_error"),
+        "versions": [{**v, "changes": t.get("changes", {})} for v, t in zip(versions.by_version(procs, tl), tl)],
+        "version": tl[-1]["version"] if tl else 1,
+        "retired": {k: v.get("status") for k, v in (st.get("retired_jobs") or {}).items()},
         "jobs": jobs, "by_kind": _group(procs, "kind"), "by_model": _group(procs, "model")}

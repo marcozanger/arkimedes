@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from . import answers, approve, drafts, monitor, paths, plan as plan_mod, reviews, runreview, uidata, validate
+from . import answers, approve, drafts, monitor, paths, plan as plan_mod, reviews, runreview, uidata, validate, versions
 
 PORT = 8737
 MAX_BODY = 65536
@@ -241,6 +241,14 @@ class Handler(BaseHTTPRequestHandler):
             except drafts.DraftError as e:
                 raise HttpError(404, str(e))
             return self._send(200, IMAGE_TYPES.get(Path(name).suffix.lower(), "application/octet-stream"), data)
+        m = re.fullmatch(r"/api/plan/(.+)/([^/]+)/versions", path)
+        if m:
+            try:
+                a, b = (int(_q(query, k)) if _q(query, k) else None for k in ("from", "to"))
+            except ValueError:
+                raise HttpError(400, "from and to must be version numbers")
+            repo, slug = _slugs({"repo": m.group(1), "slug": m.group(2)})
+            return self._json(200, versions.payload(repo, slug, a, b))
         m = re.fullmatch(r"/vendor/spec-review/([^/]+)", path)
         if m and m.group(1) in VENDOR:
             try:

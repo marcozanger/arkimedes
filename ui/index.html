@@ -161,6 +161,18 @@ h1, h2, h3 { margin: 0; }
 .qa { display: grid; gap: 2px; padding: 8px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
 .qa:first-of-type { border-top: 0; }
 
+/* plan versions */
+.vpick { display: flex; align-items: center; gap: 8px; margin: 8px 0 0; font-size: 13px; }
+.vchips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0; }
+.vchip { font: 500 12px var(--mono); padding: 1px 8px; border-radius: 10px; background: var(--wait-soft); color: var(--wait); }
+.vchip.changed { background: var(--attn-soft, var(--wait-soft)); color: var(--attn-ink, var(--attn)); }
+.vchip.added { background: var(--ok-soft); color: var(--ok); }
+.vchip.removed { background: var(--bad-soft); color: var(--bad); }
+#plan-diff pre.diff { margin: 4px 0 14px; font: 12.5px/1.5 var(--mono); overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; padding: 6px 0; background: var(--raised); }
+#plan-diff .diff > div { padding: 0 12px; white-space: pre; min-height: 1.5em; }
+.diff-add { background: var(--ok-soft); color: var(--ok); }
+.diff-del { background: var(--bad-soft); color: var(--bad); }
+.diff-hunk, .diff-file { color: var(--muted); }
 /* spec and plan documents */
 .docwrap { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 18px; align-items: start; }
 .docidx { position: sticky; top: 12px; display: grid; gap: 2px; min-width: 0; }
@@ -685,6 +697,15 @@ function dashSet(f, key, value) {   // a new filter state; any change shows the 
   return next;
 }
 const dashIsFresh = f => !dashActive(f).length && f.period === dashFresh().period;
+// the class of one line of a unified diff
+function diffClass(line) {
+  const l = String(line);
+  if (l.startsWith("+++") || l.startsWith("---")) return "diff-file";
+  if (l.startsWith("@@")) return "diff-hunk";
+  if (l.startsWith("+")) return "diff-add";
+  if (l.startsWith("-")) return "diff-del";
+  return "";
+}
 // ---- logic: end ----
 
 async function api(path, opts = {}) {
@@ -850,9 +871,42 @@ function planScreen() {
   if (p.error) return head + `<div class="problem crit"><strong>This plan cannot be read</strong><div class="reason">${esc(p.error)}</div></div>`;
   const qs = (p.questions || []).length;
   const alerts = recentAlerts(p).length;
+  const vers = versionsBlock(p);
   const tabs = TABS.map(t => `<a class="tab" role="tab" href="${planHref(p, t)}" aria-selected="${r.tab === t}">${t[0].toUpperCase() + t.slice(1)}${t === "questions" && qs ? `<span class="count">${qs}</span>` : ""}${t === "events" && alerts ? `<span class="count">${alerts}</span>` : ""}</a>`).join("");
   const body = { timeline, questions, events, decisions: decisionsTab, spec: specTab, plan: planTab }[r.tab](p);
-  return head + numbers(p) + `<div class="tabs" role="tablist">${tabs}</div>` + body;
+  return head + vers + numbers(p) + `<div class="tabs" role="tablist">${tabs}</div>` + body;
+}
+// the version picker, the per-job chips and the diff panel; nothing when the plan has fewer than two versions
+function versionsBlock(p) {
+  const v = S.ver && S.ver.key === keyOf(p) ? S.ver.data : null;
+  if (!v || !Array.isArray(v.versions) || v.versions.length < 2) return "";
+  const last = v.versions[v.versions.length - 1].version, from = v.diff ? v.diff.from : last;
+  const opts = v.versions.map(x => `<option value="${Number(x.version)}"${x.version === from ? " selected" : ""}>v${Number(x.version)}${x.approved_at ? " · " + esc(String(x.approved_at).slice(0, 10)) : ""}</option>`).join("");
+  const chips = Object.entries(v.jobs || {}).map(([j, c]) => `<span class="vchip ${esc(c)}">${esc(j)} · ${esc(c)}</span>`).join("");
+  return `<div class="vpick"><label for="plan-version">Compare</label><select id="plan-version" aria-label="Plan version">${opts}</select><span class="muted small">with v${last}</span></div>`
+    + (chips ? `<div class="vchips">${chips}</div>` : "") + `<section id="plan-diff" class="sec"></section>`;
+}
+// fill the diff panel with textContent only: the plan is untrusted text
+function paintDiff() {
+  const box = document.getElementById("plan-diff"), v = S.ver && S.ver.data;
+  if (!box || !v || !v.diff) return;
+  box.textContent = "";
+  [["Spec", v.diff.spec], ["Plan", v.diff.plan]].forEach(([title, d]) => {
+    const h = document.createElement("h3"); h.textContent = `${title}: v${v.diff.from} → v${v.diff.to}`; box.appendChild(h);
+    const pre = document.createElement("pre"); pre.className = "diff";
+    if (!d) { const e = document.createElement("div"); e.textContent = "no changes"; pre.appendChild(e); }
+    else d.split("\n").forEach(line => { const el = document.createElement("div"); el.className = diffClass(line); el.textContent = line; pre.appendChild(el); });
+    box.appendChild(pre);
+  });
+}
+async function loadVersions(from) {
+  const p = currentPlan();
+  if (!p) return;
+  const key = keyOf(p), last = S.ver && S.ver.key === key && S.ver.data ? S.ver.data.versions.slice(-1)[0].version : null;
+  const q = from != null && last != null ? `?from=${from}&to=${last}` : "";
+  const r = await api(`/api/plan/${encodeURIComponent(p.repo).replace(/%2F/g, "/")}/${encodeURIComponent(p.slug)}/versions${q}`);
+  if (S.route.screen !== "plan" || S.route.repo !== p.repo || S.route.slug !== p.slug) return;
+  if (r.ok && r.body && Array.isArray(r.body.versions)) { S.ver = { key, data: r.body }; render(true); }
 }
 function recentAlerts(p) {
   const day = NOW() - 864e5;
@@ -1340,6 +1394,7 @@ function render(force) {
   const keepId = typing && typing.id && main.contains(typing) ? typing.id : "";
   const caret = keepId && typing.tagName === "INPUT" && typing.type === "search" ? typing.selectionStart : null;
   main.innerHTML = SCREENS[S.route.screen]();
+  paintDiff();
   const again = keepId && document.getElementById(keepId);
   if (again) { again.focus(); if (caret != null) again.setSelectionRange(caret, caret); }
 }
@@ -1400,6 +1455,7 @@ document.addEventListener("visibilitychange", () => {
 });
 document.addEventListener("change", e => {
   const t = e.target;
+  if (t.id === "plan-version") { loadVersions(Number(t.value)); return; }
   if (t.dataset && t.dataset.dsel) { S.dash = dashSet(S.dash || dashFresh(), t.dataset.dsel, t.value); render(true); return; }
   if (t.dataset && t.dataset.pref) store.set("ark-ui-notify", { ...notePrefs(), [t.dataset.pref]: t.checked });
   if (t.dataset && t.dataset.note !== undefined && S.route.screen === "draft") saveNote(t.dataset.note, t.value);
@@ -1485,6 +1541,7 @@ async function load() {
     if (r.ok && Array.isArray(r.body)) { S.history = r.body; render(); }
   }
   if (s === "draft" && !S.draft) await loadDraft();
+  if (s === "plan" && currentPlan()) await loadVersions(S.ver && S.ver.key === keyOf(currentPlan()) && S.ver.data.diff ? S.ver.data.diff.from : null);
   if (s === "plan" && S.route.tab === "decisions") await loadDecisions();
   if (s === "euklides") {
     const r = await api("/api/euklides");

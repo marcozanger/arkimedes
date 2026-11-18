@@ -1211,6 +1211,14 @@ def _hold_and_edit(p, text="\n<!-- edited -->\n"):
     p.write_text(p.read_text() + text)
 
 
+def _version(p, m=None, tasks=("T1", "T2", "T3")):
+    """Approve the desk text as the next version, the way `ark approve` does."""
+    from ark import approve as approve_core
+    if m is not None:
+        p.write_text(plan_text(m, tasks=tasks))
+    return approve_core.approve_plan(p)
+
+
 def test_approving_a_held_run_again_releases_it(feature, monkeypatch):
     monkeypatch.setenv("FAKE_SLEEP", "1")
     _, p = feature()
@@ -1219,13 +1227,24 @@ def test_approving_a_held_run_again_releases_it(feature, monkeypatch):
     _hold_and_edit(p)
     _, alerts, _ = loop.cycle()
     assert state()["status"] == "held" and any("plan changed" in a for a in alerts)
-    approve(p, "demo", SLUG)
+    a = _version(p)
     loop.cycle()
     st = state()
-    assert st["status"] == "running" and st["plan_sha"] == sha256_file(p)
-    assert any("approved again" in e for e in st["events"])
+    assert st["status"] == "running" and st["plan_sha"] == a["sha256"] == sha256_file(p)
+    assert any("v2 adopted" in e for e in st["events"])
     drive(jobs_settled)
     assert all(j["status"] == "merged" for j in state()["jobs"].values())
+
+
+def test_a_versioned_run_ignores_an_edit_of_the_desk(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_SLEEP", "1")
+    _, p = feature()
+    _version(p)  # before the run starts: it follows the frozen copy
+    loop.cycle()
+    _hold_and_edit(p)
+    for _ in range(3):
+        loop.cycle()
+    assert state()["status"] == "running"
 
 
 def test_an_edit_with_no_new_approval_stays_held(feature, monkeypatch):
@@ -1238,26 +1257,7 @@ def test_an_edit_with_no_new_approval_stays_held(feature, monkeypatch):
     assert state()["status"] == "held"
 
 
-def _reapproved_with(p, m, repo="demo", slug=SLUG):
-    p.write_text(plan_text(m, repo=repo, slug=slug))
-    approve(p, repo, slug)
-
-
-def test_a_new_approval_that_changes_the_jobs_stays_held_and_says_so(feature, monkeypatch):
-    monkeypatch.setenv("FAKE_SLEEP", "1")
-    _, p = feature()
-    loop.cycle()
-    old = state()["plan_sha"]
-    _reapproved_with(p, manifest(jobs=[job("shell", ["T1", "T2"], ["src/shell/**"]), job("other", ["T3"], ["other/**"])]))
-    alerts = []
-    for _ in range(4):
-        alerts += loop.cycle()[1]
-    st = state()
-    assert st["status"] == "held" and st["plan_sha"] == old
-    assert sum("cannot take the new approval" in a and "jobs" in a for a in alerts) == 1
-
-
-def test_a_new_approval_that_overlaps_another_run_stays_held(feature, make_feature, monkeypatch):
+def test_a_new_version_that_overlaps_another_run_is_not_taken(feature, make_feature, monkeypatch):
     monkeypatch.setenv("FAKE_SLEEP", "1")
     _, p = feature()
     other = make_feature(plan_text(manifest(jobs=[job("dbx", ["T1", "T2", "T3"], ["src/c/**"])]), slug="second"),
@@ -1266,13 +1266,12 @@ def test_a_new_approval_that_overlaps_another_run_stays_held(feature, make_featu
     loop.cycle()
     assert state(slug="second")["status"] == "running"
     old = state()["plan_sha"]
-    _reapproved_with(p, manifest(jobs=[job("shell", ["T1", "T2"], ["src/c/**"]), job("ui", ["T3"], ["src/ui/**"], after=["shell"])]))
+    _version(p, manifest(jobs=[job("shell", ["T1", "T2"], ["src/c/**"]), job("ui", ["T3"], ["src/ui/**"], after=["shell"])]))
     alerts = []
     for _ in range(3):
         alerts += loop.cycle()[1]
-    st = state()
-    assert st["status"] == "held" and st["plan_sha"] == old
-    assert sum("cannot take the new approval" in a and "second" in a for a in alerts) == 1
+    assert state()["plan_sha"] == old
+    assert sum("cannot take v2" in a and "second" in a for a in alerts) == 1
 
 
 def test_an_approval_whose_file_differs_is_not_adopted(feature, monkeypatch):
@@ -1835,7 +1834,8 @@ def runs_of(job_name, kind):
     return len(list((paths.run_dir("demo", SLUG) / "done").glob(f"{job_name}.{kind}-*.json")))
 
 
-# -- a new approval: everything not merged earns its checks again, under the plan approved now
+# -- a new version: a changed job starts over under the version approved now. A run approved before versions
+# kept no text, so nothing shows a job unchanged: its first versioned approval starts every job over.
 
 STRICTER = {"job gate": {"jobs": [job("shell", ["T1", "T2"], ["src/shell/**"], gate="false"),
                                   job("ui", ["T3"], ["src/ui/**"], after=["shell"])]},
@@ -1843,13 +1843,13 @@ STRICTER = {"job gate": {"jobs": [job("shell", ["T1", "T2"], ["src/shell/**"], g
 
 
 @pytest.mark.parametrize("what", STRICTER)
-def test_a_job_past_its_checks_runs_the_gates_of_the_plan_approved_now(at_merge, monkeypatch, what):
+def test_a_job_past_its_checks_runs_the_gates_of_the_version_approved_now(at_merge, monkeypatch, what):
     monkeypatch.setattr(loop, "BACKOFF_FIRST", 0)
     _, st, _ = at_merge
     p = Path(st["plan"])
     p.write_text(plan_text(manifest(**STRICTER[what])))
     loop.cycle()
-    approve(p, "demo", SLUG)
+    _version(p)
     loop.cycle()
     st = state()
     assert st["status"] == "running" and st["plan_sha"] == sha256_file(p)
@@ -1857,31 +1857,32 @@ def test_a_job_past_its_checks_runs_the_gates_of_the_plan_approved_now(at_merge,
     assert state()["jobs"]["shell"]["status"] == "blocked"
 
 
-def test_a_new_approval_leaves_no_green_record_for_a_terminal_merge(at_merge, monkeypatch):
-    repo, st, c = at_merge
-    p = Path(st["plan"])
-    _hold_and_edit(p)
-    loop.cycle()
-    approve(p, "demo", SLUG)
-    with monkeypatch.context() as m:
-        m.setattr(loop, "start_gate", lambda c, job: None)                      # only the adoption happens
-        loop.cycle()
-    st = state()
-    assert st["status"] == "running" and st["jobs"]["shell"]["status"] == "needs_gate"
-    assert not any(merge.read_record(paths.run_dir("demo", SLUG), "shell", k) for k in ("gate", "verdict", "integrate"))
-    assert "no green job gate" in merge.check(st, "shell", forge.LocalForge(), repo)
-
-
-def test_even_a_new_approval_that_only_touches_a_comment_earns_the_checks_again(at_merge):
+def test_a_new_version_leaves_no_green_record_of_a_changed_job(at_merge, monkeypatch):
     _, st, _ = at_merge
     p = Path(st["plan"])
     _hold_and_edit(p)
     loop.cycle()
-    approve(p, "demo", SLUG)
-    drive(jobs_settled)
-    assert state()["jobs"]["shell"]["status"] == "merged"
-    assert (runs_of("shell", "gate"), runs_of("shell", "review"), runs_of("shell", "integrate")) == (2, 2, 2)
-    assert runs_of("shell", "worker") == 1                                      # no worker pays for it
+    _version(p)
+    with monkeypatch.context() as m:
+        m.setattr(loop, "start_worker", lambda c, job: None)                    # only the adoption happens
+        loop.cycle()
+    st = state()
+    assert st["status"] == "running" and st["jobs"]["shell"]["status"] == "pending"
+    assert not any(merge.read_record(paths.run_dir("demo", SLUG), "shell", k) for k in ("gate", "verdict", "integrate"))
+
+
+def test_a_version_that_only_touches_a_comment_keeps_every_job(feature, monkeypatch):
+    monkeypatch.setenv("FAKE_SLEEP", "1")
+    _, p = feature()
+    _version(p)
+    loop.cycle()
+    before = {k: (j["status"], j["attempts"]) for k, j in state()["jobs"].items()}
+    _hold_and_edit(p)
+    _version(p)
+    loop.cycle()
+    st = state()
+    assert st["versions"][-1] == {**st["versions"][-1], "version": 3, "changes": {"shell": "unchanged", "ui": "unchanged"}}
+    assert all(st["jobs"][k]["attempts"] == a for k, (_, a) in before.items())
 
 
 def _at_gating(feature, gate="sleep 1"):
@@ -1890,13 +1891,13 @@ def _at_gating(feature, gate="sleep 1"):
     return r, p
 
 
-def test_a_crash_while_taking_a_new_approval_keeps_no_old_green(at_merge, monkeypatch):
+def test_a_crash_while_taking_a_new_version_keeps_no_old_green(at_merge, monkeypatch):
     _, st, _ = at_merge
     p = Path(st["plan"])
     sha = st["plan_sha"]
     _hold_and_edit(p)
     loop.cycle()
-    approve(p, "demo", SLUG)
+    _version(p)
     with monkeypatch.context() as m:
         m.setattr(run, "save", lambda st: (_ for _ in ()).throw(OSError("disk full")))
         loop.cycle()
@@ -1907,68 +1908,15 @@ def test_a_crash_while_taking_a_new_approval_keeps_no_old_green(at_merge, monkey
     assert runs_of("shell", "gate") >= 2                                        # a gate that ran unsaved repeats, never counts
 
 
-def test_a_gate_that_started_under_the_old_plan_does_not_count(feature, monkeypatch):
+def test_a_gate_that_started_under_the_old_version_is_stopped(feature, monkeypatch):
     monkeypatch.setattr(loop, "BACKOFF_FIRST", 0)
-    _, p = _at_gating(feature)
-    p.write_text(plan_text(manifest(jobs=[job("shell", ["T1", "T2", "T3"], ["src/shell/**"], gate="false")])))
-    loop.cycle()
-    approve(p, "demo", SLUG)
-    loop.cycle()
-    assert state()["status"] == "held"                                          # it still runs: nothing to believe yet
-    drive(stopping(jobs_settled))
-    assert runs_of("shell", "gate") >= 2 and state()["jobs"]["shell"]["status"] == "blocked"
-
-
-def test_a_stop_from_marco_during_the_hold_survives_a_new_approval(feature):
     _, p = _at_gating(feature, gate="sleep 30")
-    _hold_and_edit(p)
+    _version(p, manifest(jobs=[job("shell", ["T1", "T2", "T3"], ["src/shell/**"], gate="false")]))
     loop.cycle()
-    proc.stop(paths.run_dir("demo", SLUG), "shell.gate", "stopped by Marco")
-    approve(p, "demo", SLUG)
-    loop.cycle()
-    st = state()
-    assert st["status"] == "running" and st["jobs"]["shell"]["status"] == "blocked"
-    assert "stopped by Marco" in st["jobs"]["shell"]["reason"]
-
-
-def test_a_merged_job_cannot_pass_new_gates_so_the_approval_is_refused(feature, monkeypatch):
-    monkeypatch.setenv("FAKE_SLEEP", "1")
-    _, p = feature()
-    drive(lambda: state() and state()["jobs"].get("shell", {}).get("status") == "merged")
-    old, sha = p.read_text(), state()["plan_sha"]
-    p.write_text(plan_text(manifest(jobs=[job("shell", ["T1", "T2"], ["src/narrower/**"]),
-                                          job("ui", ["T3"], ["src/ui/**"], after=["shell"])])))  # the area moves, not only grows
-    alerts = turn(1)
-    approve(p, "demo", SLUG)
-    alerts += turn(3)
-    st = state()
-    assert st["status"] == "held" and st["plan_sha"] == sha
-    assert sum("cannot take the new approval" in a and "shell" in a and "merged" in a for a in alerts) == 1
-    p.write_text(old)
-    approve(p, "demo", SLUG)
-    drive(jobs_settled)
-    assert state()["status"] == "done" and state()["jobs"]["ui"]["status"] == "merged"
-
-
-def test_restoring_the_plan_as_told_and_approving_again_loses_nothing(at_merge, monkeypatch):
-    _, st, _ = at_merge
-    p = Path(st["plan"])
-    old = p.read_text()
-    p.write_text(plan_text(manifest(jobs=[job("shell", ["T1", "T2", "T3"], ["src/shell/**"]), job("x", ["T1"], ["x/**"])])))
-    alerts = turn(1)
-    approve(p, "demo", SLUG)
-    alerts += turn(2)
-    said = [a for a in alerts if "cannot take the new approval" in a]
-    assert len(said) == 1 and "approve it again" in said[0]
-    p.write_text(old)                                                           # restored, not approved yet
-    alerts = turn(3)
-    st = state()
-    assert st["status"] == "held" and st["jobs"]["shell"]["status"] == "needs_merge" and not alerts  # he was told
-    approve(p, "demo", SLUG)
-    drive(jobs_settled)
-    st = state()
-    assert st["status"] == "done" and st["jobs"]["shell"]["status"] == "merged" and st["jobs"]["ui"]["status"] == "merged"
-    assert "reapprove_refused" not in st and runs_of("shell", "gate") == 1      # all of it kept
+    assert state()["status"] == "running"
+    assert "shell.gate" not in proc.active(paths.run_dir("demo", SLUG))           # its result would not count
+    drive(stopping(jobs_settled))
+    assert state()["jobs"]["shell"]["status"] == "blocked"
 
 
 def test_an_approval_that_disagrees_with_the_run_holds_it(feature, monkeypatch):
@@ -1984,10 +1932,8 @@ def test_an_approval_that_disagrees_with_the_run_holds_it(feature, monkeypatch):
 def test_a_new_edge_makes_a_job_at_its_merge_wait_for_it(at_merge):
     _, st, _ = at_merge
     p = Path(st["plan"])
-    p.write_text(plan_text(manifest(jobs=[job("shell", ["T1", "T2"], ["src/shell/**"], after=["ui"]),
-                                          job("ui", ["T3"], ["src/ui/**"])])))
-    loop.cycle()
-    approve(p, "demo", SLUG)
+    _version(p, manifest(jobs=[job("shell", ["T1", "T2"], ["src/shell/**"], after=["ui"]),
+                               job("ui", ["T3"], ["src/ui/**"])]))
     drive(jobs_settled)
     assert [j["status"] for j in state()["jobs"].values()] == ["merged", "merged"]
 
@@ -2002,18 +1948,17 @@ def test_a_job_at_its_merge_follows_its_dependency(tmp_path, dep, moves):
     assert bool(move) is moves and c.st["jobs"]["shell"]["status"] == "needs_merge"  # it waits, never blocks
 
 
-def test_a_new_approval_brings_the_fields_the_job_copied_from_the_plan(feature, monkeypatch):
+def test_a_changed_job_takes_the_fields_of_the_new_version(feature, monkeypatch):
     monkeypatch.setenv("FAKE_SLEEP", "1")
     _, p = feature()
+    _version(p)
     loop.cycle()
-    p.write_text(plan_text(manifest(jobs=[job("shell", ["T1", "T2"], ["src/shell/**"], heavy=True, tier="T2"),
-                                          job("ui", ["T3"], ["src/ui/**"], after=["shell"], heavy=True, tier="T2")])))
+    _version(p, manifest(jobs=[job("shell", ["T1", "T2"], ["src/shell/**"], heavy=True, tier="T2"),
+                               job("ui", ["T3"], ["src/ui/**"], after=["shell"], heavy=True, tier="T2")]))
     loop.cycle()
-    approve(p, "demo", SLUG)
-    loop.cycle()
-    shell, ui = state()["jobs"]["shell"], state()["jobs"]["ui"]
-    assert shell["heavy"] is True and shell["tier"] == "T1"                     # it already runs at the tier it has
-    assert ui["heavy"] is True and ui["tier"] == "T2" and ui["tier_path"] == ["T2"]
+    for j in (state()["jobs"]["shell"], state()["jobs"]["ui"]):
+        assert j["heavy"] is True and j["tier"] == "T2" and j["tier_path"] == ["T2"]
+
 
 
 # -- what counts as "the model never got to work"
@@ -2554,17 +2499,14 @@ def run_finished_of(slug):
     return bool(st) and st["status"] in ("done", "blocked")
 
 
-def test_a_new_approval_of_a_finished_run_is_not_silently_ignored(feature):
+def test_a_new_version_of_a_finished_run_starts_it_again(feature):
     repo, p = feature()
     closing_alerts()
     assert state()["status"] == "done"
-    p.write_text(p.read_text() + "\nedited\n")
-    approve(p, "demo", SLUG)
-    alerts = []
-    for _ in range(3):
-        alerts += loop.cycle()[1]
-    mine = [a for a in alerts if "already finished" in a]
-    assert len(mine) == 1 and state()["status"] == "done"
+    _version(p, manifest(jobs=[*manifest()["jobs"], job("more", ["T4"], ["more/**"])]), tasks=("T1", "T2", "T3", "T4"))
+    loop.cycle()
+    st = state()
+    assert st["status"] in ("waiting", "running") and st["jobs"]["more"]["status"] != "merged"
 
 
 # ---- main: the polling around cycle() -----------------------------------------------------------
@@ -3632,21 +3574,17 @@ def test_a_journal_that_cannot_be_written_does_not_stop_the_decision(tmp_path, a
     assert any("journal" in e for e in c.st["events"])
 
 
-def test_a_new_approval_that_only_widens_the_area_keeps_the_merged_jobs(feature, monkeypatch):
+def test_a_new_version_that_only_changes_another_job_keeps_the_merged_jobs(feature, monkeypatch):
     monkeypatch.setenv("FAKE_SLEEP", "1")
     _, p = feature()
+    _version(p)
     drive(lambda: state()["jobs"]["shell"]["status"] == "merged")
-    shell_area = [g for g in state()["area"] if "shell" in g]
-    _hold_and_edit(p)
-    loop.cycle()
-    assert state()["status"] == "held"
-    _reapproved_with(p, manifest(jobs=[job("shell", ["T1", "T2"], shell_area),
-                                       job("ui", ["T3"], ["src/ui/**", "extra/**"], after=["shell"])]))
-    alerts = turn(3)
+    _version(p, manifest(jobs=[job("shell", ["T1", "T2"], ["src/shell/**"]),
+                               job("ui", ["T3"], ["src/ui/**", "extra/**"], after=["shell"])]))
+    turn(3)
     st = state()
-    assert not [a for a in alerts if "cannot take the new approval" in a]
-    assert st["status"] == "running" and st["plan_sha"] == sha256_file(p) and "extra/**" in st["area"]
-    assert st["jobs"]["shell"]["status"] == "merged"
+    assert st["plan_sha"] == sha256_file(p) and "extra/**" in st["area"]
+    assert st["jobs"]["shell"]["status"] == "merged" and st["versions"][-1]["changes"]["ui"] == "changed"
 
 
 # -- Euklides repairs the branch himself: `fixed`
