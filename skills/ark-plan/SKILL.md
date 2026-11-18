@@ -52,11 +52,11 @@ Talk to Marco in Spanish. Write every file in English.
    - Propose a slug: lowercase-dashed, unique in that repo; it becomes the branch `ark/<slug>`.
    - Show `<repo>/<slug>` in one line before writing anything. If `desk/<repo>/<slug>/` exists,
      offer to resume it or pick another slug.
+     Read `review.json` when present: every section marked `change` and its note is a requested
+     change; apply those first and say which.
    - When `desk/<repo>/<slug>/` holds a closed plan Marco wants to change, run
      `ark replan <repo>/<slug>` first (never edit a closed plan by hand), then edit and approve as
      usual. If the spec changes, set it to `draft` and review it again before the plan.
-     Read `review.json` when present: every section marked `change` and its note is a requested
-     change; apply those first and say which.
 3. **Size.** Spec + plan when any of these hold: open product decisions (what it does, for whom,
    how it looks); it touches more than one repo; the plan will have more than 3 PRs; it changes a
    contract others use (file formats, CLI, hooks). Otherwise plan only. Say which and why in one

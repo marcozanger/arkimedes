@@ -5,9 +5,10 @@ approval. The runner runs that frozen copy, so editing the desk never holds or c
 
 ## What a version is
 
-An approval writes `vN.plan.md` (and `vN.spec.md` when the plan has a spec) next to the approval,
-and appends a line to `versions.jsonl` (version, time, plan sha256). The desk copy is only the
-draft of the next version.
+An approval copies the plan and its spec into `approvals/<repo>/<slug>/v<N>/plan.md` and
+`v<N>/spec.md`, and appends a line to `versions.jsonl` beside them (version, plan and spec sha256,
+approval time). A version is never written twice. The desk copy is only the draft of the next
+version.
 
 - The runner reads the frozen snapshot, never the desk.
 - Editing `desk/<repo>/<slug>/` after approval changes nothing in a running plan until the next
@@ -18,7 +19,9 @@ draft of the next version.
 Reopens an approved plan as the draft of its next version. The plan goes back to `draft`
 (the spec too, when it has to change: set it to `draft` and review it again before the plan);
 the run keeps going on the current version. An approval from before versions existed is adopted
-as v1: its snapshot is stored as `v1.legacy.md`, so there is always something to diff against.
+as v1: replan keeps its text in the desk folder as `v1.legacy.md` (the spec as
+`v1.legacy.spec.md`), and the next approval stores them as `v1/plan.md` and `v1/spec.md`, so there
+is something to diff against. If no copy was kept, v1 has no text and `ark diff` says so.
 
 Edit the draft, then approve as usual.
 
@@ -48,11 +51,11 @@ For a finished run:
 
 ## `ark diff <repo>/<slug> [vA vB]`
 
-Shows what changed between two versions, spec first, then the plan, job by job. With no
-versions it compares the latest two.
+Prints a unified diff between two versions, the spec first, then the plan. With no versions it
+compares the latest two. A v1 whose text was not kept (a legacy approval replanned without a
+copy) is named as such.
 
 ## Where versions show
 
-- `ark plans` lists the current version next to the approval state.
-- The run report has a Versions section: each version, when it was adopted and what it changed.
-- The history keeps the version a run closed on; the control center shows it too.
+`versions.jsonl` is the list. The approval table and `ark diff` read it; the other views (`ark plans`,
+the report, the history, the control center) are not covered here.
