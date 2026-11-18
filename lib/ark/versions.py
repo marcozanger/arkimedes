@@ -179,3 +179,24 @@ def by_version(rows: list[dict], timeline: list[dict]) -> list[dict]:
         out[i]["usd"] = round(out[i]["usd"] + (r.get("usd") or 0), 4)
         out[i]["minutes"] = round(out[i]["minutes"] + (r.get("minutes") or 0), 2)
     return out
+
+
+def payload(repo: str, slug: str, a: int | None = None, b: int | None = None) -> dict:
+    """What the control center's plan screen shows: the versions, and the diff between two of them
+    (the last two by default), spec first, plus what the newer one did to each job."""
+    vs = versions(repo, slug)
+    out = {"versions": [{"version": v["version"], "approved_at": v.get("approved_at"),
+                         "kept": v.get("kept", True)} for v in vs], "diff": None, "jobs": {}}
+    nums = [v["version"] for v in vs]
+    if a is None or b is None:
+        if len(nums) < 2:
+            return out
+        a, b = nums[-2], nums[-1]
+
+    def one(kind):
+        return _udiff(text(repo, slug, a, kind), text(repo, slug, b, kind), f"{kind}.md", f"v{a}", f"v{b}")
+    out["diff"] = {"from": a, "to": b, "spec": one("spec"), "plan": one("plan")}
+    pa, pb = plan_path(repo, slug, a), plan_path(repo, slug, b)
+    if pa and pb:
+        out["jobs"] = job_changes(pa, pb)
+    return out
