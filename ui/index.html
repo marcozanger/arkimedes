@@ -706,6 +706,8 @@ function diffClass(line) {
   if (l.startsWith("-")) return "diff-del";
   return "";
 }
+// a route splits repo/slug at its first "/", a plan at its real repo: compare the joined key so nested repos (clients/tarifario) match
+const sameKey = (a, b) => `${a.repo}/${a.slug}` === `${b.repo}/${b.slug}`;
 // ---- logic: end ----
 
 async function api(path, opts = {}) {
@@ -844,7 +846,7 @@ function home() {
 // ---- plan screen
 function currentPlan() {
   const r = S.route;
-  return plans().find(p => p.repo === r.repo && p.slug === r.slug) || null;
+  return plans().find(p => sameKey(p, r)) || null;
 }
 function numbers(p) {
   const qs = (p.questions || []).length;
@@ -862,7 +864,7 @@ function planScreen() {
   const back = '<a class="back" href="#/">← Back</a>';
   if (!S.data) return back + '<p class="muted">Waiting for ark…</p>';
   if (!p) {
-    const row = (S.history || []).find(h => h.repo === r.repo && h.slug === r.slug);
+    const row = (S.history || []).find(h => sameKey(h, r));
     if (row) return closedPlan(row);
     return back + `<div class="empty">${S.history === null ? "Loading…" : `No plan ${esc(r.repo)}/${esc(r.slug)} in the runner or its history.`}</div>`;
   }
@@ -905,7 +907,7 @@ async function loadVersions(from) {
   const key = keyOf(p), last = S.ver && S.ver.key === key && S.ver.data ? S.ver.data.versions.slice(-1)[0].version : null;
   const q = from != null && last != null ? `?from=${from}&to=${last}` : "";
   const r = await api(`/api/plan/${encodeURIComponent(p.repo).replace(/%2F/g, "/")}/${encodeURIComponent(p.slug)}/versions${q}`);
-  if (S.route.screen !== "plan" || S.route.repo !== p.repo || S.route.slug !== p.slug) return;
+  if (S.route.screen !== "plan" || !sameKey(S.route, p)) return;
   if (r.ok && r.body && Array.isArray(r.body.versions)) { S.ver = { key, data: r.body }; render(true); }
 }
 function recentAlerts(p) {
@@ -1027,7 +1029,7 @@ async function loadDecisions() {
   if (!p || !p.decisions) return;
   const key = dvKey(p), keep = S.dec && S.dec.key === key ? S.dec : {};
   const r = await api(`/api/decision-review?repo=${encodeURIComponent(p.repo)}&slug=${encodeURIComponent(p.slug)}`);
-  if (S.route.screen !== "plan" || S.route.repo !== p.repo || S.route.slug !== p.slug) return;
+  if (S.route.screen !== "plan" || !sameKey(S.route, p)) return;
   S.dec = r.ok && r.body && Array.isArray(r.body.items) ? { key, data: r.body, msg: keep.msg } : { key, data: keep.data || null, error: r.body.error || `ark ui answered ${r.status}` };
   render();
 }
