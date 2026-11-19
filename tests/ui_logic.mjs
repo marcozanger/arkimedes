@@ -5,8 +5,8 @@ import { readFileSync } from "node:fs";
 const html = readFileSync(process.argv[2], "utf8");
 const START = "// ---- logic: start ----", END = "// ---- logic: end ----";
 const code = html.split(START)[1].split(END)[0];
-const { decide, titleFor, readPlan, segments, etaText, jobLeft, spendText, flagOf, parseRoute, dur, draftHeader, docSections, jobCount, homeGroups, topTier, dashTime, dashRows, dashStats, dashDelta, dashKpis, dashSpendByDay, dashStatusCounts, dashSpendByRepo, dashActive, dashSet, dashFresh, dashIsFresh, dashChoices, diffClass } =
-  new Function(code + "; return {decide, titleFor, readPlan, segments, etaText, jobLeft, spendText, flagOf, parseRoute, dur, draftHeader, docSections, jobCount, homeGroups, topTier, dashTime, dashRows, dashStats, dashDelta, dashKpis, dashSpendByDay, dashStatusCounts, dashSpendByRepo, dashActive, dashSet, dashFresh, dashIsFresh, dashChoices, diffClass};")();
+const { decide, titleFor, readPlan, segments, etaText, jobLeft, spendText, flagOf, parseRoute, sameKey, dur, draftHeader, docSections, jobCount, homeGroups, topTier, dashTime, dashRows, dashStats, dashDelta, dashKpis, dashSpendByDay, dashStatusCounts, dashSpendByRepo, dashActive, dashSet, dashFresh, dashIsFresh, dashChoices, diffClass } =
+  new Function(code + "; return {decide, titleFor, readPlan, segments, etaText, jobLeft, spendText, flagOf, parseRoute, sameKey, dur, draftHeader, docSections, jobCount, homeGroups, topTier, dashTime, dashRows, dashStats, dashDelta, dashKpis, dashSpendByDay, dashStatusCounts, dashSpendByRepo, dashActive, dashSet, dashFresh, dashIsFresh, dashChoices, diffClass};")();
 
 const fresh = () => ({ lastAlert: null, loopDown: false, stale: false, done: [], unread: [] });
 const ok = { stale: false, error: "" };
@@ -168,6 +168,11 @@ const snap = (alerts = [], over = {}) => ({ version: 1, loop: { alive: true }, a
   assert.deepEqual(parseRoute("#/draft/muscleapp/mobile/onboarding/spec"), { screen: "draft", repo: "muscleapp", slug: "mobile/onboarding", doc: "spec" });
   assert.deepEqual(parseRoute("#/nowhere"), { screen: "home" });
   assert.deepEqual(parseRoute("#/plan/r%2"), { screen: "home" });
+  // a nested repo routes as repo "clients", slug "tarifario/x": the joined key still matches the plan
+  const nested = parseRoute("#/plan/clients/tarifario/backend-public-api/timeline");
+  assert.ok(sameKey(nested, { repo: "clients/tarifario", slug: "backend-public-api" }));
+  assert.ok(sameKey(parseRoute("#/plan/arkimedes/ui-polish"), { repo: "arkimedes", slug: "ui-polish" }));
+  assert.ok(!sameKey(nested, { repo: "clients/tarifario", slug: "other" }));
 }
 
 // 13. the draft header: its numbers and its one button
