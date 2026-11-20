@@ -21,7 +21,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import accounts, approve, beat, brief, caps, claude, coachqueue, companions, daycap, euklides, forge as forge_mod, gitops, inbox, integrate, merge, notify, paths, progress, proc, questions, reporting, reserved, run, sweep, usage, versions
+from . import accounts, amend, approve, beat, brief, caps, claude, coachqueue, companions, daycap, euklides, forge as forge_mod, gitops, inbox, integrate, merge, notify, paths, progress, proc, questions, reporting, reserved, run, sweep, usage, versions
 from .globs import areas_overlap, match_any
 from .plan import load_plan, sha256_file
 from .validate import validate
@@ -728,8 +728,12 @@ def _raise(c: Ctx, job: str, e: dict, d: dict, decision) -> None:
                                                     f"${d['usd']:.2f}, past the ${max(0, left):.2f} left of his margin"},
                       {**d, "proposal": proposal, "then": "raise"}, decision)
         return
+    before = round(budget + j.get("usd_raised", 0), 4)
     j["usd_raised"] = round(j.get("usd_raised", 0) + d["usd"], 4)
     j["euklides_count"] = j.get("euklides_count", 0) + 1
+    diag = d.get("diagnosis") or {}
+    amend.add(c.st, job, "budget", before, round(budget + j["usd_raised"], 4), by="Euklides", decision=decision,
+              why=f"{diag.get('cause', '')} → {diag.get('change', '')}" if diag else d["note"], undo="job")
     last = (j.get("failures") or [{}])[-1]
     j.setdefault("raises", []).append({"usd": d["usd"], "decision": decision, "ts": run.now(),
                                        "diagnosis": d.get("diagnosis"), "spent": j["usd"],
@@ -929,8 +933,12 @@ def _write_grants(st: dict, job: str) -> None:
 
 def _add_grant(st: dict, job: str, files: list[str], decision, by: str) -> None:
     grants = st.setdefault("grants", {}).setdefault(job, [])
+    before = list(grants)
     grants += [f for f in files if f not in grants]
     _write_grants(st, job)
+    journaled = by in ("Euklides", "Marco")  # the runner's companions pass a reason, not a journal id
+    amend.add(st, job, "area", before, list(grants), by=by.split(" (")[0], why=("" if journaled else decision),
+              decision=decision if journaled else None, undo="job")
     run.alert(st, f"{job}: {by} widened its area to {', '.join(files)} ({decision or 'not journaled'})")
 
 
@@ -953,7 +961,7 @@ def _start_base_fix(st: dict, job: str, e: dict, d: dict, decision, by: str = "E
         if by == "Euklides":
             st["fix_base_count"] = st.get("fix_base_count", 0) + 1
         live = {"n": len(fixes) + 1, "job": job, "note": _clean(d["note"]), "situation": e["situation"],
-                "decision": decision, "status": "needs_worker", "waiting": {}, "lost": 0}
+                "decision": decision, "status": "needs_worker", "waiting": {}, "lost": 0, "by": by}
         fixes.append(live)
         run.alert(st, f"{by} is fixing the base (fix {live['n']}, for {job}): {_clean(d['note'])[:200]}")
     live["waiting"][job] = {**e, "decision": decision, "proposal": d["proposal"] or d["note"]}
@@ -1101,6 +1109,9 @@ def _land_fix(c: Ctx, f: dict) -> None:
     finally:
         gitops._cleanup(c.repo, scratch)
     f["status"] = "landed"
+    amend.add(c.st, ",".join(f["waiting"]) or "-", "base", base[:8], sha[:8], by=f.get("by") or "Euklides",
+              decision=f.get("decision"), why=f"fix {f['n']}: {f['note']} ({', '.join(f['files'])})"
+              + (" · reviewed" if f.get("review") else ""), undo="run")
     run.alert(c.st, f"base fix {f['n']} landed on {c.base}: {', '.join(f['files'])} "
                     f"({f['decision'] or 'not journaled'})")
     for job, e in f["waiting"].items():
@@ -2681,8 +2692,12 @@ def _run_then(st: dict, job: str, q: dict, ask: dict, before: dict) -> None:
         _add_grant(st, job, files, ask.get("decision"), by="Marco")
         return _go_on(st, job, e, f"{note}\n\nMarco granted {', '.join(files)} to this job's area.")
     if then == "raise":
+        planned = _budget_usd(st, job) or 0.0  # unreadable plan: the amendment still shows what was raised
+        before = round(planned + j.get("usd_raised", 0), 4)
         j["usd_raised"] = round(j.get("usd_raised", 0) + usd, 4)
         j["marco_raised"] = round(j.get("marco_raised", 0) + usd, 4)  # never against Euklides' margin
+        amend.add(st, job, "budget", float(before), round(planned + j["usd_raised"], 4), by="Marco",
+                  decision=ask.get("decision"), why=f"question {q['id']}: {ask.get('note') or ''}", undo="job")
         run.event(st, f"{job}: Marco raised its budget by ${usd:.2f}")
         return _go_on(st, job, e, ask.get("note") or "go on: Marco raised the budget")
     if then == "fix_base":
@@ -2705,6 +2720,8 @@ def _run_then(st: dict, job: str, q: dict, ask: dict, before: dict) -> None:
             before["accept_why"] = "the job's worktree has uncommitted changes, so its head is not all there is"
         else:
             j.update(accept_gate=ask["gate"], head=gitops.rev(wt, "HEAD"), status="needs_push")
+            amend.add(st, job, "gate", "the plan's gate", ask["gate"], by="Marco", decision=ask.get("decision"),
+                      why=f"question {q['id']}, for head {j['head'][:8]} only", undo="job")
             for k in ("question", "not_before", "push_tries", "step_tries", "rewrite_ok"):
                 j.pop(k, None)
             run.event(st, f"{job}: Marco accepted head {j['head'][:8]} on the replacement gate "

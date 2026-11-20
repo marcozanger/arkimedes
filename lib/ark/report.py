@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from html import escape
 
-from . import paths, run
+from . import amend, paths, run
 
 DETAILS_OPEN = {escape(f"<details><summary>{w}</summary>") for w in ("more", "más")}    # "más": legacy files
 DETAILS_CLOSE = escape("</details>")
@@ -204,6 +204,27 @@ def _flaky(s: dict) -> str:
     return out
 
 
+def _show(v) -> str:
+    return amend._show(v)
+
+
+def _amendments(s: dict) -> str:
+    """What the run changed about its approved plan (lib/ark/amend.py), and how Euklides' raises ended."""
+    rows = [[_e(a["id"]), _e(a["job"]), _e(a["kind"]), _e(_show(a["before"])), _e(_show(a["after"])),
+             _e(a["by"] + (f" · {a['decision']}" if a.get("decision") else "")), _e(a.get("why") or "")]
+            for a in s.get("amendments") or []]
+    out = "<h2>Amendments</h2>"
+    out += (_table(["id", "job", "kind", "before", "after", "by", "why"], rows) if rows else
+            "<p class=muted>None: the run kept to its approved plan.</p>")
+    raises = s.get("raises") or []
+    if raises:
+        out += "<h3>Euklides' raises</h3>" + _table(
+            ["job", "USD", "cause", "change", "outcome"],
+            [[_e(r["job"]), _e(usd(r["usd"])), _e((r.get("diagnosis") or {}).get("cause", "")),
+              _e((r.get("diagnosis") or {}).get("change", "")), _e(r.get("outcome") or "open")] for r in raises])
+    return out
+
+
 def render_html(s: dict, rows: list[dict], decisions: str | None) -> str:
     title = f"Report · {s['repo']}/{s['slug']}"
     head = (f"<h1>{_e(title)}</h1><p class=muted>{_status(s['status'])} · from {_e(s['started'])} "
@@ -213,6 +234,7 @@ def render_html(s: dict, rows: list[dict], decisions: str | None) -> str:
         "<h2>Summary</h2>", _summary(s),
         *(["<h2>Versions</h2>", _versions(s)] if len(s.get("versions") or []) > 1 else []),
         "<h2>Decisions</h2>", decisions_html(decisions),
+        _amendments(s),
         _flaky(s),
         "<h2>By PR</h2>", _per_pr(s),
         _refreshes(s),

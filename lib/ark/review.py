@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 
-from . import euklides, run, runreview
+from . import amend, euklides, run, runreview
 
 PROMPT = "ok · mal: <comment> · skip · q > "
 
@@ -41,13 +41,31 @@ def pending(rows: list[dict], reviewed: set, show_all: bool, target: str | None)
     return sorted(out, key=lambda d: d.get("at") or "")
 
 
-def card(d: dict, outcome: str) -> str:
+def _state(d: dict) -> dict | None:
+    try:
+        st = run.load(d["repo"], d["slug"])
+    except Exception:
+        return None
+    return st if isinstance(st, dict) else None
+
+
+def _amendments_of(d: dict) -> list[dict]:
+    """The amendments a decision made (by its journal id), so Marco reviews what changed, not only the words."""
+    st = _state(d)
+    return [a for a in (st or {}).get("amendments") or [] if a.get("decision") == d.get("id")]
+
+
+def card(d: dict, outcome: str, amendments: list[dict] | None = None) -> str:
     lines = [f"{d['id']} · {d.get('at', '')}",
              f"run: {d['repo']}/{d['slug']} · job: {d['job']} · trigger: {d['trigger']} · outcome: {outcome}",
              f"situation: {d.get('situation', '')}",
              f"decided: {d['action']} — {d.get('note', '')}"]
     if d.get("raise_usd") is not None:
         lines.append(f"raised: ${d['raise_usd']:.2f}")
+    if d.get("diagnosis"):
+        lines.append(f"diagnosis: {d['diagnosis'].get('cause', '')} → {d['diagnosis'].get('change', '')}")
+    for a in amendments or []:
+        lines.append(f"amended: {amend.line(a)}")
     if d.get("undo"):
         lines.append(f"undo: {d['undo']} — {d.get('why', '')}")
     if d.get("proposal"):
@@ -78,13 +96,16 @@ def run_review(args, *, ask=input, say=print, model=None) -> int:
         state = runreview.load(repo, slug)
         items += [{"run_item": True, "id": f"{args.target}/{i['id']}", "key": i["id"], "repo": repo, "slug": slug,
                    "job": i["job"], "text": i["text"]} for i in state["items"] if args.all or i["verdict"] is None]
+        st = _state({"repo": repo, "slug": slug})
+        if st is not None:
+            say("Amendments to the approved plan:\n" + amend.markdown(st))
     if not items:
         say("Nothing to review.")
         return 0
     new = 0
     for i, d in enumerate(items, 1):
         shown = (f"{d['id']}\nrun: {d['repo']}/{d['slug']} · job: {d['job']} · from decisions.md\n{d['text']}"
-                 if d.get("run_item") else card(d, _outcome(d)))
+                 if d.get("run_item") else card(d, _outcome(d), _amendments_of(d)))
         say(f"\n[{i}/{len(items)}]\n" + shown + "\n" + PROMPT.strip(" >"))
         v = None
         while v is None:

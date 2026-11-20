@@ -295,6 +295,8 @@ def record(st: dict, job: str, ctx: dict, d: dict, *, valid: bool, usd: float) -
             row["gate"] = d["gate"]
         if d["action"] == "raise" or d.get("then") == "raise":
             row["raise_usd"] = d["usd"]  # `usd` is what the call cost
+        if d.get("diagnosis"):
+            row["diagnosis"] = d["diagnosis"]
         _append("decisions.jsonl", row)
         return row["id"]
 

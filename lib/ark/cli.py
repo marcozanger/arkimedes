@@ -12,8 +12,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import approve, ctl, desk, estimate, forge, monitor, paths, reporting, review, run, sweep, validate, versions
-from .plan import load_plan, set_status, sha256_file
+from . import amend, approve, ctl, desk, estimate, forge, monitor, paths, reporting, review, run, sweep, validate, versions
+from .plan import PlanError, load_plan, set_status, sha256_file
 from .report import minutes, usd
 
 
@@ -169,8 +169,29 @@ def _vnum(s: str) -> int:
     return int(s.lstrip("vV"))
 
 
+def _diff_effective(repo: str, slug: str) -> int:
+    """The approved plan against what the run made of it: its amendments (lib/ark/amend.py)."""
+    try:
+        st = run.load(repo, slug)
+    except run.StateCorrupt as e:
+        print(f"ark diff: {e}", file=sys.stderr)
+        return 1
+    if not st:
+        print(f"ark diff: {repo}/{slug} has no run.", file=sys.stderr)
+        return 1
+    try:
+        manifest = load_plan(st["plan"]).manifest or {}
+    except (OSError, PlanError, KeyError) as e:
+        print(f"ark diff: the run's plan cannot be read: {e}", file=sys.stderr)
+        return 1
+    print(amend.effective_text(manifest, st), end="")
+    return 0
+
+
 def cmd_diff(args) -> int:
     repo, _, slug = args.target.rstrip("/").rpartition("/")
+    if getattr(args, "effective", False):
+        return _diff_effective(repo, slug)
     vs = versions.versions(repo, slug)
     nums = [v["version"] for v in vs]
     if args.a and args.b:
@@ -331,6 +352,8 @@ def main(argv=None) -> int:
     s.add_argument("target", help="<repo>/<slug>")
     s.add_argument("a", nargs="?", help="older version, e.g. v1 (default: the one before the last)")
     s.add_argument("b", nargs="?", help="newer version, e.g. v2 (default: the last)")
+    s.add_argument("--effective", action="store_true",
+                   help="the approved plan against what the run made of it (its amendments)")
     s.set_defaults(fn=cmd_diff)
     s = sub.add_parser("estimate", help="a plan's budget and end-to-end time")
     s.add_argument("target", help="<repo>/<slug> or path to plan.md")

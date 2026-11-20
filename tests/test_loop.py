@@ -170,6 +170,8 @@ def test_companions_of_any_size_become_grants_when_clear_of_the_reserved_list(fe
     _companions_run(feature, monkeypatch, files)
     drive(lambda: state().get("grants"))
     assert sorted(state()["grants"]["shell"]) == sorted(files)
+    [a] = state()["amendments"]
+    assert (a["kind"], a["by"], a["decision"]) == ("area", "runner", None) and sorted(a["after"]) == sorted(files)
 
 
 def test_a_companion_inside_another_jobs_area_still_blocks(feature, monkeypatch):
@@ -3494,6 +3496,8 @@ def test_ok_to_a_raise_adds_to_the_budget_and_marcos_raises(tmp_path, ark_home):
     loop._apply_answer(c.st, {"id": "q1", "text": "ok"})
     j = c.st["jobs"]["shell"]
     assert j["usd_raised"] == 2 and j["marco_raised"] == 2 and j["status"] == "needs_worker"
+    [a] = c.st["amendments"]
+    assert (a["job"], a["kind"], a["by"]) == ("shell", "budget", "Marco") and a["after"] - a["before"] == 2
 
 
 @pytest.mark.parametrize("trigger, kind", [("question", None), ("blocked", "integrate")])
@@ -3759,6 +3763,9 @@ def test_a_raise_within_the_margin_raises_the_job_and_it_goes_on(tmp_path, ark_h
     assert not c.st.get("questions")
     [r] = j["raises"]
     assert r["usd"] == 0.4 and r["diagnosis"] == DIAGNOSIS and r["decision"] == row["id"] and r["outcome"] is None
+    [a] = c.st["amendments"]
+    assert (a["kind"], a["by"], a["decision"]) == ("budget", "Euklides", row["id"])
+    assert round(a["after"] - a["before"], 4) == 0.4
 
 
 def test_a_raise_without_a_diagnosis_asks_marco(tmp_path, ark_home):

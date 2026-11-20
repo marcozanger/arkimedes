@@ -118,6 +118,8 @@ def test_a_big_base_fix_lands_after_a_clean_review(feature, monkeypatch):
     st = state()
     assert {j["status"] for j in st["jobs"].values()} == {"merged"} and not st.get("questions")
     assert st["fixes"][0]["status"] == "landed" and st["fixes"][0]["review"]
+    [a] = [a for a in st["amendments"] if a["kind"] == "base"]
+    assert a["undo"] == "run" and a["by"] == "Euklides" and a["before"] != a["after"]
     assert "fix(base): delete bad.txt (Euklides fix 1)" in gitops.git(repo, "log", "--format=%s", f"origin/ark/{SLUG}")
 
 
@@ -138,6 +140,8 @@ def test_widen_grants_the_files_and_a_later_area_check_passes(feature, monkeypat
     drive(jobs_settled)
     st = state()
     assert st["grants"]["shell"] == ["outside/shell.txt"]
+    [a] = st["amendments"]
+    assert (a["kind"], a["before"], a["after"], a["by"]) == ("area", [], ["outside/shell.txt"], "Euklides")
     assert st["jobs"]["shell"]["status"] == "merged" and st["jobs"]["shell"]["euklides_count"] == 1
     assert any("widened" in e for e in st["events"]) and not st.get("answers")
 

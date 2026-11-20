@@ -41,6 +41,8 @@ def test_ok_to_an_accept_queues_the_head_for_the_gate_and_starts_no_worker(tmp_p
     assert j["status"] == "needs_push" and j["accept_gate"] == "pytest --changed" and j["head"] == "f" * 40
     assert not j.get("resume_msg") and j["attempts"] == 0 and "euklides_ask" not in j
     assert any("replacement gate" in e and "no worker" in e for e in c.st["events"])
+    [a] = c.st["amendments"]
+    assert (a["job"], a["kind"], a["after"], a["by"]) == ("shell", "gate", "pytest --changed", "Marco")
 
 
 @pytest.mark.parametrize("kw,why", [({"head": None}, "no committed head"), ({"clean": False}, "uncommitted changes")])

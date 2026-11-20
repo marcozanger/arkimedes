@@ -80,6 +80,8 @@ def summarize(st: dict, rows: list[dict], mjobs: dict) -> dict:
         "final_pr": (st.get("final_pr") or {}).get("url"),
         "estimated": any(r["estimated"] for r in procs),
         "flaky": list(st.get("flaky") or []), "queue_error": st.get("queue_error"),
+        "amendments": list(st.get("amendments") or []),
+        "raises": [{"job": jid, **r} for jid, j in (st.get("jobs") or {}).items() for r in j.get("raises") or []],
         "versions": [{**v, "changes": t.get("changes", {})} for v, t in zip(versions.by_version(procs, tl), tl)],
         "version": tl[-1]["version"] if tl else 1,
         "retired": {k: v.get("status") for k, v in (st.get("retired_jobs") or {}).items()},
