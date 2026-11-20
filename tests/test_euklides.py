@@ -17,8 +17,9 @@ def job(**over):
     ("question", job(usd=9.0), 2, ["answer", "fixed", "ask"]),
     ("blocked", job(), 2, ["unblock", "fixed", "ask"]),
     ("blocked", job(usd=2.5), 2, ["fixed", "ask"]),
-    ("failure", job(euklides_count=4), 2, ["ask"]),
-    ("question", job(euklides_count=4), 2, ["ask"]),
+    ("failure", job(euklides_count=8), 2, ["ask"]),
+    ("failure", job(euklides_count=4), 2, ["retry", "escalate", "fixed", "ask"]),
+    ("question", job(euklides_count=8), 2, ["ask"]),
 ])
 def test_allowed_actions(trigger, j, budget, expected):
     assert euklides.allowed(trigger, j, budget) == expected
@@ -169,7 +170,7 @@ def test_then_accept_carries_its_gate_stripped():
     ask(),                                         # no then
     ask(then="land"), ask(then=None), ask(then=3),
     ask(then="widen"), ask(then="widen", files=[]), ask(then="widen", files=["../x"]),
-    ask(then="widen", files=["a", "b", "c", "d"]),
+    ask(then="widen", files=[f"f{i}" for i in range(21)]),
     ask(then="raise"), ask(then="raise", usd=0), ask(then="raise", usd=-1), ask(then="raise", usd=float("inf")),
     ask(then="raise", usd=True), ask(then="raise", usd="2"),
     ask(then="go_on", files=["x.py"]), ask(then="go_on", usd=1), ask(then="widen", files=["x.py"], usd=1),

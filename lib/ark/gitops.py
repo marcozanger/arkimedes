@@ -316,6 +316,15 @@ def changed_files(repo, base: str, head: str) -> list[str]:
     return [p for p in out.split("\0") if p]
 
 
+def diff_text(repo, base: str, head: str, files: list[str]) -> str | None:
+    """The unified diff of `files` between base and head with no context lines; None when git fails."""
+    try:
+        return _checked(repo, "diff", "--no-renames", "-U0", "--no-color", "--end-of-options", f"{base}...{head}",
+                        "--", *files)
+    except GitError:
+        return None
+
+
 def changed_lines(repo, base: str, head: str, files: list[str]) -> int | None:
     """Lines added plus removed in `files` between base and head; None when one of them is binary."""
     out = git(repo, "diff", "--no-renames", "--numstat", "--end-of-options", base, head, "--", *files)

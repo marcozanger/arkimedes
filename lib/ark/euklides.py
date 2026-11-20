@@ -3,7 +3,12 @@
 The loop calls it when a job attempt failed, a worker asked a question, or a job hit a block a new
 attempt can fix. The runner, not the model, decides which actions are open (`allowed`); the model
 only picks one of them and classifies the reach of an answer (`undo`). Every decision is journaled
-under history/euklides/ for Marco's review (`ark review`)."""
+under history/euklides/ for Marco's review (`ark review`).
+
+Two modes (workspace.json `euklides.mode`). `blast-radius`, the default: everything is Euklides' call
+except the reserved list (lib/ark/reserved.py), which the runner checks on every file he or a fix
+worker touches; a big base fix goes to a reviewer, not to Marco. `legacy`: the old small-fix rule
+(SMALL_FILES / SMALL_LINES) and at most MAX_FIX_BASE base fixes a run."""
 from __future__ import annotations
 
 import fcntl
@@ -21,10 +26,19 @@ DEFAULTS = {
     # it repairs the job's branch itself; the push layer and merge-guard keep pushes and PRs the runner's
     "tools": ["Read", "Grep", "Glob", "Bash", "Edit", "Write"],
     "denied_tools": ["WebFetch", "WebSearch", "Task", "Agent", "NotebookEdit"],
-    "budget_margin": 0.10,  # Euklides may raise a job's budget, and a run's total, by this share of the plan
-    "decisions_per_job": 4,  # decisions without Marco per job and run; after that Euklides can only ask
+    # blast-radius: Euklides may do anything the reserved list (reserved.py) does not hold for Marco;
+    # legacy: the small-fix rule and MAX_FIX_BASE, as before 2026-11-20
+    "mode": "blast-radius",
+    "budget_margin": None,  # Euklides may raise a job's budget, and a run's total, by this share of the plan
+    "decisions_per_job": None,  # decisions without Marco per job and run; after that Euklides can only ask
+    "reserved": None,  # R5 path globs: public contracts only Marco changes (None: reserved.DEFAULT_GLOBS)
 }
-MAX_FIX_BASE = 3  # base fixes per run without Marco
+MODES = {  # what an unset budget_margin and decisions_per_job mean in each mode
+    "blast-radius": {"budget_margin": 1.0, "decisions_per_job": 8},  # up to twice the planned budget
+    "legacy": {"budget_margin": 0.10, "decisions_per_job": 4},
+}
+MAX_FIX_BASE = 3  # base fixes per run without Marco, in legacy mode
+WIDEN_FILES = {"legacy": 3, "blast-radius": 20}  # files one widen may name
 TRIGGERS = ("failure", "question", "blocked")
 KEYS = {"action", "note", "undo", "why", "proposal", "files", "usd", "then", "gate"}
 THEN = ("go_on", "escalate", "widen", "fix_base", "raise", "accept", "stop")  # what Marco's ok to an ask makes the runner do
@@ -55,6 +69,16 @@ def settings() -> dict:
         if k not in DEFAULTS:
             raise ValueError(f"euklides.{k} is not a setting (known: {', '.join(DEFAULTS)})")
     out = {**{k: (list(v) if isinstance(v, list) else v) for k, v in DEFAULTS.items()}, **block}
+    if out["mode"] not in MODES:
+        raise ValueError(f"euklides.mode must be one of {', '.join(MODES)}")
+    for k, v in MODES[out["mode"]].items():
+        if out[k] is None:
+            out[k] = v
+    if out["reserved"] is None:
+        from .reserved import DEFAULT_GLOBS
+        out["reserved"] = list(DEFAULT_GLOBS)
+    if not isinstance(out["reserved"], list) or not all(isinstance(g, str) and g.strip() for g in out["reserved"]):
+        raise ValueError("euklides.reserved must be a list of non-empty path globs")
     m = out["model"]
     if not (isinstance(m, str) and (m in ("haiku", "sonnet", "opus") or m.startswith("claude-"))):
         raise ValueError("euklides.model must be haiku, sonnet, opus or a string starting with claude-")
@@ -91,7 +115,7 @@ def allowed(trigger: str, j: dict, budget_usd: float, margin: float = 0.0, kind:
     """The actions open now, `ask` always last. Spending past the budget and its margin, changing the plan
     and blocking are never actions: they can only be proposed to Marco. `raise` opens when the job is at or
     over its budget (plus what was raised) and margin is left. `widen` opens only after an area block,
-    `fix_base` only after an integration gate red on the base too, at most MAX_FIX_BASE a run.
+    `fix_base` only after an integration gate red on the base too (in legacy mode at most MAX_FIX_BASE a run).
     `fixed` (Euklides repaired the branch himself) is open while decisions remain. `regate` opens when the
     loop says the red head passed before; it ignores the budget."""
     if j.get("euklides_count", 0) >= settings()["decisions_per_job"]:
@@ -108,7 +132,8 @@ def allowed(trigger: str, j: dict, budget_usd: float, margin: float = 0.0, kind:
         out.append("unblock")
         if kind == "area":
             out.append("widen")
-    if trigger == "blocked" and kind == "integrate" and base_red and fixes_used < MAX_FIX_BASE:
+    if trigger == "blocked" and kind == "integrate" and base_red and (
+            settings()["mode"] != "legacy" or fixes_used < MAX_FIX_BASE):
         out.append("fix_base")  # the base's fix is not paid from the job's budget
     if not under and margin_left(j, budget_usd, margin) > 1e-9:
         out.append("raise")
@@ -118,8 +143,8 @@ def allowed(trigger: str, j: dict, budget_usd: float, margin: float = 0.0, kind:
 
 
 def _files(v) -> list[str] | None:
-    """1 to 3 exact relative paths (no glob, no `..`, not absolute), or None."""
-    if not isinstance(v, list) or not 1 <= len(v) <= 3:
+    """1 to WIDEN_FILES exact relative paths (no glob, no `..`, not absolute), or None."""
+    if not isinstance(v, list) or not 1 <= len(v) <= WIDEN_FILES[settings()["mode"]]:
         return None
     out = []
     for f in v:

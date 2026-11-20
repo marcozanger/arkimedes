@@ -152,11 +152,24 @@ def test_the_worker_gets_its_grants_file_and_a_new_grant_reaches_it(feature, mon
     assert kw["grants_file"] == gf and "companions" not in kw
 
 
-def test_companions_over_the_small_rule_still_block(feature, monkeypatch):
+def _legacy(ark_home):
+    f = ark_home / "workspace.json"
+    f.write_text(json.dumps({**json.loads(f.read_text()), "euklides": {"mode": "legacy"}}))
+
+
+def test_companions_over_the_small_rule_still_block_in_legacy(feature, ark_home, monkeypatch):
+    _legacy(ark_home)
     _companions_run(feature, monkeypatch, [f"tests/test_{i}.py" for i in range(loop.SMALL_FILES + 1)])
     drive(waits_for_marco)
     st = state()
     assert not st.get("grants") and st["jobs"]["shell"]["status"] == "waiting_answer"
+
+
+def test_companions_of_any_size_become_grants_when_clear_of_the_reserved_list(feature, monkeypatch):
+    files = [f"tests/test_{i}.py" for i in range(loop.SMALL_FILES + 1)]
+    _companions_run(feature, monkeypatch, files)
+    drive(lambda: state().get("grants"))
+    assert sorted(state()["grants"]["shell"]) == sorted(files)
 
 
 def test_a_companion_inside_another_jobs_area_still_blocks(feature, monkeypatch):
@@ -478,7 +491,13 @@ def test_retries_are_capped_by_euklides_decisions_not_by_the_tier(feature, monke
     assert j["status"] == "merged" and j["tier_path"] == ["T1"] and j["attempts"] == 3
 
 
-def test_the_fifth_failure_asks_marco_and_stop_blocks_the_dependents(feature, monkeypatch):
+def _decisions(ark_home, n):
+    f = ark_home / "workspace.json"
+    f.write_text(json.dumps({**json.loads(f.read_text()), "euklides": {"decisions_per_job": n}}))
+
+
+def test_the_fifth_failure_asks_marco_and_stop_blocks_the_dependents(feature, ark_home, monkeypatch):
+    _decisions(ark_home, 4)
     monkeypatch.setenv("FAKE_FAIL", "shell:1,shell:2,shell:3,shell:4,shell:5")
     feature()
     drive(waits_for_marco)
@@ -1964,7 +1983,8 @@ def test_a_changed_job_takes_the_fields_of_the_new_version(feature, monkeypatch)
 # -- what counts as "the model never got to work"
 
 @pytest.mark.parametrize("end", ["exit 1", "kill -KILL $$"])
-def test_a_worker_that_worked_and_crashed_is_charged(feature, monkeypatch, tmp_path, end):
+def test_a_worker_that_worked_and_crashed_is_charged(feature, ark_home, monkeypatch, tmp_path, end):
+    _decisions(ark_home, 4)
     monkeypatch.setattr(loop, "BACKOFF_FIRST", 0)
     shim(tmp_path, monkeypatch, f'''
 if [ "$ARK_ROLE" = worker ]; then

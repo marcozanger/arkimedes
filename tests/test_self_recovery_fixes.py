@@ -9,18 +9,26 @@ from helpers import job, manifest
 from ark import brief, euklides, gitops, loop, questions, run
 
 
-def test_widen_and_fix_base_open_only_after_their_blocks():
+def test_widen_and_fix_base_open_only_after_their_blocks(ark_home):
     j = {"usd": 0, "tier": "T1"}
     assert "widen" in euklides.allowed("blocked", j, 2, kind="area")
     assert "widen" not in euklides.allowed("blocked", j, 2, kind="integrate")
     assert "fix_base" in euklides.allowed("blocked", j, 2, kind="integrate", base_red=True)
     assert "fix_base" not in euklides.allowed("blocked", j, 2, kind="integrate", base_red=False)
+    assert "fix_base" in euklides.allowed("blocked", j, 2, kind="integrate", base_red=True,
+                                          fixes_used=euklides.MAX_FIX_BASE)  # blast-radius: no count limit
+    legacy(ark_home)
     assert "fix_base" not in euklides.allowed("blocked", j, 2, kind="integrate", base_red=True,
                                               fixes_used=euklides.MAX_FIX_BASE)
 
 
-@pytest.mark.parametrize("files", [[], ["a", "b", "c", "d"], ["../x"], ["/abs"], ["docs/*.md"], [3]])
-def test_widen_files_must_be_one_to_three_plain_relative_paths(files):
+def legacy(ark_home):
+    f = ark_home / "workspace.json"
+    f.write_text(json.dumps({**json.loads(f.read_text()), "euklides": {"mode": "legacy"}}))
+
+
+@pytest.mark.parametrize("files", [[], [f"f{i}" for i in range(21)], ["../x"], ["/abs"], ["docs/*.md"], [3]])
+def test_widen_files_must_be_one_to_twenty_plain_relative_paths(files):
     d = {"action": "widen", "note": "n", "undo": "job", "why": "w", "proposal": None, "files": files}
     assert euklides.parse(d, ["widen", "ask"]) is None
 
@@ -87,6 +95,40 @@ def test_a_control_center_replay_fixes_the_base_without_asking(feature, monkeypa
     assert st["fixes"][0]["status"] == "landed"
 
 
+def _bad_base(feature, monkeypatch):
+    m = manifest(integration_gate="test ! -e bad.txt")
+    repo, _ = feature(m)
+    loop.cycle()
+    git("checkout", "-q", f"ark/{SLUG}", cwd=repo)
+    (repo / "bad.txt").write_text("broken\n")
+    git("add", "-A", cwd=repo)
+    git("commit", "-q", "-m", "an earlier merge left a bad word", cwd=repo)
+    git("push", "-q", "origin", f"ark/{SLUG}", cwd=repo)
+    git("checkout", "-q", "master", cwd=repo)
+    monkeypatch.setenv("FAKE_EUKLIDES", json.dumps({"action": "fix_base", "note": "delete bad.txt",
+                                                    "undo": "job", "why": "red on the base", "proposal": None}))
+    monkeypatch.setenv("FAKE_FIXBASE", "bad.txt")
+    monkeypatch.setattr("ark.reserved.REVIEW_LINES", 0)  # every base fix is big enough for a reviewer
+    return repo
+
+
+def test_a_big_base_fix_lands_after_a_clean_review(feature, monkeypatch):
+    repo = _bad_base(feature, monkeypatch)
+    drive(jobs_settled)
+    st = state()
+    assert {j["status"] for j in st["jobs"].values()} == {"merged"} and not st.get("questions")
+    assert st["fixes"][0]["status"] == "landed" and st["fixes"][0]["review"]
+    assert "fix(base): delete bad.txt (Euklides fix 1)" in gitops.git(repo, "log", "--format=%s", f"origin/ark/{SLUG}")
+
+
+def test_a_big_base_fix_the_reviewer_rejects_does_not_land(feature, monkeypatch):
+    repo = _bad_base(feature, monkeypatch)
+    monkeypatch.setenv("FAKE_FIX", "_fix-1,_fix-1.review")
+    drive(lambda: state().get("fixes") and state()["fixes"][0]["status"] == "failed")
+    assert "src/x:1" in state()["fixes"][0]["why"]  # the reviewer's finding
+    assert "fix(base)" not in gitops.git(repo, "log", "--format=%s", f"origin/ark/{SLUG}")
+
+
 def test_widen_grants_the_files_and_a_later_area_check_passes(feature, monkeypatch):
     monkeypatch.setenv("FAKE_OUTSIDE", "shell")
     monkeypatch.setenv("FAKE_EUKLIDES", json.dumps({"action": "widen", "note": "two docs", "undo": "job",
@@ -100,7 +142,28 @@ def test_widen_grants_the_files_and_a_later_area_check_passes(feature, monkeypat
     assert any("widened" in e for e in st["events"]) and not st.get("answers")
 
 
-def test_widen_over_the_small_fix_rule_asks_marco(feature, monkeypatch):
+def test_legacy_widens_at_most_three_files(ark_home):
+    legacy(ark_home)
+    d = {"action": "widen", "note": "n", "undo": "job", "why": "w", "proposal": None, "files": ["a", "b", "c", "d"]}
+    assert euklides.parse(d, ["widen", "ask"]) is None
+
+
+def test_widen_into_a_reserved_path_asks_marco(feature, ark_home, monkeypatch):
+    f = ark_home / "workspace.json"
+    f.write_text(json.dumps({**json.loads(f.read_text()), "euklides": {"reserved": ["outside/**"]}}))
+    monkeypatch.setenv("FAKE_OUTSIDE", "shell")
+    monkeypatch.setenv("FAKE_EUKLIDES", json.dumps({"action": "widen", "note": "one file", "undo": "job",
+                                                    "why": "small", "proposal": None,
+                                                    "files": ["outside/shell.txt"]}))
+    feature()
+    drive(lambda: state()["jobs"]["shell"]["status"] == "waiting_answer")
+    [q] = state()["questions"]
+    assert "Reserved for Marco" in q["text"] and "R5: outside/shell.txt" in q["text"]
+    assert "shell" not in (state().get("grants") or {})
+
+
+def test_widen_over_the_small_fix_rule_asks_marco(feature, ark_home, monkeypatch):
+    legacy(ark_home)
     monkeypatch.setattr(loop, "SMALL_LINES", 0)
     monkeypatch.setenv("FAKE_OUTSIDE", "shell")
     monkeypatch.setenv("FAKE_EUKLIDES", json.dumps({"action": "widen", "note": "two docs", "undo": "job",
