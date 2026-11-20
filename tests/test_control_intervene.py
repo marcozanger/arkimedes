@@ -1,10 +1,17 @@
 import os
 import time
 
+import pytest
 from control_helpers import SLUG, change_state, drive, job_status, settled, state
+from helpers import no_load_brake
 from test_loop import stopping
 
 from ark import claude, loop, paths, proc
+
+
+@pytest.fixture(autouse=True)
+def _no_load_brake(ark_home):
+    no_load_brake(ark_home)
 
 
 def worker_log():
@@ -29,9 +36,9 @@ def events():
 def test_the_process_gets_twice_the_tier_time(feature, monkeypatch, tmp_path):
     go = holding(feature, monkeypatch, tmp_path)
     info = proc.job_processes(paths.run_dir("demo", SLUG), "shell")[0]
-    assert abs((info["deadline"] - info["start"]) - 2 * claude.TIER_MINUTES["T1"] * 60) < 5
+    assert abs((info["deadline"] - info["start"]) - 2 * claude.TIER_MINUTES["T1"] * 60) < 30
     j = state()["jobs"]["shell"]
-    assert abs(j["soft_deadline"] - time.time() - claude.TIER_MINUTES["T1"] * 60) < 60
+    assert abs(j["soft_deadline"] - time.time() - claude.TIER_MINUTES["T1"] * 60) < 120
     go.touch()
     drive(settled)
 

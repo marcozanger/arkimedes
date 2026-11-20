@@ -283,7 +283,7 @@ def test_merge_guard_review_table_is_denied():
         # expansion
         f"g=git; $g push {P}", f"p=push; git $p {P}", f"$(echo git) push {P}", f"git${{IFS}}push {P}",
         # other interpreters
-        f"find . -exec git push {P} \;", f"python3 -c \"import os; os.system('git push {P}')\"",
+        f"find . -exec git push {P} \\;", f"python3 -c \"import os; os.system('git push {P}')\"",
         f"perl -e 'system(\"git push {P}\")'", f"echo 'git push {P}' > s.sh && sh s.sh",
     ], "deny")
 
@@ -300,7 +300,7 @@ def test_merge_guard_denies_what_it_cannot_prove():
         # quoted text that becomes a command
         "x='git push'; $x", "PAGER='git push' git log", "git -c core.pager='git push' log",
         "git grep -O'git push' x", "git fetch --upload-pack='git push' origin", "git rebase -x 'git push' HEAD~1",
-        "find . -exec sh -c 'git push' \;", "grep x f | tee s.sh; echo 'git push' | tee -a s.sh",
+        "find . -exec sh -c 'git push' \\;", "grep x f | tee s.sh; echo 'git push' | tee -a s.sh",
         # a commit-message heredoc must not hide a command
         "echo '\"$(cat <<'E'\n' ; git push ; echo '\nE\n)\"'",
         "git commit -m \"$(cat <<'E'\nfoo\nE\ngit push\nE\n)\"",
@@ -325,7 +325,7 @@ def test_merge_guard_keeps_ordinary_commands():
         "git commit -m 'git push (later)'", "git commit -m \"$(cat <<'EOF'\nfix: don't git push\n\nCo-Authored-By: x\nEOF\n)\"",
         "git add a && git commit -m \"$(cat <<'EOF'\nmerge it, then | sh\nEOF\n)\" 2>&1 | tail -5",
         "git commit -m \"$(cat <<EOF\nfix it's\nEOF\n)\"",
-        "xargs grep 'git push'", "find . -name '*.py' | xargs grep 'git push'", "find . -name '*.py' -exec wc -l {} \;",
+        "xargs grep 'git push'", "find . -name '*.py' | xargs grep 'git push'", "find . -name '*.py' -exec wc -l {} \\;",
         "cat > f <<'EOF'\nit's fine\nEOF", "cat > f <<EOF\nit's fine\nEOF", "python3 - <<'PY'\nprint(\"it's\")\nPY",
         "gh pr view 3", "gh pr list", "gh pr checks 3", "gh pr view 3 --json title | jq .title", "gh -R o/r pr view 3",
         "gh pr -R o/r view 3", "sed -E 's/(a|b)/c/' f", "awk '$1 ~ /#/' f",

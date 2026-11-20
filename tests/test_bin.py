@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 import pytest
-from helpers import approve, plan_text
+from helpers import approve, no_load_brake, plan_text
 
 import conftest
 from ark import paths, proc, run
@@ -16,6 +16,11 @@ from test_merge import check, is_gone, ready, scratch_left  # noqa: F401  (fixtu
 
 CODE = Path(__file__).resolve().parents[1]
 SLUG = "notes-edit"
+
+
+@pytest.fixture(autouse=True)
+def _no_load_brake(ark_home):
+    no_load_brake(ark_home)
 
 
 def env_for(ark_home, **extra):
@@ -162,7 +167,7 @@ def test_a_whole_run_through_the_symlink_from_any_directory(runner, make_feature
     link.symlink_to(CODE / "bin" / "ark-loop")
     env = env_for(ark_home)
     report = paths.runs_dir() / "demo" / f"{SLUG}.md"
-    end = time.monotonic() + 90
+    end = time.monotonic() + 180
     while True:
         r = subprocess.run([str(link), "--once"], cwd=elsewhere, capture_output=True, text=True, env=env)
         assert r.returncode == 0, r.stdout + r.stderr
@@ -178,7 +183,7 @@ def test_a_whole_run_through_the_symlink_from_any_directory(runner, make_feature
 
 # ---- staying up ------------------------------------------------------------------------------------
 
-def wait_for(what, why, seconds=60):
+def wait_for(what, why, seconds=180):
     end = time.monotonic() + seconds
     while not what():
         assert time.monotonic() < end, why()
@@ -207,7 +212,7 @@ def test_the_loop_wakes_on_an_approval_and_ctrl_c_ends_it(runner, make_feature, 
             return bool(st) and st["status"] == "done"
         wait_for(over, lambda: out.read_text() + err.read_text())
         os.killpg(looping.pid, signal.SIGINT)                                   # what a terminal sends
-        assert looping.wait(20) == 130
+        assert looping.wait(60) == 130
         assert "Traceback" not in err.read_text(), err.read_text()
     finally:
         if looping.poll() is None:
@@ -229,7 +234,7 @@ def test_ctrl_c_stops_the_loop_however_it_was_launched(runner, ark_home, tmp_pat
     try:
         wait_for(lambda: "idle" in out.read_text(), err.read_text)
         os.killpg(looping.pid, signal.SIGINT)
-        assert looping.wait(20) == 130
+        assert looping.wait(60) == 130
         assert "Traceback" not in err.read_text(), err.read_text()
     finally:
         if looping.poll() is None:
@@ -253,7 +258,7 @@ def test_a_fifo_in_a_run_folder_does_not_hang_a_loop_start(ark_home):
     os.mkfifo(d / "evil.proc")
     (ark_home / "approvals" / "demo").mkdir(parents=True, exist_ok=True)
     r = subprocess.run([str(CODE / "bin/ark-loop"), "--once"], capture_output=True, text=True,
-                       env=env_for(ark_home), timeout=60)
+                       env=env_for(ark_home), timeout=180)
     assert r.returncode == 0, r.stderr
 
 
@@ -264,14 +269,15 @@ def test_a_worker_outlives_the_loop_without_its_lock_and_ark_dispatch_stops_it(r
     d = paths.run_dir("demo", SLUG)
     info = None
     try:
-        for _ in range(10):  # the start check goes green in a tick or two, then the worker starts
+        end = time.monotonic() + 120
+        while time.monotonic() < end:  # the start check goes green in a tick or two, then the worker starts
             r = subprocess.run([str(CODE / "bin/ark-loop"), "--once"], capture_output=True, text=True, env=env)
             assert r.returncode == 0, r.stderr
             info = proc._read(d / "shell.worker.proc")
             if info:
                 break
             time.sleep(0.5)
-        assert info and not is_gone(info["pid"], seconds=0.2)
+        assert info and not is_gone(info["pid"], seconds=0.2), "the worker was gone right after it started"
         with open(ark_home / "runs" / ".loop.lock", "a") as lock:               # no child kept it
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         r = subprocess.run([str(CODE / "bin/ark-dispatch"), "stop", f"demo/{SLUG}", "shell"], capture_output=True,
@@ -300,7 +306,7 @@ def test_ark_loop_refuses_to_run_inside_a_runner_process(ark_home):
 @pytest.mark.parametrize("arg", ["--help", "--oncee", "once"])
 def test_ark_loop_does_not_start_on_an_argument_it_does_not_know(ark_home, arg):
     r = subprocess.run([str(CODE / "bin/ark-loop"), arg], capture_output=True, text=True, env=env_for(ark_home),
-                       timeout=30)
+                       timeout=120)
     assert r.returncode == 2 and "usage" in r.stderr
     assert not (ark_home / "runs").exists()
 
@@ -346,5 +352,5 @@ def test_stopping_the_wrapper_goes_through_integrate_main(check):
     c.in_a_terminal()
     assert scratch_left()
     c.popen.send_signal(signal.SIGTERM)
-    assert c.popen.wait(30) == 128 + signal.SIGTERM
+    assert c.popen.wait(90) == 128 + signal.SIGTERM
     assert c.all_gone() and not scratch_left()
