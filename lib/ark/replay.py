@@ -32,7 +32,7 @@ OWN = [
                                                 r"under (machine )?load|load timeouts|merge origin/main|"
                                                 r"does not merge cleanly|test isolation", re.I)),
 ]
-AGREED = re.compile(r"^\s*(ok|si|sí|yes|y|commit|hacelo|approved|follow|go with|land it|accept|raise it|"
+AGREED = re.compile(r"^\s*(ok|s[ií]|yes|y|commit|hacelo|approved|follow|go with|land it|accept|raise it|"
                     r"a,|a |done)", re.I)
 
 
