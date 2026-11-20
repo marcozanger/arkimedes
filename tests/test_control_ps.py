@@ -127,6 +127,24 @@ def test_stop_why_reaches_a_job_that_was_already_blocked_by_the_stop(feature, mo
     go.touch()
 
 
+def test_stop_of_a_whole_run_blocks_every_open_job_with_one_reason(feature, monkeypatch, tmp_path, capsys):
+    go = hold(feature, monkeypatch, tmp_path)
+    capsys.readouterr()
+    code, out = ark(capsys, "stop", f"demo/{SLUG}", "--why", "main is red")
+    assert code == 0 and "stopped" in out and f"ark retry demo/{SLUG}" in out
+    drive(settled)
+    jobs = run.load("demo", SLUG)["jobs"]
+    assert jobs["shell"]["status"] == "blocked"
+    assert jobs["shell"]["reason"] == f"{proc.STOPPED_BY_MARCO}: main is red"
+    go.touch()
+
+
+def test_stop_of_an_unknown_run_is_refused(feature, capsys):
+    feature()
+    code, out = ark(capsys, "stop", "demo/nope")
+    assert code == 1 and "has no run" in out
+
+
 def test_stop_is_refused_to_a_runner_process(feature, monkeypatch, tmp_path, capsys):
     go = hold(feature, monkeypatch, tmp_path)
     capsys.readouterr()

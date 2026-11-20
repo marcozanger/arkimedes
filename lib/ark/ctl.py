@@ -69,6 +69,18 @@ def _resolve(spec: str) -> tuple[str, str, str]:
     return found[0]["repo"], found[0]["slug"], spec
 
 
+def _is_run_spec(spec: str) -> bool:
+    """`<repo>/<slug>` with no `:job`: the whole run. A bare job name never has a slash."""
+    return ":" not in spec and "/" in spec
+
+
+def _resolve_run(spec: str) -> tuple[str, str]:
+    for st in _states():
+        if f"{st['repo']}/{st['slug']}" == spec:
+            return st["repo"], st["slug"]
+    raise CtlError(f"{spec} has no run")
+
+
 def _age(seconds: float) -> str:
     minutes = int(seconds // 60)
     return f"{minutes}m" if minutes < 60 else f"{minutes // 60}h{minutes % 60:02d}"
@@ -181,12 +193,9 @@ def cmd_logs(args) -> int:
     return 0
 
 
-@_cmd
-def cmd_stop(args) -> int:
-    _writer()
-    repo, slug, job = _resolve(args.job)
+def _stop_one(repo: str, slug: str, job: str, why: str) -> int:
+    """Stop one job the way `ark stop <job>` does: its processes, or an inbox stop when it has none."""
     d = paths.run_dir(repo, slug)
-    why = (getattr(args, "why", "") or "").strip()
     if why:
         inbox.post(repo, slug, "stop_why", job=job, why=why)  # before the stop: the block finds it waiting
     if any(n.startswith(job + ".") for n in proc.active(d)):
@@ -200,23 +209,70 @@ def cmd_stop(args) -> int:
 
 
 @_cmd
-def cmd_retry(args) -> int:
+def cmd_stop(args) -> int:
     _writer()
-    repo, slug, job = _resolve(args.job)
+    why = (getattr(args, "why", "") or "").strip()
+    if not _is_run_spec(args.job):
+        repo, slug, job = _resolve(args.job)
+        return _stop_one(repo, slug, job, why)
+    repo, slug = _resolve_run(args.job)
+    st = run.load(repo, slug)
+    open_jobs = [n for n, j in st["jobs"].items() if j["status"] not in run.TERMINAL]
+    if not open_jobs:
+        raise CtlError(f"{args.job} has no job to stop: every job is finished")
+    code = 0
+    for job in open_jobs:  # one decision, one reason: every open job ends blocked with the same --why
+        code = max(code, _stop_one(repo, slug, job, why))
+    print(f"{args.job}: stopped {len(open_jobs)} job(s); `ark retry {args.job}` puts them back")
+    return code
+
+
+def _retry_guard(repo: str, slug: str) -> dict:
+    """The run's state, or why it cannot run again: abandoned, aborted (the loop never steps it) or its area taken."""
     st = run.load(repo, slug)
     since = sweep.abandoned(st, datetime.now(timezone.utc))
     if since:
         raise CtlError(f"{repo}/{slug} was abandoned on {since.date().isoformat()}: plan it again")
-    j = st["jobs"][job]
-    if j["status"] != "blocked":
-        raise CtlError(f"{job} is not blocked: {j['status']}")
-    st = run.load(repo, slug)
+    if st.get("status") == "aborted":
+        raise CtlError(f"{repo}/{slug} was aborted: `ark retry` cannot bring it back, plan it again")
+    return st
+
+
+def _retry_roots(st: dict) -> list[str]:
+    """The blocked jobs that block on their own: a job blocked only because it waited on a blocked one is released
+    when that one is retried, so it is not a root."""
+    jobs = st["jobs"]
+    return [n for n, j in jobs.items() if j["status"] == "blocked"
+            and not (j.get("waiting_on") and jobs.get(j["waiting_on"], {}).get("status") == "blocked")]
+
+
+@_cmd
+def cmd_retry(args) -> int:
+    _writer()
+    whole = _is_run_spec(args.job)
+    if whole:
+        repo, slug = _resolve_run(args.job)
+        st = _retry_guard(repo, slug)
+        jobs = _retry_roots(st)
+        if not jobs:
+            raise CtlError(f"{args.job} has no blocked job")
+    else:
+        repo, slug, job = _resolve(args.job)
+        st = _retry_guard(repo, slug)
+        if st["jobs"][job]["status"] != "blocked":
+            raise CtlError(f"{job} is not blocked: {st['jobs'][job]['status']}")
+        jobs = [job]
     states = _states()
     clash = approve.area_clash(st, states) if st.get("closing") == "done" else None
     if clash:
         raise CtlError(f"{repo}/{slug} cannot run again: {clash}. Retry once that run ends.")
-    inbox.post(repo, slug, "retry", job=job)
-    print(f"{job} goes back to its step on the next cycle")
+    for job in jobs:
+        inbox.post(repo, slug, "retry", job=job)
+    if whole:
+        print(f"{args.job}: {len(jobs)} blocked job(s) go back to their step on the next cycle "
+              "(the ones that waited on them follow)")
+    else:
+        print(f"{jobs[0]} goes back to its step on the next cycle")
     return 0
 
 
@@ -408,12 +464,13 @@ def register(sub) -> None:
     s.add_argument("--kind", default="worker", help="worker (default), gate, review, euklides, intervene")
     s.add_argument("-f", "--follow", action="store_true", help="follow it while it runs")
     s.set_defaults(fn=cmd_logs)
-    s = sub.add_parser("stop", help="stop a job: it ends blocked")
-    s.add_argument("job", help="<job> or <repo>/<slug>:<job>")
+    s = sub.add_parser("stop", help="stop a job, or a whole run (<repo>/<slug>): it ends blocked")
+    s.add_argument("job", help="<job>, <repo>/<slug>:<job>, or <repo>/<slug> for every open job of the run")
     s.add_argument("--why", default="", help="one line for the record: it goes on the job's block reason")
     s.set_defaults(fn=cmd_stop)
-    s = sub.add_parser("retry", help="put a blocked job back on the step where it stopped")
-    s.add_argument("job", help="<job> or <repo>/<slug>:<job> (a closed run needs the long form)")
+    s = sub.add_parser("retry", help="put a blocked job, or every blocked job of a run, back on the step where it stopped")
+    s.add_argument("job", help="<job>, <repo>/<slug>:<job> (a closed run needs the long form), or <repo>/<slug> "
+                               "for every blocked job of the run")
     s.set_defaults(fn=cmd_retry)
     s = sub.add_parser("abort", help="end a blocked or waiting plan for good: it leaves the home screen for History")
     s.add_argument("plan", help="<repo>/<slug>")
