@@ -186,6 +186,9 @@ def cmd_stop(args) -> int:
     _writer()
     repo, slug, job = _resolve(args.job)
     d = paths.run_dir(repo, slug)
+    why = (getattr(args, "why", "") or "").strip()
+    if why:
+        inbox.post(repo, slug, "stop_why", job=job, why=why)  # before the stop: the block finds it waiting
     if any(n.startswith(job + ".") for n in proc.active(d)):
         return proc._stop_cli(d, job)
     status = run.load(repo, slug)["jobs"][job]["status"]
@@ -407,6 +410,7 @@ def register(sub) -> None:
     s.set_defaults(fn=cmd_logs)
     s = sub.add_parser("stop", help="stop a job: it ends blocked")
     s.add_argument("job", help="<job> or <repo>/<slug>:<job>")
+    s.add_argument("--why", default="", help="one line for the record: it goes on the job's block reason")
     s.set_defaults(fn=cmd_stop)
     s = sub.add_parser("retry", help="put a blocked job back on the step where it stopped")
     s.add_argument("job", help="<job> or <repo>/<slug>:<job> (a closed run needs the long form)")

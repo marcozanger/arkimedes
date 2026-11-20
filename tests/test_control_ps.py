@@ -101,6 +101,32 @@ def test_stop_ends_a_job_blocked(feature, monkeypatch, tmp_path, capsys):
     go.touch()
 
 
+def test_stop_why_rides_after_the_sentinel_on_the_blocked_reason(feature, monkeypatch, tmp_path, capsys):
+    go = hold(feature, monkeypatch, tmp_path)
+    capsys.readouterr()
+    code, out = ark(capsys, "stop", "shell", "--why", "main moved, base is stale")
+    assert code == 0 and "stopped" in out
+    drive(settled)
+    j = run.load("demo", SLUG)["jobs"]["shell"]
+    assert j["status"] == "blocked" and j["reason"] == f"{proc.STOPPED_BY_MARCO}: main moved, base is stale"
+    assert "stop_why" not in j
+    go.touch()
+
+
+def test_stop_why_reaches_a_job_that_was_already_blocked_by_the_stop(feature, monkeypatch, tmp_path, capsys):
+    go = hold(feature, monkeypatch, tmp_path)
+    ark(capsys, "stop", "shell")
+    drive(settled)
+    assert run.load("demo", SLUG)["jobs"]["shell"]["reason"] == proc.STOPPED_BY_MARCO
+    from ark import inbox
+    inbox.post("demo", SLUG, "stop_why", job="shell", why="too slow\nand noisy")
+    from ark import loop
+    st = run.load("demo", SLUG)
+    loop.apply_inbox(st)
+    assert st["jobs"]["shell"]["reason"] == f"{proc.STOPPED_BY_MARCO}: too slow and noisy"
+    go.touch()
+
+
 def test_stop_is_refused_to_a_runner_process(feature, monkeypatch, tmp_path, capsys):
     go = hold(feature, monkeypatch, tmp_path)
     capsys.readouterr()

@@ -332,6 +332,7 @@ case "$1 $2" in
       merged_502)  sed 's/OPEN/MERGED/' "$FAKE_DIR/view.json" > "$FAKE_DIR/v" && mv "$FAKE_DIR/v" "$FAKE_DIR/view.json"
                    echo "HTTP 502" >&2; exit 1 ;;
       merged_hang) sed 's/OPEN/MERGED/' "$FAKE_DIR/view.json" > "$FAKE_DIR/v" && mv "$FAKE_DIR/v" "$FAKE_DIR/view.json"
+                   touch "$FAKE_DIR/hanging"
                    sleep 30 ;;
       queued)      exit 0 ;;
       refused)     echo "not mergeable" >&2; exit 1 ;;
@@ -361,8 +362,26 @@ def fake_gh(ready, tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("mode", ["merged_ok", "merged_502", "merged_hang"])
 def test_gh_merged_reads_as_merged_however_the_call_ended_and_a_rerun_does_not_merge_again(fake_gh, mode, monkeypatch):
-    monkeypatch.setattr(forge, "GH_TIMEOUT", 1)
+    # A load-proof clock (as in test_forge): a call meant to finish gets a limit no loaded host can exceed;
+    # the hanging one is cut 1s after the fake says it hangs, not 1s after the process was spawned.
+    monkeypatch.setattr(forge, "GH_TIMEOUT", 120)
     st, repo, fd = fake_gh(mode)
+    real_popen = subprocess.Popen
+
+    def popen(cmd, *a, **k):
+        p = real_popen(cmd, *a, **k)
+        if cmd[0] != "gh":
+            return p
+        real_wait = p.wait
+
+        def wait(timeout=None):
+            end = time.monotonic() + 120
+            while not (fd / "hanging").exists() and p.poll() is None and time.monotonic() < end:
+                time.sleep(0.02)
+            return real_wait(timeout=1 if (fd / "hanging").exists() else timeout)
+        p.wait = wait
+        return p
+    monkeypatch.setattr(forge.subprocess, "Popen", popen)
     assert merge.merge(st, "shell", forge.GhForge(), repo) is None
     assert merge.merge(st, "shell", forge.GhForge(), repo) is None
     assert len((fd / "merges").read_text().splitlines()) == 1
