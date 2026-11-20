@@ -12,7 +12,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import amend, approve, ctl, desk, estimate, forge, monitor, paths, reporting, review, run, sweep, validate, versions
+from . import amend, approve, ctl, desk, estimate, forge, monitor, paths, replay, reporting, review, run, sweep, validate, versions
 from .plan import PlanError, load_plan, set_status, sha256_file
 from .report import minutes, usd
 
@@ -366,6 +366,7 @@ def main(argv=None) -> int:
     monitor.register(sub)
     reporting.register(sub)
     review.register(sub)
+    replay.register(sub)
     args = ap.parse_args(argv)
     return args.fn(args)
 
