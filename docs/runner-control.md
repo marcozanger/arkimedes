@@ -10,8 +10,8 @@ them.
 |---|---|
 | `ark ps` | per live run a header line (status, elapsed, eta, as in `ark status`), then its open jobs: status, tier, time, tokens, cost, last message; and the open questions |
 | `ark logs <job> [-f] [--kind worker]` | a process's log, readable; the archived one after it ends |
-| `ark stop <job> [--why "..."]` | stops its processes, and the job ends blocked; with no process, it blocks on the next cycle. `--why` puts one line after the reason (`stopped by Marco: <why>`), so history and `ark stats` say why |
-| `ark retry <job>` | puts a blocked job back on the step where it stopped (see `ark retry` below) |
+| `ark stop <job> [--why "..."]` | with `<repo>/<slug>` instead of a job it stops every open job of that run as one decision, with the same `--why`. For one job: stops its processes, and the job ends blocked; with no process, it blocks on the next cycle. `--why` puts one line after the reason (`stopped by Marco: <why>`), so history and `ark stats` say why |
+| `ark retry <job>` | puts a blocked job back on the step where it stopped (see `ark retry` below). With `<repo>/<slug>` it retries every blocked job that blocks on its own; the ones that only waited on them follow. An `aborted` run is refused, the loop never steps it |
 | `ark abort <repo>/<slug> [--why "<line>"]` | ends a blocked or waiting plan for good (see `ark abort` below) |
 | `ark steer <job> "<instruction>"` | stops the worker and resumes its session with the instruction |
 | `ark attach <job>` | hands the worker to you in an interactive session; on a clean exit it goes on to the gate |

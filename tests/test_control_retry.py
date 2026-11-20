@@ -115,3 +115,46 @@ def test_the_loop_drops_a_retry_of_an_abandoned_run(feature):
     assert st["jobs"]["shell"]["status"] == "blocked"
     assert any(e.endswith(f"a retry was dropped: the run was abandoned on {since}") for e in st["events"])
     assert not inbox.pending("demo", "notes-edit")
+
+
+def test_retry_of_a_whole_run_posts_one_retry_per_root_and_not_for_the_cascade(feature, capsys):
+    feature()
+    loop.cycle()
+    change_state(shell={"status": "blocked", "reason": "stopped by Marco", "blocked_from": "working"},
+                 ui={"status": "blocked", "reason": "a job it depends on is blocked: shell", "waiting_on": "shell"})
+    code, out = ark(capsys, "retry", "demo/notes-edit")
+    assert code == 0 and "1 blocked job" in out
+    posted = [i for i in inbox.pending("demo", "notes-edit") if i["kind"] == "retry"]
+    assert [i["job"] for i in posted] == ["shell"]
+    loop.cycle()
+    assert job_status("shell") != "blocked" and job_status("ui") != "blocked"
+
+
+def test_retry_of_a_whole_run_takes_every_separately_stopped_job(feature, capsys):
+    feature()
+    loop.cycle()
+    change_state(shell={"status": "blocked", "reason": "stopped by Marco", "blocked_from": "working"},
+                 ui={"status": "blocked", "reason": "stopped by Marco", "blocked_from": "working"})
+    code, out = ark(capsys, "retry", "demo/notes-edit")
+    assert code == 0 and "2 blocked job" in out
+    loop.cycle()
+    assert job_status("shell") != "blocked" and job_status("ui") != "blocked"
+
+
+def test_retry_of_a_whole_run_with_nothing_blocked_is_refused(feature, capsys):
+    feature()
+    loop.cycle()
+    code, out = ark(capsys, "retry", "demo/notes-edit")
+    assert code == 1 and "no blocked job" in out
+
+
+def test_retry_of_an_aborted_run_says_so_instead_of_doing_nothing(feature, capsys):
+    feature()
+    loop.cycle()
+    change_state(shell={"status": "blocked", "reason": "stopped by Marco", "blocked_from": "working"})
+    st = state()
+    st.update(status="aborted", closing="done")
+    run.save(st)
+    for target in ("demo/notes-edit", "demo/notes-edit:shell"):
+        code, out = ark(capsys, "retry", target)
+        assert code == 1 and "was aborted" in out
