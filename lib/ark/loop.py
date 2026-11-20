@@ -21,7 +21,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import accounts, approve, beat, brief, caps, claude, coachqueue, companions, daycap, euklides, forge as forge_mod, gitops, inbox, integrate, merge, notify, paths, proc, questions, reporting, reserved, run, sweep, usage, versions
+from . import accounts, approve, beat, brief, caps, claude, coachqueue, companions, daycap, euklides, forge as forge_mod, gitops, inbox, integrate, merge, notify, paths, progress, proc, questions, reporting, reserved, run, sweep, usage, versions
 from .globs import areas_overlap, match_any
 from .plan import load_plan, sha256_file
 from .validate import validate
@@ -289,6 +289,10 @@ def fail(c: Ctx, job: str, why: str, **extra) -> None:
     j, why = c.st["jobs"][job], _clean(why)
     j.update(failure=why, tier_attempts=j["tier_attempts"] + 1)
     run.event(c.st, f"{job} failed ({j['tier']}, attempt {j['tier_attempts']} at this tier): {why}")
+    red = extra.get("red") or {}
+    progress.note(j, red.get("tail") or why, red.get("head") or j.get("head"))
+    if progress.stalled(j):
+        why = f"{why}\n\nNo progress: {progress.why_stalled(j)}. A raise is not open."
     to_euklides(c, job, "failure", why, **extra)
 
 
@@ -300,6 +304,7 @@ def _block(st: dict, job: str, why: str, critical: bool = False) -> None:
     if note and why == proc.STOPPED_BY_MARCO:
         why = f"{why}: {_clean(note)[:300]}"
     j.update(status="blocked", reason=why, blocked_from=j["status"])
+    _raise_outcome(j, f"blocked: {why[:200]}")
     run.alert(st, f"{job} blocked: {why}", critical=critical)
 
 
@@ -725,8 +730,21 @@ def _raise(c: Ctx, job: str, e: dict, d: dict, decision) -> None:
         return
     j["usd_raised"] = round(j.get("usd_raised", 0) + d["usd"], 4)
     j["euklides_count"] = j.get("euklides_count", 0) + 1
-    run.event(c.st, f"{job}: Euklides raised its budget by ${d['usd']:.2f} (${j['usd_raised']:.2f} raised in all)")
+    last = (j.get("failures") or [{}])[-1]
+    j.setdefault("raises", []).append({"usd": d["usd"], "decision": decision, "ts": run.now(),
+                                       "diagnosis": d.get("diagnosis"), "spent": j["usd"],
+                                       "sig": last.get("sig"), "outcome": None})
+    run.event(c.st, f"{job}: Euklides raised its budget by ${d['usd']:.2f} (${j['usd_raised']:.2f} raised in all)"
+              + (f"; cause: {d['diagnosis']['cause'][:150]}; change: {d['diagnosis']['change'][:150]}"
+                 if d.get("diagnosis") else ""))
     _go_on(c.st, job, e, d["note"])
+
+
+def _raise_outcome(j: dict, outcome: str) -> None:
+    """A raise's result, once the job ends: merged, or what stopped it. Only raises still open are set."""
+    for r in j.get("raises") or []:
+        if r.get("outcome") is None:
+            r["outcome"] = outcome
 
 
 FIXED_PROPOSAL = ":stop, or say what the job should do"
@@ -1916,6 +1934,7 @@ def start_integrate(c: Ctx, job: str) -> None:
 
 def _merged(c: Ctx, job: str) -> None:
     c.st["jobs"][job]["status"] = "merged"
+    _raise_outcome(c.st["jobs"][job], "merged")
     run.event(c.st, f"{job}: merged into ark/{c.st['slug']}")
     try:
         gitops.remove_worktree(c.repo, c.wt(job))
@@ -1958,7 +1977,8 @@ def start_euklides(c: Ctx, job: str) -> None:
     e["allowed"] = euklides.allowed(e["trigger"], j, mj["budget"]["usd"], cfg["budget_margin"],  # fixed now: the
                                     kind=e.get("kind"), base_red=bool(e.get("base_red")),  # answer is checked
                                     fixes_used=c.st.get("fix_base_count", 0),  # against it
-                                    regate=regate_open(j, e))
+                                    regate=regate_open(j, e),
+                                    stalled=e["trigger"] == "failure" and progress.stalled(j))
     wt = c.wt(job)
     commits, changed = _branch_lists(wt, f"origin/{c.base}")
     prompt = brief.euklides_prompt(c.st, job, j, mj, c.plan, trigger=e["trigger"], situation=e["situation"],

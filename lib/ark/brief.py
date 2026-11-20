@@ -199,7 +199,11 @@ EUKLIDES_ACTIONS = {
              "pushes, then runs the job's gate.",
     "raise": "`raise`: add `usd` (a positive number) to this job's budget and let it go on; `note` says why the "
              "job is worth it and what it does next. Your margin is a total across all your raises on this job, not "
-             "per decision; a raise past what is left of it becomes a question to Marco, the only way past it.",
+             "per decision; a raise past what is left of it becomes a question to Marco, the only way past it. "
+             "Raise only when more money is likely to end the job: name in `diagnosis.cause` why it failed (the "
+             "failing tests or the error, read in the log) and in `diagnosis.change` what the next attempt does "
+             "differently. When you cannot name a change, the money would buy the same failure: `ask` instead. "
+             "The runner does not open `raise` after two failures the same on the same head.",
     "regate": "`regate`: the gate is red on a head that already passed its review or a gate, and the failures "
               "look like load (timeouts, timing, file watchers, tests that differ from run to run), not this "
               "job's code. The runner runs the same gate command again, alone on the machine, with no model and "
@@ -212,7 +216,7 @@ EUKLIDES_ACTIONS = {
 THEN_TEXT = {
     "go_on": "`go_on`: the worker gets your `proposal` as its instruction and goes on in the job's area.",
     "escalate": "`escalate`: a fresh worker one tier up, told your `note`.",
-    "widen": "`widen`: the files in `files` (1 to 3 exact paths) join this job's area; never a file inside a "
+    "widen": "`widen`: the files in `files` (exact paths, no globs) join this job's area; never a file inside a "
              "different job's area (the runner refuses that `ok`).",
     "fix_base": "`fix_base`: fix the integration branch with a small worker and one fix(base) commit; the job waits "
                 "on it. `note` says what to change.",
@@ -308,7 +312,8 @@ def euklides_prompt(st: dict, job_id: str, j: dict, mj: dict, plan: Plan, *, tri
            for first in [a for a in allowed if a != "ask"][:1]]),
         *([("or " if allowed != ["ask"] else "") + ASK_EXAMPLE] if "ask" in allowed else []),
         *(['A `widen` also carries `"files": ["<path>", ...]`.'] if "widen" in allowed else []),
-        *(['A `raise` also carries `"usd": <positive number>`.'] if "raise" in allowed else []),
+        *(['A `raise` also carries `"usd": <positive number>` and `"diagnosis": {"cause": "...", "change": "..."}`.']
+          if "raise" in allowed else []),
         *(['An `ask` whose `then` is `widen` also carries `"files"`; one whose `then` is `raise` carries `"usd"`.']
           if "ask" in allowed else []),
     ]) + "\n"

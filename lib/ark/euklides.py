@@ -40,7 +40,7 @@ MODES = {  # what an unset budget_margin and decisions_per_job mean in each mode
 MAX_FIX_BASE = 3  # base fixes per run without Marco, in legacy mode
 WIDEN_FILES = {"legacy": 3, "blast-radius": 20}  # files one widen may name
 TRIGGERS = ("failure", "question", "blocked")
-KEYS = {"action", "note", "undo", "why", "proposal", "files", "usd", "then", "gate"}
+KEYS = {"action", "note", "undo", "why", "proposal", "files", "usd", "then", "gate", "diagnosis"}
 THEN = ("go_on", "escalate", "widen", "fix_base", "raise", "accept", "stop")  # what Marco's ok to an ask makes the runner do
 RUN = "_run"  # the job name of a run-level decision: a job id never starts with "_"
 RUN_ACTIONS = ["raise", "ask"]
@@ -111,13 +111,14 @@ def run_margin_left(st: dict, planned: float, margin: float) -> float:
 
 
 def allowed(trigger: str, j: dict, budget_usd: float, margin: float = 0.0, kind: str | None = None,
-            base_red: bool = False, fixes_used: int = 0, regate: bool = False) -> list[str]:
+            base_red: bool = False, fixes_used: int = 0, regate: bool = False, stalled: bool = False) -> list[str]:
     """The actions open now, `ask` always last. Spending past the budget and its margin, changing the plan
     and blocking are never actions: they can only be proposed to Marco. `raise` opens when the job is at or
     over its budget (plus what was raised) and margin is left. `widen` opens only after an area block,
     `fix_base` only after an integration gate red on the base too (in legacy mode at most MAX_FIX_BASE a run).
     `fixed` (Euklides repaired the branch himself) is open while decisions remain. `regate` opens when the
-    loop says the red head passed before; it ignores the budget."""
+    loop says the red head passed before; it ignores the budget. `stalled` (the last two failures were the same
+    on the same head, lib/ark/progress.py) closes `raise`: more money would buy the same failure."""
     if j.get("euklides_count", 0) >= settings()["decisions_per_job"]:
         return ["ask"]
     under = j["usd"] < budget_usd + j.get("usd_raised", 0)
@@ -135,7 +136,7 @@ def allowed(trigger: str, j: dict, budget_usd: float, margin: float = 0.0, kind:
     if trigger == "blocked" and kind == "integrate" and base_red and (
             settings()["mode"] != "legacy" or fixes_used < MAX_FIX_BASE):
         out.append("fix_base")  # the base's fix is not paid from the job's budget
-    if not under and margin_left(j, budget_usd, margin) > 1e-9:
+    if not under and not stalled and margin_left(j, budget_usd, margin) > 1e-9:
         out.append("raise")
     if regate:
         out.append("regate")  # the same gate again, alone on the machine: no model, no budget
@@ -185,6 +186,14 @@ def _then(d: dict) -> dict | None:
     return {"then": then}
 
 
+def _diagnosis(v) -> dict | None:
+    """A raise's diagnosis: `cause` (why the job failed) and `change` (what the next attempt does differently)."""
+    if not isinstance(v, dict) or not {"cause", "change"} <= set(v):
+        return None
+    out = {k: _text(v[k], WHY_CHARS) for k in ("cause", "change")}
+    return out if all(out.values()) else None
+
+
 def parse(d, allowed_now: list[str], then: bool = True) -> dict | None:
     """The decision in an answer, or None when it is not usable now (the loop then asks Marco).
 
@@ -221,6 +230,9 @@ def parse(d, allowed_now: list[str], then: bool = True) -> dict | None:
         return None
     if action == "raise" and not _usd(usd):
         return None
+    diagnosis = _diagnosis(d.get("diagnosis")) if action == "raise" and then else None
+    if action == "raise" and then and diagnosis is None and settings()["mode"] != "legacy":
+        return None  # blast-radius: a job's raise says what failed and what the money changes
     files = _files(d.get("files")) if action == "widen" else None
     if action == "widen" and files is None:
         return None
@@ -232,7 +244,7 @@ def parse(d, allowed_now: list[str], then: bool = True) -> dict | None:
     if ask_then:
         return {**out, **ask_then}
     if action == "raise":
-        return {**out, "usd": round(float(usd), 4)}  # only a raise carries usd
+        return {**out, "usd": round(float(usd), 4), **({"diagnosis": diagnosis} if diagnosis else {})}
     return {**out, "files": files} if files else out  # only a widen carries files
 
 

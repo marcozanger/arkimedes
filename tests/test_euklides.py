@@ -185,7 +185,7 @@ def test_an_ask_without_a_valid_then_is_not_usable(raw):
 def test_widen_and_raise_actions_keep_their_own_files_and_usd():
     got = euklides.parse({"action": "widen", "note": "n", "files": ["a.py"]}, ["widen", "ask"])
     assert got["files"] == ["a.py"] and "then" not in got
-    got = euklides.parse({"action": "raise", "note": "n", "usd": 1}, ["raise", "ask"])
+    got = euklides.parse({"action": "raise", "note": "n", "usd": 1, "diagnosis": DIAG}, ["raise", "ask"])
     assert got["usd"] == 1.0 and "then" not in got
 
 
@@ -215,10 +215,32 @@ def test_the_journal_keeps_then_and_its_files_or_usd(ark_home):
 
 # ---- raise: Euklides may add budget, up to a share of what was planned -------------------------
 
-def test_a_raise_is_read_with_its_usd():
-    got = euklides.parse({"action": "raise", "usd": 0.4, "note": "one more attempt will do"}, ["raise", "ask"])
+DIAG = {"cause": "test_x times out on the fixture", "change": "the fixture is built once per module"}
+
+
+def test_a_raise_is_read_with_its_usd_and_diagnosis():
+    got = euklides.parse({"action": "raise", "usd": 0.4, "note": "one more attempt will do", "diagnosis": DIAG},
+                         ["raise", "ask"])
     assert got == {"action": "raise", "note": "one more attempt will do", "undo": None, "why": "",
-                   "proposal": None, "usd": 0.4}
+                   "proposal": None, "usd": 0.4, "diagnosis": DIAG}
+
+
+@pytest.mark.parametrize("diag", [None, "x", {"cause": "c"}, {"cause": " ", "change": "c"}, {"cause": 1, "change": "c"}])
+def test_a_raise_without_a_diagnosis_is_not_usable(diag):
+    d = {"action": "raise", "usd": 0.4, "note": "n", **({"diagnosis": diag} if diag is not None else {})}
+    assert euklides.parse(d, ["raise", "ask"]) is None
+
+
+def test_legacy_and_run_level_raises_need_no_diagnosis(ark_home):
+    d = {"action": "raise", "usd": 0.4, "note": "n"}
+    assert euklides.parse(d, ["raise", "ask"], then=False)["usd"] == 0.4
+    (ark_home / "workspace.json").write_text(json.dumps({"roots": [], "euklides": {"mode": "legacy"}}))
+    assert euklides.parse(d, ["raise", "ask"])["usd"] == 0.4
+
+
+def test_a_stalled_job_gets_no_raise():
+    assert "raise" in euklides.allowed("failure", job(usd=1.0), 1, 0.5)
+    assert "raise" not in euklides.allowed("failure", job(usd=1.0), 1, 0.5, stalled=True)
 
 
 @pytest.mark.parametrize("raw", [

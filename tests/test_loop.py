@@ -3338,7 +3338,12 @@ def at_euklides(tmp_path, trigger="failure", allowed=("retry", "escalate", "ask"
                 euklides={"trigger": trigger, "situation": situation, "kind": kind, "allowed": list(allowed)}, **over)
 
 
+DIAGNOSIS = {"cause": "the import fails", "change": "the next attempt fixes the import path"}
+
+
 def euk_answer(**d):
+    if d.get("action") == "raise":
+        d.setdefault("diagnosis", DIAGNOSIS)
     return receipt(json.dumps(d), usd=0.4)
 
 
@@ -3748,10 +3753,26 @@ def test_a_raise_within_the_margin_raises_the_job_and_it_goes_on(tmp_path, ark_h
     j = c.st["jobs"]["shell"]
     assert j["usd_raised"] == 0.4 and j["status"] == "needs_worker" and j["euklides_count"] == 1
     assert "one more attempt fixes the import" in j["resume_msg"]
-    assert any("raised" in e and "$0.40" in e for e in c.st["events"])
+    assert any("raised" in e and "$0.40" in e and "cause: the import fails" in e for e in c.st["events"])
     [row] = euklides_mod.decisions()
     assert row["action"] == "raise" and row["raise_usd"] == 0.4 and row["usd"] == 0.4
     assert not c.st.get("questions")
+    [r] = j["raises"]
+    assert r["usd"] == 0.4 and r["diagnosis"] == DIAGNOSIS and r["decision"] == row["id"] and r["outcome"] is None
+
+
+def test_a_raise_without_a_diagnosis_asks_marco(tmp_path, ark_home):
+    margin(ark_home, 0.5)
+    c = over_budget(tmp_path)
+    loop.on_euklides(c, "shell", receipt(json.dumps({"action": "raise", "usd": 0.4, "note": "more"}), usd=0.4))
+    j = c.st["jobs"]["shell"]
+    assert j.get("usd_raised", 0) == 0 and j["status"] == "waiting_answer"
+
+
+def test_a_raise_gets_its_outcome_when_the_job_ends(tmp_path, ark_home):
+    j = {"status": "working", "raises": [{"usd": 1, "outcome": None}, {"usd": 2, "outcome": "merged"}]}
+    loop._raise_outcome(j, "blocked: tests are red")
+    assert [r["outcome"] for r in j["raises"]] == ["blocked: tests are red", "merged"]
 
 
 def test_a_raise_past_the_margin_left_asks_marco_with_the_raise_as_proposal(tmp_path, ark_home):
@@ -3805,3 +3826,9 @@ def test_start_euklides_opens_raise_with_the_margin_and_states_it(tmp_path, ark_
     c.plan = None
     loop.start_euklides(c, "shell")
     assert "raise" in j["euklides"]["allowed"] and seen["margin_left"] == 0.5
+    red = {"kind": "gate", "head": "abc", "tail": "FAILED tests/test_a.py::test_one - boom"}
+    loop.fail(c, "shell", "job gate red", red=red)
+    loop.fail(c, "shell", "job gate red", red=red)  # the same failure on the same head
+    assert "No progress" in j["euklides"]["situation"] and "tests/test_a.py::test_one" in j["euklides"]["situation"]
+    loop.start_euklides(c, "shell")
+    assert "raise" not in j["euklides"]["allowed"]
