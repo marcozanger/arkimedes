@@ -213,6 +213,31 @@ EUKLIDES_ACTIONS = {
            "action his `ok` carries out (the runner writes it under the question as `Answer ok to: ...`). Pick "
            "the `then` that does your proposal:",
 }
+BLAST_ACTIONS = {  # blast-radius mode: no small-fix rule, the reserved list instead
+    "answer": "`answer`: `note` is the answer the worker gets.",
+    "widen": "`widen`: add the files in `files` (1 to 20 exact paths, no globs) to this job's area for this run, "
+             "when the job needs them. The runner refuses a file in another live job's area or on the reserved "
+             "list and asks Marco.",
+    "fix_base": "`fix_base`: the integration branch itself is red; a fix worker repairs it there in one fix(base) "
+                "commit; `note` says what is red and what to change. A fix over 3 files or 30 changed lines goes "
+                "through a reviewer before it lands.",
+}
+RESERVED_TEXT = """## What is yours
+
+Everything is your call except this reserved list, which is Marco's. The runner checks it on every change \
+you or a fix worker make; a hit becomes a question to him, so you never need to ask "just in case".
+- R1 what is delivered: spec scope, acceptance criteria, adding or dropping a job.
+- R2 weaker verification: deleting a test, a new skip / xfail, removing an assert, a looser gate. Fixing a \
+flaky test so it still checks the same thing, or a stricter gate, is yours.
+- R3 a file in the area of another live job, in this run or another run of the repo.
+- R4 money past twice the job's planned budget.
+- R5 public contracts: APIs, data migrations, new dependencies, lockfiles.
+- R6 irreversible actions outside the job's branch: other branches or PRs, the default branch, stopping a run.
+
+Every action that changes files or how the plan runs (answer, retry, escalate, unblock, fixed, widen, \
+fix_base) carries `undo`, how far a mistake would reach: `job` (this job only), `run` (more jobs of this \
+run), `plan` (what is delivered, R1) or `contract` (a public contract, R5). `plan` and `contract` make your \
+decision a question to Marco with the same action; say in `why` what makes it reach that far."""
 THEN_TEXT = {
     "go_on": "`go_on`: the worker gets your `proposal` as its instruction and goes on in the job's area.",
     "escalate": "`escalate`: a fresh worker one tier up, told your `note`.",
@@ -233,8 +258,13 @@ THEN_RULE = ("Only these: a way out the runner cannot carry out (a PR to main, a
 ASK_EXAMPLE = ('{"action": "ask", "note": "...", "undo": null, "why": "...", "proposal": "...", "then": "go_on"}')
 
 
-def _actions(allowed: list[str]) -> str:
-    items = [EUKLIDES_ACTIONS[a] for a in allowed]
+def _legacy() -> bool:
+    from . import euklides  # euklides reads settings through paths; imported late to keep brief light
+    return euklides.settings()["mode"] == "legacy"
+
+
+def _actions(allowed: list[str], legacy: bool = True) -> str:
+    items = [EUKLIDES_ACTIONS[a] if legacy else BLAST_ACTIONS.get(a, EUKLIDES_ACTIONS[a]) for a in allowed]
     if "ask" in allowed:
         items[allowed.index("ask")] += "\n" + "\n".join(f"  - {t}" for t in THEN_TEXT.values()) + "\n  " + THEN_RULE
     return _bullets(items)
@@ -281,6 +311,7 @@ def euklides_prompt(st: dict, job_id: str, j: dict, mj: dict, plan: Plan, *, tri
                     allowed: list[str], report: str | None, dependents: list[str], worktree, log,
                     lessons: str, earlier=(), base_check: str | None = None, base: str = "",
                     commits=(), changed=(), usd_raised: float = 0, margin_left: float = 0) -> str:
+    legacy = _legacy()
     return "\n\n".join([
         f"{TRIGGER_TEXT[trigger]} Decide how the job goes on. Read the worktree and the log if it helps; when "
         "you can repair the branch yourself, do it and reply `fixed` if that is open.",
@@ -304,9 +335,10 @@ def euklides_prompt(st: dict, job_id: str, j: dict, mj: dict, plan: Plan, *, tri
         _untrusted("Worker report (may be missing or from an earlier attempt)", (report or "")[-4000:] or "(none)"),
         "## Lessons from Marco's reviews",
         "Lessons: " + (("\n" + lessons) if lessons else "(none yet)"),
+        *([] if legacy else [RESERVED_TEXT]),
         "## Decide",
         "Actions open now: " + ", ".join(allowed),
-        _actions(allowed),
+        _actions(allowed, legacy),
         "End with one line of JSON and nothing after it:",
         *(['{"action": "' + first + '", "note": "...", "undo": "job", "why": "...", "proposal": null}'
            for first in [a for a in allowed if a != "ask"][:1]]),

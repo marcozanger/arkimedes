@@ -1092,7 +1092,7 @@ def test_a_review_finding_with_bad_text_is_stored_clean(tmp_path, name, dirty, c
 @pytest.mark.parametrize("name,dirty,clean", BAD_TEXT)
 def test_a_euklides_note_with_bad_text_is_stored_clean(tmp_path, ark_home, name, dirty, clean):
     c = at_euklides(tmp_path, session="s")
-    loop.on_euklides(c, "shell", receipt(json.dumps({"action": "retry", "note": dirty})))
+    loop.on_euklides(c, "shell", euk_answer(action="retry", note=dirty))
     j = c.st["jobs"]["shell"]
     assert j["note"].endswith(clean) and clean in j["resume_msg"] and dirty not in j["resume_msg"]
 
@@ -1405,7 +1405,7 @@ def test_a_verdict_that_is_neither_clean_nor_fix_is_no_verdict(tmp_path):
 
 def test_an_escalation_starts_its_review_rounds_over(tmp_path, ark_home):
     c = at_euklides(tmp_path, review_rounds=2, session="s")
-    loop.on_euklides(c, "shell", receipt(json.dumps({"action": "escalate", "note": "harder"})))
+    loop.on_euklides(c, "shell", euk_answer(action="escalate", note="harder"))
     j = c.st["jobs"]["shell"]
     assert j["tier"] == "T2" and j["review_rounds"] == 0 and j["session"] is None
 
@@ -3346,6 +3346,8 @@ DIAGNOSIS = {"cause": "the import fails", "change": "the next attempt fixes the 
 def euk_answer(**d):
     if d.get("action") == "raise":
         d.setdefault("diagnosis", DIAGNOSIS)
+    if d.get("action") in euklides_mod.UNDO_THEN:
+        d.setdefault("undo", "job")
     return receipt(json.dumps(d), usd=0.4)
 
 

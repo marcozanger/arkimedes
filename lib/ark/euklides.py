@@ -42,6 +42,13 @@ WIDEN_FILES = {"legacy": 3, "blast-radius": 20}  # files one widen may name
 TRIGGERS = ("failure", "question", "blocked")
 KEYS = {"action", "note", "undo", "why", "proposal", "files", "usd", "then", "gate", "diagnosis"}
 THEN = ("go_on", "escalate", "widen", "fix_base", "raise", "accept", "stop")  # what Marco's ok to an ask makes the runner do
+# blast-radius: the actions that change files or how the plan runs carry `undo`, how far a mistake reaches.
+# job / run: Euklides' call. plan (R1, what is delivered) / contract (R5, a public contract): an ask whose
+# `then` is the same action, so Marco's ok carries it out.
+UNDO = ("job", "run", "plan", "contract")
+UNDO_THEN = {"answer": "go_on", "retry": "go_on", "unblock": "go_on", "fixed": "go_on", "escalate": "escalate",
+             "widen": "widen", "fix_base": "fix_base"}
+UNDO_REACH = {"plan": "what the plan delivers", "contract": "a public contract"}
 RUN = "_run"  # the job name of a run-level decision: a job id never starts with "_"
 RUN_ACTIONS = ["raise", "ask"]
 NOTE_CHARS, WHY_CHARS, PROPOSAL_CHARS = 1000, 300, 1000
@@ -220,9 +227,15 @@ def parse(d, allowed_now: list[str], then: bool = True) -> dict | None:
     if not isinstance(why, str) or (proposal is not None and not isinstance(proposal, str)):
         return None
     why, proposal = why.strip()[:WHY_CHARS], (_text(proposal, PROPOSAL_CHARS) or None)
-    undo = d.get("undo") if action == "answer" else None
-    if action == "answer" and undo not in ("job", "plan"):
-        return None
+    legacy = settings()["mode"] == "legacy"
+    if legacy:  # only an answer says its reach, job or plan
+        undo = d.get("undo") if action == "answer" else None
+        if action == "answer" and undo not in ("job", "plan"):
+            return None
+    else:
+        undo = d.get("undo") if action in UNDO_THEN else None
+        if action in UNDO_THEN and undo not in UNDO:
+            return None
     if action == "ask" and not proposal:
         return None
     usd = d.get("usd")
@@ -236,10 +249,15 @@ def parse(d, allowed_now: list[str], then: bool = True) -> dict | None:
     files = _files(d.get("files")) if action == "widen" else None
     if action == "widen" and files is None:
         return None
-    if action == "answer" and undo == "plan":
+    if legacy and action == "answer" and undo == "plan":
         return {"action": "ask", "note": f"Euklides would answer this, but a wrong answer would reach beyond "
                                          f"this job: {why or 'no reason given'}",
                 "undo": "plan", "why": why, "proposal": note, "then": "go_on"}
+    if not legacy and undo in UNDO_REACH:  # R1 / R5: Marco's; his ok carries out the same action
+        out = {"action": "ask", "note": f"Euklides would {action} here, but a mistake would reach "
+                                        f"{UNDO_REACH[undo]}: {why or 'no reason given'}",
+               "undo": undo, "why": why, "proposal": note, "then": UNDO_THEN[action]}
+        return {**out, "files": files} if action == "widen" else out
     out = {"action": action, "note": note, "undo": undo, "why": why, "proposal": proposal}
     if ask_then:
         return {**out, **ask_then}

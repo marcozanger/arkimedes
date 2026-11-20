@@ -36,7 +36,7 @@ def test_widen_files_must_be_one_to_twenty_plain_relative_paths(files):
 def test_a_widen_keeps_its_files_and_other_actions_drop_them():
     d = {"action": "widen", "note": "n", "undo": "job", "why": "w", "proposal": None, "files": [" docs/a.md "]}
     assert euklides.parse(d, ["widen", "ask"])["files"] == ["docs/a.md"]
-    d = {"action": "unblock", "note": "n", "files": ["docs/a.md"]}
+    d = {"action": "unblock", "note": "n", "undo": "job", "files": ["docs/a.md"]}
     assert "files" not in euklides.parse(d, ["unblock", "ask"])
 
 
