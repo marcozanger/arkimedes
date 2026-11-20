@@ -111,6 +111,10 @@ integration gate on the result, and moves the base only when it is green. Nothin
 
 - A textual clash goes to a refresh worker, paid from the plan's `merge` budget (spent across all refreshes of the
   run) or, when the plan has none, `limits.refresh_usd` in the workspace settings (default 3, per refresh).
+- A merge that is textually clean but whose gate is red (main alone is green) is looked at once more, a minute later
+  and through the usual gate slot and load brake, before any worker is paid. Green the second time: the refresh lands
+  and the gate is recorded as flaky (decisions, report, coach queue). Red again: it goes to the worker as above. A
+  textual conflict is deterministic and never gets the second look.
 - A red main (the gate fails on main itself) never moves the base and is not a job's failure: Marco hears it once,
   `ark ps` shows `main red at <sha8>`, and the jobs wait with `waiting: main is red` until main moves again.
 - Marco also hears a refresh that failed while the base was not green, and a clash the budget cannot cover.

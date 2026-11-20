@@ -1075,6 +1075,9 @@ def _plan_heavy(st: dict) -> bool:
     return any(j.get("heavy") for j in st["jobs"].values())
 
 
+RECHECK_WAIT = 60  # seconds before the one automatic re-check of a refresh whose gate was red on a clean merge
+
+
 def _new_refresh(n: int, main: str | None, before: str | None) -> dict:
     return {"n": n, "main": main, "status": "needs_check", "base": None, "merged": None, "conflict": [], "tail": "",
             "seen_before": before}
@@ -1309,6 +1312,8 @@ def on_refresh(c: Ctx, name: str, r: dict) -> None:
         live.update(status="needs_land", base=out["base"], merged=out["merged"])
         if st.pop("main_red", None):
             run.event(st, f"main is green again at {main[:8]}")
+        if live.get("first_tail") is not None:  # red on the first look, green on the second: flaky, no worker paid
+            _flaky_refresh(st, live, main)
         return run.event(st, f"refresh {live['n']}: main@{main[:8]} merged into {c.base} is green")
     if out.get("main_red") is True:
         if st.get("main_red") != main:
@@ -1316,6 +1321,13 @@ def on_refresh(c: Ctx, name: str, r: dict) -> None:
             run.alert(st, f"main is red at {main[:8]}; the base stays at {base[:8]}\n{tail[-800:]}")
         st["main_red"] = main
         return _finish_refresh(st, live, "main_red")
+    if not out.get("conflict") and out.get("main_red") is False and live.get("first_tail") is None:
+        # The merge is textually clean and only the gate is red, with main alone green: it may be the machine (load,
+        # a timing test) and not the merge. One more look, through the usual gate slot and load brake, before a
+        # worker is paid for it. A conflict is deterministic, so it never comes here.
+        live.update(status="needs_check", first_tail=tail[-1200:], not_before=time.time() + RECHECK_WAIT)
+        return run.event(st, f"refresh {live['n']}: the gate is red on main@{main[:8]} merged into {c.base}, with a "
+                             "clean merge; checking once more before any worker")
     if out.get("conflict") or out.get("main_red") is False:
         conflict = [_printable(str(f)) for f in out.get("conflict") or []]
         live.update(status="clash", conflict=conflict, merged=out.get("merged"), base=out.get("base"),
@@ -1324,6 +1336,16 @@ def on_refresh(c: Ctx, name: str, r: dict) -> None:
         return run.event(st, f"refresh {live['n']}: main@{main[:8]} clashes with the run ({what})")
     _finish_refresh(st, live, "failed", str(out.get("reason") or "ark-refresh failed")
                     + (f"\n{tail[-800:]}" if tail else ""))
+
+
+def _flaky_refresh(st: dict, live: dict, main: str) -> None:
+    """A refresh gate red on the first look and green on the second: recorded like a job's flaky gate, so the
+    decisions, the report and the coach queue show it."""
+    st.setdefault("flaky", []).append({"job": _refresh_name(live), "kind": "integrate", "head": main,
+                                       "note": "the integration gate of a base refresh was red on the first look and "
+                                               "green on the second, with no change",
+                                       "tail": str(live["first_tail"])[-600:], "at": run.now()})
+    run.event(st, f"refresh {live['n']}: green on the second look: its integration gate is recorded as flaky")
 
 
 def _on_refresh_worker(c: Ctx, live: dict, r: dict) -> None:

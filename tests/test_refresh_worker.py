@@ -172,3 +172,37 @@ def test_skip_keeps_the_base_until_main_moves_again(feature, monkeypatch):
     drive(lambda: state()["refreshes"][-1]["result"] == "landed" and state()["refreshes"][-1]["n"] > n)
     gitops.fetch(repo)
     assert gitops.is_ancestor(repo, newer, gitops.remote_sha(repo, f"ark/{SLUG}"))
+
+
+# ---- a gate red once on a clean merge is looked at again before a worker is paid ----------------------
+
+def test_a_gate_red_once_on_a_clean_merge_is_flaky_and_starts_no_worker(feature, monkeypatch, tmp_path):
+    monkeypatch.setattr(loop, "REFRESH_EVERY", 0)
+    monkeypatch.setattr(loop, "RECHECK_WAIT", 0)
+    flag = tmp_path / "flaked"
+    gate = f"if [ -e m.txt ] && [ ! -e {flag} ]; then touch {flag}; echo flaked-once; exit 1; fi"  # red once, with main in
+    repo, _ = feature(manifest(integration_gate=gate))
+    drive(lambda: state()["base_green"])
+    main = commit_on(repo, "master", "m.txt", "from main\n")      # touches no file of the run: a clean merge
+    drive(lambda: any(r["result"] == "landed" and r["main"] == main for r in state()["refreshes"]))
+    st = state()
+    assert not [n for n in proc_names(st) if n.startswith("_refresh-") and n.endswith(".worker")]
+    assert st["flaky"][-1]["kind"] == "integrate" and st["flaky"][-1]["job"].startswith("_refresh-")
+    assert any("checking once more before any worker" in e for e in st["events"])
+    assert refresh_question(st) is None
+
+
+def test_a_gate_red_twice_on_a_clean_merge_goes_to_the_worker_after_one_more_look(feature, monkeypatch):
+    monkeypatch.setattr(loop, "REFRESH_EVERY", 0)
+    monkeypatch.setattr(loop, "RECHECK_WAIT", 0)
+    monkeypatch.setenv("FAKE_REFRESH", "nothing")
+    gate = "if [ -e x.txt ] && [ -e y.txt ]; then echo both-present; exit 1; fi"  # red only on the merge of both
+    repo, _ = feature(manifest(integration_gate=gate))
+    drive(lambda: state()["base_green"])
+    commit_on(repo, f"ark/{SLUG}", "x.txt", "run\n")
+    commit_on(repo, "master", "y.txt", "main\n")
+    drive(lambda: refresh_question(state()))
+    st = state()
+    assert sum("checking once more before any worker" in e for e in st["events"]) == 1   # one look, not a loop
+    assert [n for n in proc_names(st) if n.startswith("_refresh-") and n.endswith(".worker")]
+    assert not st.get("flaky")
