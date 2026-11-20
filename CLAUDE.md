@@ -17,6 +17,7 @@ session (a hook enforces `approvals/`), and only Marco approves plans, from a te
 ## Developing Arkimedes
 
 - Tests: `.venv/bin/python -m pytest -q` (setup: `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`).
+- `bin/ark-test job|full`: the suite for a plan's gates (`job` runs only what the change can affect, `full` everything); see `docs/runner-control.md`.
 - `templates/` holds the spec.md and plan.md formats; `ark validate` is the plan contract.
 - `specs/` holds Arkimedes' own design docs.
 

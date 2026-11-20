@@ -75,6 +75,8 @@ Talk to Marco in Spanish. Write every file in English.
    frontmatter, and a short what-and-why in `## Context`. Run `ark validate <repo>/<slug>` and fix
    every problem until it prints `OK`. The template's task layout (grouped by PR) wins over the
    flat `T<n>` headings the writing-plans skill describes.
+   When the repo has `bin/ark-test` (Arkimedes' own), the manifest uses `gate: bin/ark-test job` per job and
+   `integration_gate: bin/ark-test full`.
 6. **Plan review page.** Copy the plan to the scratchpad and translate its prose to Spanish. Run
    `ark estimate <repo>/<slug>` and add its output to the copy, right before `## Tasks` (after
    `## Decisions`), under the heading `## Presupuesto`: the table per job, the totals, the end-to-end time and the plan's
