@@ -5,8 +5,8 @@ import { readFileSync } from "node:fs";
 const html = readFileSync(process.argv[2], "utf8");
 const START = "// ---- logic: start ----", END = "// ---- logic: end ----";
 const code = html.split(START)[1].split(END)[0];
-const { decide, titleFor, readPlan, segments, etaText, jobLeft, spendText, flagOf, parseRoute, sameKey, dur, draftHeader, docSections, jobCount, homeGroups, topTier, dashTime, dashRows, dashStats, dashDelta, dashKpis, dashSpendByDay, dashStatusCounts, dashSpendByRepo, dashActive, dashSet, dashFresh, dashIsFresh, dashChoices, diffClass } =
-  new Function(code + "; return {decide, titleFor, readPlan, segments, etaText, jobLeft, spendText, flagOf, parseRoute, sameKey, dur, draftHeader, docSections, jobCount, homeGroups, topTier, dashTime, dashRows, dashStats, dashDelta, dashKpis, dashSpendByDay, dashStatusCounts, dashSpendByRepo, dashActive, dashSet, dashFresh, dashIsFresh, dashChoices, diffClass};")();
+const { decide, titleFor, readPlan, segments, etaText, jobLeft, spendText, flagOf, parseRoute, sameKey, dur, draftHeader, docSections, jobCount, homeGroups, topTier, dashTime, dashRows, dashStats, dashDelta, dashKpis, dashSpendByDay, dashStatusCounts, dashSpendByRepo, dashActive, dashSet, dashFresh, dashIsFresh, dashChoices, diffClass, graphLayout, nodeState, liveEdges, manifestJobs, eventTime, lastEventFor, sinceText, tickerData, spendRate } =
+  new Function(code + "; return {decide, titleFor, readPlan, segments, etaText, jobLeft, spendText, flagOf, parseRoute, sameKey, dur, draftHeader, docSections, jobCount, homeGroups, topTier, dashTime, dashRows, dashStats, dashDelta, dashKpis, dashSpendByDay, dashStatusCounts, dashSpendByRepo, dashActive, dashSet, dashFresh, dashIsFresh, dashChoices, diffClass, graphLayout, nodeState, liveEdges, manifestJobs, eventTime, lastEventFor, sinceText, tickerData, spendRate};")();
 
 const fresh = () => ({ lastAlert: null, loopDown: false, stale: false, done: [], unread: [] });
 const ok = { stale: false, error: "" };
@@ -371,3 +371,79 @@ assert.equal(diffClass("@@ -1,2 +1,2 @@"), "diff-hunk");
 assert.equal(diffClass("+++ v2"), "diff-file");
 assert.equal(diffClass("--- v1"), "diff-file");
 assert.equal(diffClass(" context"), "");
+
+// constellation: layout by dependency depth, node states, the edges that carry dots
+{
+  const J = (id, after = [], status = "pending", over = {}) => ({ id, after, status, budget: { minutes: 20, usd: 2 }, usd: 0, ...over });
+  assert.deepEqual(graphLayout([]), []);
+  assert.deepEqual(graphLayout(undefined), []);
+  const jobs = [J("a"), J("b"), J("c", ["a", "b"]), J("d", ["c"]), J("e", ["a", "ghost"])];
+  const L = graphLayout(jobs), at = id => L.find(n => n.id === id);
+  assert.deepEqual(L.map(n => n.id), ["a", "b", "c", "d", "e"]);
+  assert.deepEqual([at("a").col, at("b").col, at("c").col, at("d").col, at("e").col], [0, 0, 1, 2, 1]);   // a broken after is ignored
+  assert.deepEqual([at("a").row, at("b").row, at("a").rows, at("c").row, at("e").row, at("c").rows], [0, 1, 2, 0, 1, 2]);
+  assert.ok(L.every(n => n.cols === 3));
+  const cyc = graphLayout([J("x", ["y"]), J("y", ["x"])]);        // a cycle does not hang
+  assert.equal(cyc.length, 2);
+  assert.ok(cyc.every(n => n.col <= 2));
+
+  const now = Date.parse("2026-11-07T10:00:00Z");
+  const all = [J("m", [], "merged", { usd: 1.2 }), J("w", ["m"], "working", { started: "2026-11-07T09:48:00Z", usd: 0.4 }),
+    J("q", ["m"], "waiting_answer"), J("p", ["w"], "pending"), J("x", ["m"], "blocked"),
+    J("h", ["m"], "pending", { wait: { kind: "machine", text: "Not started: the run waits for the machine." } })];
+  const st = id => nodeState(all.find(j => j.id === id), now, all);
+  assert.deepEqual(["m", "w", "q", "p", "x", "h"].map(id => st(id).state), ["done", "run", "ask", "wait", "fail", "hold"]);
+  assert.equal(st("m").text, "merged · $1.20");
+  assert.equal(st("m").progress, 1);
+  assert.equal(st("w").text, "12m · $0.40");
+  assert.ok(Math.abs(st("w").progress - 12 / 20) < 1e-9);       // no forecast: elapsed over budget minutes
+  assert.equal(st("q").text, "waits for you");
+  assert.equal(st("p").text, "waits for w");
+  assert.equal(st("h").text, "waits for the machine");
+  assert.equal(st("p").progress, 0);
+  const fc = J("f", [], "working", { started: "2026-11-07T09:00:00Z", fc_end: "2026-11-07T10:00:00Z" });
+  assert.equal(nodeState(fc, now, [fc]).progress, 0.97);           // never full while it runs
+  const late = J("l", [], "working", { started: "2026-11-07T09:30:00Z", fc_end: "2026-11-07T10:30:00Z" });
+  assert.ok(Math.abs(nodeState(late, now, [late]).progress - 0.5) < 1e-9);   // elapsed over the forecast span
+  assert.equal(nodeState(J("z"), now).state, "wait");               // no plan jobs given: still a state, no throw
+  assert.equal(nodeState(null, now).state, "wait");
+
+  assert.deepEqual(liveEdges(all), [["m", "w"]]);
+  assert.deepEqual(liveEdges([]), []);
+  assert.deepEqual(liveEdges([J("a", ["nobody"], "working")]), []);
+}
+
+// live constellation: draft graphs, events, the ticker and the spend line
+{
+  const plan = "# P\n\n## Run manifest\n\n```yaml\nsetup: x\njobs:\n  - id: a\n    budget: { minutes: 10 }\n  - id: b\n    after: [a]\n  - id: \"c\"\n    after:\n      - a\n      - b\n    gate: g\n```\n\n## After\n- id: nope\n";
+  assert.deepEqual(manifestJobs(plan), [{ id: "a", after: [] }, { id: "b", after: ["a"] }, { id: "c", after: ["a", "b"] }]);
+  assert.deepEqual(manifestJobs("# no manifest"), []);
+  assert.deepEqual(manifestJobs(null), []);
+
+  assert.equal(eventTime("2026-11-07T06:05:00+00:00 job model started"), Date.parse("2026-11-07T06:05:00Z"));
+  assert.equal(eventTime("no time here"), null);
+  const ev = ["2026-11-20T16:38:19+00:00 · started: ark/x", "2026-11-20T17:02:07+00:00 · move-main: worker T2 attempt 1",
+    "2026-11-20T17:03:00+00:00 · move-main-2: other", "2026-11-20T17:04:00+00:00 job api merged"];
+  assert.equal(lastEventFor(ev, "move-main"), "move-main: worker T2 attempt 1");   // not move-main-2
+  assert.equal(lastEventFor(ev, "api"), "job api merged");
+  assert.equal(lastEventFor(ev, "nobody"), "");
+
+  assert.equal(sinceText(8.9), "8s");
+  assert.equal(sinceText(243), "4m 03s");
+  assert.equal(sinceText(7500), "2h 05m");
+  assert.equal(sinceText(-5), "0s");
+
+  const now = Date.parse("2026-11-07T10:00:00Z");
+  const t = tickerData([
+    { status: "running", cost: { tokens: 1000 }, events: ["2026-11-07T09:58:00+00:00 x", "2026-11-07T11:00:00+00:00 future"],
+      jobs: [{ id: "a", status: "working" }, { id: "b", status: "merged", finished: "2026-11-07T08:00:00Z" },
+             { id: "c", status: "pending" }, { id: "d", status: "reviewing", wait: { kind: "machine" } }] },
+    { status: "done", cost: { tokens: 99 }, events: [], jobs: [{ id: "e", status: "merged", finished: "2026-11-01T08:00:00Z" }] },
+  ], now);
+  assert.deepEqual(t, { running: 1, tokens: 1000, mergedToday: 1, lastEvent: Date.parse("2026-11-07T09:58:00Z") });
+  assert.equal(tickerData([], now).lastEvent, null);
+
+  const sr = spendRate([{ t: now - 90e3, usd: 0 }, { t: now - 60e3, usd: 1 }, { t: now - 30e3, usd: 1.5 }, { t: now, usd: 1.4 }], now);
+  assert.deepEqual(sr.map(x => x.rate), [1, 0]);   // the 90s-old poll is out; spend never goes negative
+  assert.deepEqual(spendRate([], now), []);
+}

@@ -9,7 +9,7 @@
 :root {
   --bg: #f8fafc; --raised: #ffffff; --line: #d3dbe5; --fg: #17212e; --muted: #5a6979;
   --accent: #1f55c4; --accent-soft: #dfe8fa; --attn: #b56d00; --attn-soft: #fbeed5; --attn-ink: #8a5200;
-  --bad: #b3261e; --bad-soft: #fae3e1; --ok: #17693f; --ok-soft: #dcf0e4; --wait: #5d6b7b; --wait-soft: #e6ebf1;
+  --bad: #b3261e; --bad-soft: #fae3e1; --ok: #17693f; --ok-soft: #dcf0e4; --wait: #5d6b7b; --wait-soft: #e6ebf1; --grid: #e3e9f0;
   --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
   --mono: ui-monospace, Menlo, monospace;
   --shadow: 0 6px 24px rgba(23, 33, 46, .14);
@@ -18,7 +18,7 @@
 @media (prefers-color-scheme: dark) { :root {
   --bg: #171e28; --raised: #1f2835; --line: #313d4d; --fg: #e7ecf2; --muted: #9aa8b8;
   --accent: #86aaf5; --accent-soft: #24355a; --attn: #f0b95c; --attn-soft: #413016; --attn-ink: #f0b95c;
-  --bad: #f29b94; --bad-soft: #4a2220; --ok: #79d2a0; --ok-soft: #1c3b2a; --wait: #a3b0bf; --wait-soft: #2a3442;
+  --bad: #f29b94; --bad-soft: #4a2220; --ok: #79d2a0; --ok-soft: #1c3b2a; --wait: #a3b0bf; --wait-soft: #2a3442; --grid: #263140;
   --shadow: 0 6px 24px rgba(0, 0, 0, .45);
   color-scheme: dark;
 } }
@@ -231,7 +231,7 @@ h1, h2, h3 { margin: 0; }
 .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .filters select, .filters input { border: 1px solid var(--line); background: var(--raised); border-radius: 6px; padding: 5px 8px; min-width: 0; }
 .filters input { flex: 1 1 180px; }
-.hrow { display: grid; grid-template-columns: 110px minmax(0, 2fr) 80px 50px minmax(0, 1.2fr) minmax(0, 1.2fr); gap: 6px 14px; align-items: center; padding: 9px 14px; border-top: 1px solid var(--line); color: var(--fg); text-decoration: none; font-size: 13px; font-variant-numeric: tabular-nums; min-width: 0; }
+.hrow { display: grid; grid-template-columns: 110px minmax(0, 2fr) 80px 50px minmax(0, 1.2fr) minmax(0, 1.2fr) 122px; gap: 6px 14px; align-items: center; padding: 9px 14px; border-top: 1px solid var(--line); color: var(--fg); text-decoration: none; font-size: 13px; font-variant-numeric: tabular-nums; min-width: 0; }
 .hrow:first-child { border-top: 0; }
 a.hrow:hover { background: var(--wait-soft); }
 .hrow > span { min-width: 0; overflow-wrap: anywhere; }
@@ -326,6 +326,43 @@ a.hrow:hover { background: var(--wait-soft); }
   .dact .why { text-align: left; }
   .fab { right: 12px; bottom: 12px; max-width: calc(100vw - 24px); }
 }
+/* live motion: one switch for every animation on the page */
+.motion { justify-self: start; margin-top: 4px; border: 1px solid var(--line); background: var(--raised); border-radius: 6px; padding: 3px 9px; font-size: 12px; color: var(--muted); }
+.motion:hover { background: var(--wait-soft); color: var(--fg); }
+body.paused *, body.paused *::before, body.paused *::after { animation-play-state: paused !important; }
+/* constellation */
+.graph { display: block; width: 100%; }
+.graph-box { background: var(--raised); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; margin: 8px 0 12px; }
+/* live constellation: job panel, ticker, minis, band, stream, eye */
+.jpanel { position: fixed; top: 0; right: 0; bottom: 0; width: min(420px, 100vw); z-index: 40; background: var(--raised); border-left: 1px solid var(--line); box-shadow: -18px 0 40px rgba(0,0,0,.18); padding: 16px 18px 24px; overflow-y: auto; display: grid; gap: 14px; align-content: start; animation: jp-in .22s ease-out; }
+@keyframes jp-in { from { transform: translateX(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+.jpanel .jp-top { display: flex; gap: 8px; align-items: flex-start; justify-content: space-between; }
+.jpanel h2 { font-size: 16px; font-weight: 650; overflow-wrap: anywhere; }
+.jpanel .jp-close { border: 1px solid var(--line); background: var(--bg); color: var(--fg); border-radius: 6px; padding: 2px 9px; font-size: 16px; cursor: pointer; }
+.jpanel .tail { font: 12px/1.45 var(--mono); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; overflow-wrap: anywhere; color: var(--fg); }
+.jpanel .meter { display: grid; gap: 4px; font-size: 12.5px; }
+.jpanel .meter .mtrack { height: 6px; border-radius: 3px; background: var(--wait-soft); overflow: hidden; }
+.jpanel .meter .mtrack i { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
+.jpanel .meter.over .mtrack i { background: var(--bad); }
+.jpanel .kv2 { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 12px; font-size: 12.5px; }
+.jpanel .kv2 > span:nth-child(odd) { color: var(--muted); }
+.ticker { display: flex; flex-wrap: wrap; gap: 4px 16px; font: 12px var(--mono); color: var(--muted); padding: 6px 0 2px; font-variant-numeric: tabular-nums; }
+.ticker b { color: var(--fg); font-weight: 600; }
+.ticker .dot { margin-right: 4px; }
+.pline > .mini-box, .pline > .waitnote { grid-column: 1 / -1; }
+.pline .waitnote { margin: 0; padding: 4px 8px; font-size: 12px; justify-self: start; }
+.mini-box { display: block; width: 100%; border-radius: 6px; background: var(--bg); border: 1px solid var(--line); overflow: hidden; }
+.hmini { display: block; width: 120px; border-radius: 6px; background: var(--bg); border: 1px solid var(--line); overflow: hidden; }
+.enter { animation: slide-in .5s ease-out; }
+@keyframes slide-in { from { transform: translateY(-8px); opacity: 0; background: var(--accent-soft); } 60% { background: var(--accent-soft); } to { transform: none; opacity: 1; } }
+.band { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(0, 1.6fr); gap: 10px; }
+.band .spark-box { background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; display: grid; gap: 4px; min-width: 0; }
+.spark { display: block; width: 100%; height: 48px; }
+.eukhead { display: flex; align-items: center; gap: 14px; }
+.eye { width: 64px; height: 40px; display: block; }
+.watching { display: flex; flex-wrap: wrap; gap: 6px; }
+@media (max-width: 900px) { .band { grid-template-columns: repeat(2, minmax(0, 1fr)); } .band .spark-box { grid-column: 1 / -1; } }
+@media (max-width: 760px) { .jpanel { width: 100vw; border-left: 0; } .hmini { display: none; } }
 </style>
 </head>
 <body data-screen="home">
@@ -486,7 +523,7 @@ function flagOf(p) {
   if (p.status === "held" || (p.questions || []).length || jobs.some(j => WAITS_FOR_YOU.includes(j.status))) return "Waits for you";
   return "";
 }
-const TABS = ["timeline", "questions", "events", "decisions", "spec", "plan"];
+const TABS = ["timeline", "questions", "events", "decisions", "spec", "plan", "changes"];
 function parseRoute(hash) {
   let h = "";
   try { h = decodeURIComponent(String(hash || "").replace(/^#\/?/, "")); } catch (e) { return { screen: "home" }; }
@@ -708,6 +745,124 @@ function diffClass(line) {
 }
 // a route splits repo/slug at its first "/", a plan at its real repo: compare the joined key so nested repos (clients/tarifario) match
 const sameKey = (a, b) => `${a.repo}/${a.slug}` === `${b.repo}/${b.slug}`;
+
+// ---- constellation: a plan's jobs as a graph. Column = longest chain of `after` behind the job (an `after` that
+// names no job is ignored); rows spread in job order inside a column. The walk is capped at the job count, so a
+// cycle cannot hang the page.
+function graphLayout(jobs) {
+  const list = Array.isArray(jobs) ? jobs.filter(j => j && j.id != null) : [];
+  const ids = new Set(list.map(j => j.id)), byId = new Map(list.map(j => [j.id, j])), memo = new Map();
+  const depth = (j, seen) => {
+    if (memo.has(j.id)) return memo.get(j.id);
+    if (seen > list.length) return 0;
+    const deps = (j.after || []).filter(a => ids.has(a) && a !== j.id);
+    const d = deps.length ? 1 + Math.max(...deps.map(a => depth(byId.get(a), seen + 1))) : 0;
+    const c = Math.min(d, list.length - 1);
+    memo.set(j.id, c);
+    return c;
+  };
+  const cols = list.map(j => depth(j, 0)), n = list.length ? Math.max(...cols) + 1 : 0;
+  const count = {}, seen = {};
+  cols.forEach(c => { count[c] = (count[c] || 0) + 1; });
+  return list.map((j, i) => { const c = cols[i], row = seen[c] = (seen[c] ?? -1) + 1; return { id: j.id, col: c, row, cols: n, rows: count[c] }; });
+}
+// One node's look: the state, a 0..1 progress and the one line under its name. Only the job's own fields are read.
+const ASKS = ["waiting_answer", "attached"];
+function nodeState(job, now, jobs) {
+  const j = job || {}, usd = Number(j.usd || 0), cash = `$${usd.toFixed(2)}`;
+  const t = iso => (iso ? Date.parse(iso) : NaN);
+  if (j.status === "merged") return { state: "done", progress: 1, text: `merged · ${cash}` };
+  if (j.status === "blocked") return { state: "fail", progress: 0, text: `blocked · ${cash}` };
+  if (ASKS.includes(j.status)) return { state: "ask", progress: 0, text: "waits for you" };
+  if (j.status === "waiting_fix") return { state: "hold", progress: 0, text: "waits for a fix" };
+  if (j.wait && j.wait.kind === "machine") return { state: "hold", progress: 0, text: "waits for the machine" };
+  if (j.status === "pending" || j.status === "waiting_dep" || !j.status) {
+    if (j.wait && j.wait.kind === "answer") return { state: "ask", progress: 0, text: "waits for you" };
+    const others = Array.isArray(jobs) ? jobs : [];
+    const pend = (j.after || []).find(a => { const o = others.find(x => x && x.id === a); return o && o.status !== "merged"; });
+    return { state: "wait", progress: 0, text: pend ? `waits for ${pend}` : j.wait && j.wait.kind === "queue" ? "next in line" : "not started" };
+  }
+  const s = t(j.started), e = t(j.fc_end), el = Number.isNaN(s) ? 0 : Math.max(0, now - s);
+  const span = !Number.isNaN(e) && !Number.isNaN(s) && e > s ? e - s : ((j.budget && j.budget.minutes) || 0) * 60e3;
+  const progress = span > 0 ? Math.min(0.97, el / span) : 0;
+  return { state: "run", progress, text: `${dur(el / 60e3)} · ${cash}` };
+}
+// The edges that carry moving dots: from a merged job into a job that now runs.
+function liveEdges(jobs) {
+  const list = Array.isArray(jobs) ? jobs.filter(Boolean) : [], byId = new Map(list.map(j => [j.id, j]));
+  const runs = j => j.status && !["merged", "blocked", "pending", "waiting_dep", "waiting_fix", ...ASKS].includes(j.status) && !(j.wait && j.wait.kind === "machine");
+  const out = [];
+  list.forEach(j => { if (runs(j)) (j.after || []).forEach(a => { const s = byId.get(a); if (s && s.status === "merged") out.push([a, j.id]); }); });
+  return out;
+}
+// The jobs a draft plan declares, from the yaml under "## Run manifest": [{ id, after }]. Reads `after: [a, b]`
+// and a list of `- a` lines under `after:`; anything else in the manifest is ignored. No manifest returns [].
+function manifestJobs(text) {
+  const lines = String(text || "").split("\n");
+  let i = lines.findIndex(l => /^##\s+Run manifest/i.test(l));
+  if (i < 0) return [];
+  const jobs = [];
+  let cur = null, inAfter = false, inJobs = false;
+  for (i += 1; i < lines.length; i++) {
+    const l = lines[i];
+    if (/^##\s/.test(l)) break;
+    if (/^jobs:\s*$/.test(l)) { inJobs = true; continue; }
+    if (!inJobs) continue;
+    if (/^\S/.test(l) && !/^```/.test(l)) { inJobs = false; continue; }
+    let m = l.match(/^\s*-\s+id:\s*["']?([^"'\s#]+)/);
+    if (m) { cur = { id: m[1], after: [] }; jobs.push(cur); inAfter = false; continue; }
+    if (!cur) continue;
+    m = l.match(/^\s+after:\s*\[(.*)\]/);
+    if (m) { cur.after = m[1].split(",").map(x => x.trim().replace(/^["']|["']$/g, "")).filter(Boolean); inAfter = false; continue; }
+    if (/^\s+after:\s*$/.test(l)) { inAfter = true; continue; }
+    m = l.match(/^\s+-\s+["']?([^"'\s#]+)/);
+    if (inAfter && m) { cur.after.push(m[1]); continue; }
+    if (/^\s+\w+:/.test(l)) inAfter = false;
+  }
+  return jobs;
+}
+// An event line is "<iso time> <text>": its time in ms, or null.
+function eventTime(e) {
+  const t = Date.parse(String(e || "").split(" ")[0]);
+  return Number.isNaN(t) ? null : t;
+}
+// The newest event that names the job as a whole word ("move-main: worker T2 attempt 1"), without its time; "" when none.
+function lastEventFor(events, id) {
+  const re = new RegExp(`(^|[^\\w-])${String(id).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`);
+  const body = e => String(e).replace(/^\S+\s+(·\s+)?/, "");
+  const hit = (events || []).slice().reverse().find(e => re.test(body(e)));
+  return hit ? body(hit) : "";
+}
+// "8s", "4m 03s", "2h 05m": a running count of seconds.
+function sinceText(sec) {
+  const v = Math.max(0, Math.floor(sec)), h = Math.floor(v / 3600), m = Math.floor(v / 60) % 60, x = v % 60;
+  const two = n => String(n).padStart(2, "0");
+  return h ? `${h}h ${two(m)}m` : m ? `${m}m ${two(x)}s` : `${x}s`;
+}
+// The ticker's numbers from a snapshot: running jobs, tokens of the plans in flight, jobs merged today, newest event.
+function tickerData(plans, now) {
+  const today = new Date(now).toDateString();
+  const live = (plans || []).filter(p => ["running", "held"].includes(p.status));
+  const jobs = (plans || []).flatMap(p => p.jobs || []);
+  const RUN = ["merged", "blocked", "pending", "waiting_dep", "waiting_answer", "attached", "waiting_fix"];
+  const times = (plans || []).flatMap(p => (p.events || []).map(eventTime)).filter(t => t != null && t <= now);
+  return {
+    running: live.flatMap(p => p.jobs || []).filter(j => j.status && !RUN.includes(j.status) && !(j.wait && j.wait.kind === "machine")).length,
+    tokens: live.reduce((a, p) => a + Number((p.cost && p.cost.tokens) || 0), 0),
+    mergedToday: jobs.filter(j => j.status === "merged" && j.finished && new Date(j.finished).toDateString() === today).length,
+    lastEvent: times.length ? Math.max(...times) : null,
+  };
+}
+// Spend per minute between consecutive polls, for the polls of the last minute: [{ t, rate }] (USD per minute).
+function spendRate(samples, now) {
+  const s = (samples || []).filter(x => x && now - x.t <= 70e3);
+  const out = [];
+  for (let i = 1; i < s.length; i++) {
+    const dt = (s[i].t - s[i - 1].t) / 60e3;
+    if (dt > 0) out.push({ t: s[i].t, rate: Math.max(0, s[i].usd - s[i - 1].usd) / dt });
+  }
+  return out;
+}
 // ---- logic: end ----
 
 async function api(path, opts = {}) {
@@ -745,7 +900,7 @@ function phaseChip(j) {
   const usual = ph.kind === "testing" && ph.usual_min ? ph.usual_min : null;
   const slow = usual != null && m != null && m > usual * 2;
   const tip = `${PHASE_LABEL[ph.kind]}${m != null ? ` for ${dur(m)}` : ""}${usual ? `, usually about ${dur(usual)}` : ""}`;
-  return `<span class="pill phase ${ph.kind}${slow ? " slow" : ""}" title="${esc(tip)}"><i></i>${esc(PHASE_LABEL[ph.kind])}${m != null ? ` · ${esc(dur(m))}` : ""}${slow ? " · slow" : ""}</span>`;
+  return `<span class="pill phase ${ph.kind}${slow ? " slow" : ""}" title="${esc(tip)}"><i></i>${esc(PHASE_LABEL[ph.kind])}${m != null ? ` · <span data-tick="dur" data-since="${ms(ph.since)}">${esc(dur(m))}</span>` : ""}${slow ? " · slow" : ""}</span>`;
 }
 // Why a job or a run is not moving, in words (the machine is busy, a job before it, your answer).
 const WAIT_LABEL = { machine: "Waiting for the machine", dependency: "Waiting for a job", answer: "Waiting for you", queue: "Next in line" };
@@ -804,7 +959,7 @@ function menu() {
   const nav = (href, label, on, extra = "") => `<a class="nav" href="${href}"${on ? ' aria-current="page"' : ""}>${label}${extra}</a>`;
   const n = waitsCount();
   const loop = S.data ? (S.data.loop.alive
-    ? `<span><i class="dot"></i>Loop running · beat ${esc(clock(ms(S.data.loop.last_beat)))}</span>`
+    ? `<span><i class="dot"></i>Loop running · beat <span data-tick="ago" data-at="${ms(S.data.loop.last_beat)}">${esc(sinceText((NOW() - ms(S.data.loop.last_beat)) / 1e3))}</span> ago</span>`
     : '<span><i class="dot off"></i>Loop stopped</span>') : "<span>Loop: no data yet</span>";
   const mc = machineLoad(S.data && S.data.machine);
   return `<span class="brand">Arkimedes</span>
@@ -812,15 +967,337 @@ function menu() {
     ${nav("#/dashboard", "Dashboard", r === "dashboard")}
     ${nav("#/history", "History", r === "history")}
     ${nav("#/euklides", "Euklides", r === "euklides")}
-    <div class="foot">${loop}${mc}<span>Today: $${esc(todaySpend().toFixed(2))}</span></div>`;
+    <div class="foot">${loop}${mc}<span>Today: $${esc(todaySpend().toFixed(2))}</span>${motionButton()}</div>`;
+}
+
+// ---- live engine: the motion switch and the one drawing loop every graph shares
+// Motion starts paused when the system asks for less motion. Paused: CSS animations stop (body.paused) and no
+// frame advances. The choice lives only in this page, it is not stored.
+let motion = matchMedia("(prefers-reduced-motion: reduce)").matches ? "paused" : "running";
+const moving = () => motion === "running";
+function setMotion(run) {
+  motion = run ? "running" : "paused";
+  document.body.classList.toggle("paused", !run);
+  document.body.dataset.motion = motion;
+  const b = document.getElementById("motion");
+  if (b) { b.textContent = run ? "Pause motion" : "Resume motion"; b.setAttribute("aria-pressed", String(!run)); }
+  wake();
+}
+const motionButton = () => `<button class="motion" id="motion" type="button" aria-pressed="${!moving()}">${moving() ? "Pause motion" : "Resume motion"}</button>`;
+
+// Colors come from the CSS tokens, read again when the theme changes, so light and dark need no canvas code.
+const COL = {};
+const COL_KEYS = ["bg", "raised", "line", "fg", "muted", "accent", "accent-soft", "attn", "attn-soft", "bad", "bad-soft", "ok", "ok-soft", "wait", "wait-soft", "grid"];
+function readColors() {
+  const s = getComputedStyle(document.documentElement);
+  COL_KEYS.forEach(k => { COL[k] = s.getPropertyValue(`--${k}`).trim() || "#888"; });
+}
+readColors();
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { readColors(); GRAPHS.forEach(g => g.draw(clockT())); });
+
+const GRAPHS = new Set();
+let raf = 0, t0Frame = performance.now();
+const clockT = () => (performance.now() - t0Frame) / 1000;
+const LIVE_STATES = ["run", "ask", "hold"];
+function frame() {
+  raf = 0;
+  const T = clockT();
+  GRAPHS.forEach(g => { if (!g.canvas.isConnected) g.destroy(); else g.draw(T); });
+  wake();
+}
+// Start the loop only while motion runs and some mounted graph has something alive; otherwise it stays idle.
+function wake() {
+  const busy = moving() && [...GRAPHS].some(g => g.live());
+  if (busy && !raf) raf = requestAnimationFrame(frame);
+  if (!busy && raf) { cancelAnimationFrame(raf); raf = 0; }
+  document.body.dataset.loop = raf ? "on" : "off";
+}
+
+const rrect = (c, x, y, w, h, r) => { c.beginPath(); if (c.roundRect) c.roundRect(x, y, w, h, r); else c.rect(x, y, w, h); };
+const bez = (a, b, cc, d, t) => { const u = 1 - t; return u * u * u * a + 3 * u * u * t * b + 3 * u * t * t * cc + t * t * t * d; };
+function fitText(c, s, w) {
+  s = String(s);
+  if (c.measureText(s).width <= w) return s;
+  while (s.length > 1 && c.measureText(`${s}…`).width > w) s = s.slice(0, -1);
+  return `${s}…`;
+}
+function label(c, s, x, y, o = {}) {
+  c.font = `${o.w || 500} ${o.s || 12}px ${o.mono ? "ui-monospace, Menlo, monospace" : "-apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif"}`;
+  c.fillStyle = o.c || COL.fg;
+  c.textAlign = o.a || "left";
+  c.fillText(o.max ? fitText(c, s, o.max) : s, x, y);
+}
+const stateColor = st => ({ done: COL.ok, run: COL.accent, ask: COL.attn, hold: COL.attn, fail: COL.bad })[st] || COL.wait;
+
+// Where each node sits for a canvas of W x H: columns left to right by dependency depth.
+function graphPlace(jobs, W, H, mini) {
+  const L = graphLayout(jobs);
+  const cols = L.length ? L[0].cols : 0, colW = cols ? W / cols : W;
+  const nw = mini ? 0 : Math.max(72, Math.min(136, colW - 18)), nh = mini ? 0 : 58;
+  // a wide mini graph (Home) names its jobs under the dots when every column and row has room for it
+  const rows = Math.max(1, ...L.map(n => n.rows)), labeled = mini && cols > 0 && W / Math.max(1, cols) >= 84 && (H - 24) / rows >= 34;
+  const padX = labeled ? Math.min(60, W / Math.max(1, cols) / 2) : mini ? 14 : nw / 2 + 10, padY = labeled ? 14 : mini ? 12 : nh / 2 + 10;
+  const padB = labeled ? 42 : padY;
+  return { nw, nh, labeled, colW: cols > 1 ? (W - 2 * padX) / (cols - 1) : W, nodes: L.map(n => ({
+    id: n.id,
+    x: cols > 1 ? padX + n.col / (cols - 1) * (W - 2 * padX) : W / 2,
+    y: padY + (n.rows > 1 ? n.row / (n.rows - 1) * (H - padY - padB) : (H - padY - padB) / 2),
+  })) };
+}
+
+// Draw one plan's graph. opts: mini (dots), still (nothing moves, nodes unlit unless they finished), hover (a job id).
+function drawGraph(c, jobs, opts) {
+  const W = opts.w, H = opts.h, T = opts.T || 0, mini = !!opts.mini, still = !!opts.still || !moving();
+  const list = Array.isArray(jobs) ? jobs.filter(j => j && j.id != null) : [];
+  c.clearRect(0, 0, W, H);
+  if (!list.length) return { nodes: [], nw: 0, nh: 0 };
+  const P = graphPlace(list, W, H, mini), at = new Map(P.nodes.map(n => [n.id, n]));
+  const now = opts.now || NOW();
+  const S0 = new Map(list.map(j => [j.id, opts.unlit ? { state: "wait", progress: 0, text: "" }
+    : opts.closed ? { state: j.status === "merged" ? "done" : "fail", progress: j.status === "merged" ? 1 : 0, text: j.status || "" } : nodeState(j, now, list)]));
+  const hw = mini ? 6 : P.nw / 2;
+  if (!mini) {
+    c.strokeStyle = COL.grid; c.lineWidth = 1; c.beginPath();
+    for (let x = 0.5; x < W; x += 40) { c.moveTo(x, 0); c.lineTo(x, H); }
+    for (let y = 0.5; y < H; y += 40) { c.moveTo(0, y); c.lineTo(W, y); }
+    c.stroke();
+  }
+  const live = new Set(opts.unlit ? [] : liveEdges(list).map(e => e.join(">")));
+  list.forEach(b => (b.after || []).forEach(a => {
+    const p = at.get(a), q = at.get(b.id);
+    if (!p || !q || a === b.id) return;
+    const x0 = p.x + hw, x1 = q.x - hw, m = (x1 - x0) / 2, sb = S0.get(b.id).state, sa = S0.get(a).state;
+    c.beginPath(); c.moveTo(x0, p.y); c.bezierCurveTo(x0 + m, p.y, x1 - m, q.y, x1, q.y);
+    if (sb === "wait" || sb === "ask" || sb === "hold") {
+      c.setLineDash([4, 6]); c.lineDashOffset = sa === "run" && !still ? -T * 14 : 0;
+      c.strokeStyle = sb === "wait" ? COL.line : stateColor(sb); c.lineWidth = mini ? 1 : 1.5; c.globalAlpha = 1;
+    } else {
+      c.setLineDash([]); c.strokeStyle = sb === "done" ? COL.ok : sb === "fail" ? COL.bad : COL.accent;
+      c.globalAlpha = sb === "done" ? 0.45 : 0.6; c.lineWidth = mini ? 1.4 : 2;
+    }
+    c.stroke(); c.setLineDash([]); c.globalAlpha = 1;
+    if (live.has(`${a}>${b.id}`) && !still) {
+      const k = mini ? 3 : 5;
+      for (let i = 0; i < k; i++) {
+        const t = (T * 0.5 + i / k) % 1;
+        c.globalAlpha = Math.sin(t * Math.PI); c.fillStyle = COL.accent; c.beginPath();
+        c.arc(bez(x0, x0 + m, x1 - m, x1, t), bez(p.y, p.y, q.y, q.y, t), mini ? 2.2 : 3.5, 0, 7); c.fill();
+      }
+      c.globalAlpha = 1;
+    }
+  }));
+  list.forEach((j, i) => {
+    const { x, y } = at.get(j.id), s = S0.get(j.id), col = stateColor(s.state), hot = s.state === "run" || s.state === "ask" || s.state === "hold";
+    if (mini) {
+      if (hot && !still) {
+        const k = (T * 0.9 + i * 0.3) % 1;
+        c.globalAlpha = (1 - k) * 0.6; c.strokeStyle = col; c.lineWidth = 1.5; c.beginPath(); c.arc(x, y, 6 + k * 9, 0, 7); c.stroke(); c.globalAlpha = 1;
+      }
+      c.beginPath(); c.arc(x, y, 6, 0, 7);
+      c.fillStyle = s.state === "wait" ? COL.raised : col; c.fill();
+      if (s.state === "wait") { c.lineWidth = 1.5; c.strokeStyle = COL.line; c.stroke(); }
+      if (P.labeled) {
+        label(c, j.id, x, y + 21, { a: "center", s: 11, mono: true, c: s.state === "wait" ? COL.muted : COL.fg, max: Math.max(40, P.colW - 10) });
+        if (s.text && s.state !== "wait") label(c, s.text, x, y + 34, { a: "center", s: 10, c: COL.muted, max: Math.max(40, P.colW - 10) });
+      }
+      return;
+    }
+    const w = P.nw, h = P.nh, X = x - w / 2, Y = y - h / 2, hov = opts.hover === j.id;
+    if (hot && !still) {
+      const k = (T * 0.8 + i * 0.3) % 1;
+      c.save(); c.globalAlpha = (1 - k) * 0.5; c.strokeStyle = col; c.lineWidth = 2;
+      rrect(c, X - k * 14, Y - k * 14, w + k * 28, h + k * 28, 10 + k * 8); c.stroke(); c.restore();
+    }
+    c.save();
+    if (hot && !still) { c.shadowColor = col; c.shadowBlur = 12 + Math.sin(T * 4) * 4; }
+    rrect(c, X, Y, w, h, 10); c.fillStyle = COL.raised; c.fill(); c.restore();
+    rrect(c, X, Y, w, h, 10);
+    c.lineWidth = hot || hov ? 2 : 1.4;
+    c.strokeStyle = hov ? COL.accent : s.state === "wait" ? COL.line : col;
+    if (s.state === "wait") c.setLineDash([4, 4]);
+    c.stroke(); c.setLineDash([]);
+    const ix = X + 16, iy = Y + 20;
+    if (s.state === "done") {
+      c.fillStyle = COL["ok-soft"]; c.beginPath(); c.arc(ix, iy, 8, 0, 7); c.fill();
+      c.strokeStyle = COL.ok; c.lineWidth = 2; c.beginPath(); c.moveTo(ix - 3.5, iy); c.lineTo(ix - 1, iy + 3); c.lineTo(ix + 4, iy - 3); c.stroke();
+    } else if (s.state === "run") {
+      c.strokeStyle = COL["accent-soft"]; c.lineWidth = 3; c.beginPath(); c.arc(ix, iy, 7, 0, 7); c.stroke();
+      const a = still ? 0 : T * 5;
+      c.strokeStyle = COL.accent; c.beginPath(); c.arc(ix, iy, 7, a, a + 1.6); c.stroke();
+    } else if (s.state === "wait") {
+      c.strokeStyle = COL.wait; c.lineWidth = 1.6; c.beginPath(); c.arc(ix, iy, 7, 0, 7); c.stroke();
+    } else {
+      c.save(); c.globalAlpha = 0.18; c.fillStyle = col; c.beginPath(); c.arc(ix, iy, 8, 0, 7); c.fill(); c.restore();
+      label(c, s.state === "ask" ? "?" : s.state === "fail" ? "!" : "‖", ix, iy + 4.5, { s: 12, w: 800, c: col, a: "center" });
+    }
+    const tier = (j.tier_path && j.tier_path.length ? j.tier_path[j.tier_path.length - 1] : j.tier) || "";
+    label(c, tier, X + w - 10, Y + 16, { a: "right", s: 9.5, w: 700, mono: 1, c: COL.muted });
+    label(c, j.id, X + 30, Y + 24, { s: 12.5, w: 700, max: w - 36 - (tier ? 22 : 0) });
+    label(c, s.text, X + 12, Y + 42, { s: 10.5, mono: 1, c: s.state === "wait" ? COL.muted : col, max: w - 20 });
+    rrect(c, X + 10, Y + h - 9, w - 20, 3, 2); c.fillStyle = COL["wait-soft"]; c.fill();
+    if (s.progress > 0) { rrect(c, X + 10, Y + h - 9, (w - 20) * s.progress, 3, 2); c.fillStyle = col; c.fill(); }
+  });
+  return P;
+}
+
+// Mount a graph on a canvas: size it for the device pixel ratio, draw it, and join the shared loop.
+// opts: mini, still, unlit, onPick(id). Returns { hit(x, y), destroy() }. Never throws on an empty or broken plan.
+function mountGraph(canvas, plan, opts = {}) {
+  const jobs = (plan && Array.isArray(plan.jobs) ? plan.jobs : []).filter(j => j && j.id != null);
+  const mini = !!opts.mini, L = graphLayout(jobs);
+  const rows = L.reduce((a, n) => Math.max(a, n.rows), 1);
+  const W = Math.max(120, Math.round(canvas.parentElement ? canvas.parentElement.clientWidth : 600) || 600);
+  const H = mini ? Number(opts.h) || 96 : Math.max(170, rows * 78 + 30);
+  const r = Math.min(2, window.devicePixelRatio || 1);
+  canvas.width = Math.round(W * r); canvas.height = Math.round(H * r);
+  canvas.style.height = `${H}px`;
+  const c = canvas.getContext("2d");
+  let hover = null, placed = { nodes: [], nw: 0, nh: 0 };
+  const g = {
+    canvas,
+    live: () => !opts.still && !opts.unlit && !opts.closed && jobs.some(j => LIVE_STATES.includes(nodeState(j, NOW(), jobs).state)),
+    draw(T) {
+      try { c.setTransform(r, 0, 0, r, 0, 0); placed = drawGraph(c, jobs, { w: W, h: H, T, mini, still: opts.still, unlit: opts.unlit, closed: opts.closed, hover }); }
+      catch (e) { c.setTransform(1, 0, 0, 1, 0, 0); c.clearRect(0, 0, canvas.width, canvas.height); }
+    },
+    hit(x, y) {
+      const n = placed.nodes.find(p => (mini ? Math.hypot(p.x - x, p.y - y) <= 10 : Math.abs(p.x - x) <= placed.nw / 2 && Math.abs(p.y - y) <= placed.nh / 2));
+      return n ? n.id : null;
+    },
+    destroy() { GRAPHS.delete(g); canvas.onmousemove = canvas.onclick = canvas.onmouseleave = null; },
+  };
+  if (opts.onPick) {
+    const xy = e => { const b = canvas.getBoundingClientRect(); return [e.clientX - b.left, e.clientY - b.top]; };
+    canvas.onmousemove = e => { const id = g.hit(...xy(e)); if (id !== hover) { hover = id; canvas.style.cursor = id ? "pointer" : ""; g.draw(clockT()); } };
+    canvas.onmouseleave = () => { if (hover) { hover = null; canvas.style.cursor = ""; g.draw(clockT()); } };
+    canvas.onclick = e => { const id = g.hit(...xy(e)); if (id) opts.onPick(id); };
+  }
+  GRAPHS.add(g);
+  g.draw(clockT());
+  wake();
+  return g;
+}
+// After each render: drop the graphs that left the page and mount every <canvas data-graph="repo/slug">.
+function mountGraphs() {
+  GRAPHS.forEach(g => { if (!g.canvas.isConnected) g.destroy(); });
+  document.querySelectorAll("canvas[data-graph]").forEach(cv => {
+    if (cv.dataset.mounted) return;
+    cv.dataset.mounted = "1";
+    const p = cv.dataset.src === "draft" ? { jobs: draftJobs() } : plans().find(x => keyOf(x) === cv.dataset.graph);
+    mountGraph(cv, p, { mini: cv.dataset.mini === "1", still: cv.dataset.still === "1", unlit: cv.dataset.unlit === "1",
+      closed: cv.dataset.closed === "1", h: cv.dataset.h, onPick: cv.dataset.pick ? id => openJob(id) : null });
+  });
+  document.querySelectorAll("canvas[data-spark]").forEach(drawSpark);
+  document.querySelectorAll("canvas[data-eye]").forEach(cv => { if (!cv.dataset.mounted) { cv.dataset.mounted = "1"; mountEye(cv); } });
+  wake();
+}
+const draftJobs = () => (S.draft && S.draft.data && S.draft.data.plan ? manifestJobs(S.draft.data.plan.text) : []);
+// A node click or a Gantt row opens the job panel; focus goes to its close button.
+function openJob(id) { S.job = id; S.focusPanel = true; render(true); }
+function closeJob() {
+  const id = S.job;
+  S.job = null; render(true);
+  const row = id && document.querySelector(`[data-job="${CSS.escape(id)}"]`);
+  if (row) row.focus();
+}
+function sizeCanvas(cv, H) {
+  const W = Math.max(60, Math.round(cv.parentElement ? cv.parentElement.clientWidth : 200) || 200), r = Math.min(2, window.devicePixelRatio || 1);
+  cv.width = Math.round(W * r); cv.height = Math.round(H * r); cv.style.height = `${H}px`;
+  const c = cv.getContext("2d"); c.setTransform(r, 0, 0, r, 0, 0);
+  return { c, W, H };
+}
+// The Dashboard's spend-per-minute line, from the polls this page has seen; redrawn on every render.
+function drawSpark(cv) {
+  const { c, W, H } = sizeCanvas(cv, 48), pts = spendRate(S.spend, NOW());
+  c.clearRect(0, 0, W, H);
+  c.strokeStyle = COL.grid; c.lineWidth = 1; c.beginPath(); c.moveTo(0, H - 0.5); c.lineTo(W, H - 0.5); c.stroke();
+  if (pts.length < 2) { label(c, "waiting for a second poll", W / 2, H / 2 + 4, { a: "center", s: 11, c: COL.muted }); return; }
+  const max = Math.max(0.01, ...pts.map(p => p.rate)), t0 = NOW() - 60e3;
+  const X = t => Math.max(0, Math.min(W, (t - t0) / 60e3 * W)), Y = v => H - 4 - v / max * (H - 10);
+  c.beginPath(); pts.forEach((p, i) => (i ? c.lineTo(X(p.t), Y(p.rate)) : c.moveTo(X(p.t), Y(p.rate))));
+  c.strokeStyle = COL.accent; c.lineWidth = 2; c.stroke();
+  const last = pts[pts.length - 1];
+  c.fillStyle = COL.accent; c.beginPath(); c.arc(X(last.t), Y(last.rate), 3, 0, 7); c.fill();
+}
+// Euklides' eye: follows the pointer, blinks, and rings when a new decision lands. Decoration only: it joins the
+// shared loop and stops with Pause motion.
+const EYE = { x: 0.5, y: 0.5, ring: -10 };
+document.addEventListener("mousemove", e => { EYE.x = e.clientX / Math.max(1, innerWidth); EYE.y = e.clientY / Math.max(1, innerHeight); });
+function mountEye(cv) {
+  const { c, W, H } = sizeCanvas(cv, 40);
+  const g = {
+    canvas: cv,
+    live: () => true,
+    draw(T) {
+      const r = Math.min(2, window.devicePixelRatio || 1);
+      c.setTransform(r, 0, 0, r, 0, 0); c.clearRect(0, 0, W, H);
+      const cx = W / 2, cy = H / 2, blink = moving() && T % 4 < 0.14 ? 0.1 : 1;
+      const ring = T - EYE.ring;
+      if (ring >= 0 && ring < 1.2 && moving()) { c.globalAlpha = 1 - ring / 1.2; c.strokeStyle = COL.accent; c.lineWidth = 2; c.beginPath(); c.ellipse(cx, cy, 24 + ring * 10, 14 + ring * 7, 0, 0, 7); c.stroke(); c.globalAlpha = 1; }
+      c.save(); c.beginPath(); c.ellipse(cx, cy, 24, 14 * blink, 0, 0, 7); c.fillStyle = COL.raised; c.fill();
+      c.strokeStyle = COL.fg; c.lineWidth = 1.5; c.stroke(); c.clip();
+      const px = cx + (EYE.x - 0.5) * 22, py = cy + (EYE.y - 0.5) * 10;
+      c.fillStyle = COL.accent; c.beginPath(); c.arc(px, py, 8, 0, 7); c.fill();
+      c.fillStyle = COL.fg; c.beginPath(); c.arc(px, py, 3.5, 0, 7); c.fill(); c.restore();
+    },
+    destroy() { GRAPHS.delete(g); },
+  };
+  GRAPHS.add(g); g.draw(clockT()); wake();
+  return g;
+}
+// Once a second, while motion runs: counters that move between polls, from the last snapshot (textContent only).
+//   data-tick="ago" data-at=<ms>     seconds since a moment
+//   data-tick="dur" data-since=<ms>  minutes since a moment, as dur()
+//   data-tick="eta" data-key=<plan>  the plan's time left, counted down from the snapshot
+//   data-tick="now" on the Gantt: the now line and the bars of running jobs advance
+function tick() {
+  if (!moving() || document.hidden) return;
+  const now = NOW(), gen = ms(S.data && S.data.generated);
+  document.querySelectorAll("[data-tick]").forEach(el => {
+    const k = el.dataset.tick;
+    if (k === "ago") el.textContent = sinceText((now - Number(el.dataset.at)) / 1e3);
+    else if (k === "dur") el.textContent = dur(Math.max(0, (now - Number(el.dataset.since)) / 60e3));
+    else if (k === "eta") {
+      const p = plans().find(x => keyOf(x) === el.dataset.key), t = p && p.times;
+      if (!p || !t || t.left_min == null || p.status !== "running") return;
+      const gone = gen ? Math.max(0, (now - gen) / 60e3) : 0;
+      el.textContent = etaText({ ...p, times: { ...t, left_min: Math.max(0, t.left_min - gone) } });
+    } else if (k === "now") {
+      const t0 = Number(el.dataset.t0), T = Number(el.dataset.span), pct = v => `${Math.min(100, (v - t0) / T * 100).toFixed(2)}%`;
+      el.querySelectorAll(".now-line").forEach(l => { l.style.left = pct(now); });
+      el.querySelectorAll(".bar[data-from]").forEach(b => { b.style.width = `${Math.max(0, Math.min(100, (now - Number(b.dataset.from)) / T * 100)).toFixed(2)}%`; });
+    }
+  });
+}
+setInterval(tick, 1000);
+// When a list item first appeared: items seen in the first render of a list never animate; a later new one
+// carries the "enter" class for a moment.
+const SEEN = new Map();
+function fresh(scope, ids) {
+  const now = NOW();
+  if (!SEEN.has(scope)) { SEEN.set(scope, new Map(ids.map(id => [id, 0]))); return () => ""; }
+  const m = SEEN.get(scope);
+  ids.forEach(id => { if (!m.has(id)) m.set(id, now); });
+  return id => (m.get(id) && now - m.get(id) < 2500 && moving() ? " enter" : "");
+}
+// The one-line ticker under each screen's title.
+function ticker() {
+  if (!S.data) return "";
+  const now = NOW(), d = tickerData(plans(), now);
+  return `<div class="ticker" aria-label="Right now"><span><i class="dot${d.running ? "" : " off"}"></i><b>${d.running}</b> ${d.running === 1 ? "job" : "jobs"} running</span>
+    ${d.tokens ? `<span><b>${esc(tokText(d.tokens))}</b> tokens in flight</span>` : ""}<span><b>${d.mergedToday}</b> merged today</span>
+    <span>last event ${d.lastEvent ? `<b data-tick="ago" data-at="${d.lastEvent}">${esc(sinceText((now - d.lastEvent) / 1e3))}</b> ago` : "<b>none</b>"}</span></div>`;
 }
 
 // ---- home
 function planLine(p) {
   const nums = p.error ? '<span class="num" style="color:var(--bad)">cannot be read</span><span></span>'
-    : `<span class="num">${esc(etaText(p))}</span><span class="num">${spend(p.cost)}</span>`;
-  return `<a class="line" href="${planHref(p)}"><span class="who"><b>${esc(p.title || p.slug)}</b><small>${esc(keyOf(p))}</small>${phaseSummary(p) ? `<span class="phases">${phaseSummary(p)}</span>` : ""}${waitNote(p, true)}</span>
-    <span class="num">${p.progress.merged} of ${p.progress.total} jobs${segs(p)}</span>${nums}<span class="flag">${flagPill(p) || `<span class="pill ${pillKind(p.status)}">${esc(p.status)}</span>`}</span></a>`;
+    : `<span class="num" data-tick="eta" data-key="${esc(keyOf(p))}">${esc(etaText(p))}</span><span class="num">${spend(p.cost)}</span>`;
+  const rows = Math.max(1, ...graphLayout(p.jobs || []).map(n => n.rows));
+  const mini = (p.jobs || []).length && !p.error ? `<span class="mini-box"><canvas class="graph" data-graph="${esc(keyOf(p))}" data-mini="1" data-h="${Math.max(96, rows * 52 + 30)}"${p.status === "waiting" ? ' data-still="1" data-unlit="1"' : ""} role="img" aria-label="Job graph of ${esc(p.title || p.slug)}"></canvas></span>` : "";
+  // the graph shows each job's state: the row only adds the plan's totals, never a second copy of the jobs
+  return `<a class="line pline" href="${planHref(p)}"><span class="who"><b>${esc(p.title || p.slug)}</b><small>${esc(keyOf(p))}</small></span>
+    <span class="num">${p.progress.merged} of ${p.progress.total} merged</span>${nums}<span class="flag">${flagPill(p) || `<span class="pill ${pillKind(p.status)}">${esc(p.status)}</span>`}</span>${mini}${waitNote(p, true)}</a>`;
 }
 function draftLine(d) {
   const rv = (name, doc) => (doc ? `${name} ${doc.review.ok}/${doc.review.total} ok` : "");
@@ -836,7 +1313,7 @@ function home() {
   if (!S.data) return `<p class="muted">${S.meta.stale ? "ark did not answer yet: " + esc(S.meta.error) : "Waiting for ark…"}</p>`;
   const { flight, queued } = homeGroups(plans());  // finished plans (done, blocked, aborted) are in History only
   const drafts = S.drafts || [];
-  return `<div class="screen-head"><h1>Plans</h1><span class="small muted">${flight.length} in flight · ${queued.length} approved · ${drafts.length} drafts</span></div>
+  return `<div class="screen-head"><h1>Plans</h1><span class="small muted">${flight.length} in flight · ${queued.length} approved · ${drafts.length} drafts</span></div>${ticker()}
     ${S.flash ? `<div class="msg ok">${esc(S.flash)}</div>` : ""}
     ${group("In flight", flight, planLine, "Nothing is running.")}
     ${group("Approved, not started", queued, planLine, "No approved plan is waiting to start.")}
@@ -873,10 +1350,12 @@ function planScreen() {
   if (p.error) return head + `<div class="problem crit"><strong>This plan cannot be read</strong><div class="reason">${esc(p.error)}</div></div>`;
   const qs = (p.questions || []).length;
   const alerts = recentAlerts(p).length;
-  const vers = versionsBlock(p);
-  const tabs = TABS.map(t => `<a class="tab" role="tab" href="${planHref(p, t)}" aria-selected="${r.tab === t}">${t[0].toUpperCase() + t.slice(1)}${t === "questions" && qs ? `<span class="count">${qs}</span>` : ""}${t === "events" && alerts ? `<span class="count">${alerts}</span>` : ""}</a>`).join("");
-  const body = { timeline, questions, events, decisions: decisionsTab, spec: specTab, plan: planTab }[r.tab](p);
-  return head + vers + numbers(p) + `<div class="tabs" role="tablist">${tabs}</div>` + body;
+  const vers = versionsBlock(p), nver = vers ? Number(S.ver.data.versions.slice(-1)[0].version) : 0;
+  const tabs = TABS.filter(t => t !== "changes" || nver || r.tab === "changes").map(t => `<a class="tab" role="tab" href="${planHref(p, t)}" aria-selected="${r.tab === t}">${t[0].toUpperCase() + t.slice(1)}${t === "questions" && qs ? `<span class="count">${qs}</span>` : ""}${t === "events" && alerts ? `<span class="count">${alerts}</span>` : ""}${t === "changes" && nver ? `<span class="small muted"> v${nver}</span>` : ""}</a>`).join("");
+  const changes = () => vers || '<p class="hint">This plan has one version: nothing to compare yet.</p>';
+  const body = { timeline, questions, events, decisions: decisionsTab, spec: specTab, plan: planTab, changes }[r.tab](p);
+  const job = S.job && (p.jobs || []).find(j => j.id === S.job);
+  return head + ticker() + numbers(p) + `<div class="tabs" role="tablist">${tabs}</div>` + body + (job ? jobPanel(p, job) : "");
 }
 // the version picker, the per-job chips and the diff panel; nothing when the plan has fewer than two versions
 function versionsBlock(p) {
@@ -919,18 +1398,21 @@ function notices(p) {
     .map(a => `<div class="problem ${a.critical ? "crit" : ""}"><div class="small muted">${esc(clock(ms(a.at)))}${a.job ? " · " + esc(a.job) : ""}</div><div class="reason">${esc(a.text)}</div></div>`).join("");
 }
 const LEGEND = `<div class="legend"><span><i class="swatch" style="background:var(--ok)"></i>merged</span><span><i class="swatch" style="background:var(--accent)"></i>active</span><span><i class="swatch" style="background:var(--attn)"></i>waits for you</span><span><i class="swatch" style="background:var(--bad)"></i>blocked</span><span><i class="swatch" style="height:4px;background:var(--wait);opacity:.55"></i>budget</span><span><i class="swatch hatch"></i>≈ forecast</span><span><i class="swatch" style="width:2px;height:12px;background:var(--fg)"></i>now</span></div>`;
+// The plan's constellation, the hero of the Timeline: a node opens the job. An approved plan that has not
+// started shows its graph unlit.
+const heroGraph = p => ((p.jobs || []).length ? `<div class="graph-box"><canvas class="graph" data-graph="${esc(keyOf(p))}" data-pick="1"${p.status === "waiting" ? ' data-unlit="1"' : ""} role="img" aria-label="Job graph of ${esc(p.title || p.slug)}: click a job to open it"></canvas></div>` : "");
 function timeline(p) {
   const now = NOW(), live = LIVE.includes(p.status);
   const pts = p.jobs.flatMap(j => [j.plan_start, j.plan_end, j.fc_start, j.fc_end, j.started, j.finished].map(ms)).filter(x => x != null);
   if (live && pts.length) pts.push(now);
-  if (!pts.length) return '<p class="hint">No times yet: the jobs have not started.</p>' + jobList(p);
+  if (!pts.length) return heroGraph(p) + '<p class="hint">No times yet: the jobs have not started.</p>' + jobList(p);
   const t0 = Math.min(...pts), T = Math.max(Math.max(...pts) - t0, 60e3);
   const pct = v => `${((v - t0) / T * 100).toFixed(2)}%`;
   const bar = (cls, a, b, tip) => (a == null || b == null ? "" : `<span class="bar ${cls}" style="left:${pct(a)};width:${(Math.max(b - a, 0) / T * 100).toFixed(2)}%" title="${esc(tip)}"></span>`);
   const rows = p.jobs.map(j => {
     const k = kind(j), ps = ms(j.plan_start), pe = ms(j.plan_end), s = ms(j.started), f = ms(j.finished), fe = ms(j.fc_end);
     let bars = bar("plan", ps, pe, `Budget ${j.budget.minutes} min: ${clock(ps)}–${clock(pe)}`);
-    if (s != null) bars += bar(`real ${k}`, s, f ?? now, `${j.id}: ${j.status}`);
+    if (s != null) bars += f == null && live ? bar(`real ${k}`, s, now, `${j.id}: ${j.status}`).replace('<span class="bar', `<span data-from="${s}" class="bar`) : bar(`real ${k}`, s, f ?? now, `${j.id}: ${j.status}`);
     if (!["merged", "blocked"].includes(j.status) && fe != null) {
       const from = s == null ? ms(j.fc_start) : now;
       if (fe > from) bars += bar("fc hatch", from, fe, `≈ until ${clock(fe)}`);
@@ -940,13 +1422,39 @@ function timeline(p) {
     return `<button class="row" data-job="${esc(j.id)}" aria-pressed="${S.job === j.id}" type="button"><span class="job-cell"><span class="mono">${esc(j.id)}</span><small>${esc(j.status)}</small>${phaseChip(j)}${waitChip(j)}</span><span class="track">${bars}${line}</span><span class="delta ${d > 2 ? "late" : ""}">${esc(jobLeft(j))}<br>${esc(lateText(d) || "–")}</span></button>`;
   }).join("");
   const axis = `<div class="axis"><span></span><div class="ticks"><span style="left:0">${esc(clock(t0))}</span><span class="last" style="left:100%">${esc(clock(t0 + T))}</span></div><span></span></div>`;
-  const job = p.jobs.find(j => j.id === S.job);
-  return `<div>${waitNote(p)}${estimateBar(p.estimate, p.estimate && p.estimate.basis)}${LEGEND}${rows}${axis}</div>`
-    + (job ? detail(job) : '<p class="hint">Click a job for its tasks, its PR and why it is late.</p>');
+  return `<div>${waitNote(p)}${heroGraph(p)}${estimateBar(p.estimate, p.estimate && p.estimate.basis)}${LEGEND}<div data-tick="now" data-t0="${t0}" data-span="${T}">${rows}</div>${axis}</div>`
+    + '<p class="hint">Click a job, in the graph or in a row, for its phase, time, spend, tasks and PR.</p>';
 }
 function jobList(p) {
   if (!p.jobs.length) return "";
   return `<div class="card">${p.jobs.map(j => `<div class="card-top"><span class="mono">${esc(j.id)}</span><span class="small muted">${esc(j.budget.minutes)} min · $${esc(money(j.budget.usd))}${j.after.length ? ` · after ${esc(j.after.join(", "))}` : ""}</span></div>`).join("")}</div>`;
+}
+// The job panel from the right edge: everything about one job from its own snapshot fields.
+function jobPanel(p, j) {
+  const now = NOW(), st = nodeState(j, now, p.jobs || []);
+  const usedMin = j.started ? Math.max(0, ((ms(j.finished) ?? now) - ms(j.started)) / 60e3) : 0, bMin = Number(j.budget && j.budget.minutes) || 0;
+  const usd = Number(j.usd || 0), bUsd = Number(j.budget && j.budget.usd) || 0;
+  const meter = (label, used, total, text, tick) => `<div class="meter${total && used > total ? " over" : ""}"><span class="small"><span class="muted">${label}</span> ${text}</span>
+    <span class="mtrack"><i style="width:${total ? Math.min(100, used / total * 100).toFixed(1) : 0}%"></i></span></div>`;
+  const ev = lastEventFor(p.events, j.id), tail = j.tail ? String(j.tail).split("\n").filter(Boolean).slice(-1)[0] : "";
+  const waits = (j.after || []).filter(a => { const x = (p.jobs || []).find(y => y.id === a); return !x || x.status !== "merged"; });
+  const tasks = j.tasks || [];
+  const timeText = j.started ? `<span data-tick="${j.finished ? "" : "dur"}" data-since="${ms(j.started)}">${esc(dur(usedMin))}</span> of ${esc(dur(bMin))}` : `not started · ${esc(dur(bMin))} budget`;
+  return `<aside class="jpanel" role="dialog" aria-modal="false" aria-labelledby="jp-title">
+    <div class="jp-top"><div><div class="mono small muted">${esc(keyOf(p))}</div><h2 id="jp-title">${esc(j.id)}</h2><div class="small">${esc(j.pr_title || "")}</div></div>
+      <button class="jp-close" id="jp-close" type="button" data-close-job="1" aria-label="Close the job panel">×</button></div>
+    <div class="phead"><div class="top"><span class="pill ${kind(j)}">${esc(j.status || "pending")}</span>${phaseChip(j)}${waitChip(j)}</div><span class="small muted">${esc(st.text)}</span></div>
+    <div><span class="label">${tail ? "Last line the worker printed" : "Last event"}</span><div class="tail">${esc(tail || ev || "no events for this job yet")}</div>${tail ? "" : '<span class="small muted">no live tail: the snapshot does not carry the worker\'s output</span>'}</div>
+    ${meter("Time", usedMin, bMin, timeText)}
+    ${meter("Spend", usd, bUsd, `$${esc(usd.toFixed(2))} of $${esc(money(bUsd))}`)}
+    <div class="kv2"><span>Tier</span><span class="mono">${esc((j.tier_path && j.tier_path.length ? j.tier_path : [j.tier]).filter(Boolean).join(" → ") || "–")}</span>
+      <span>Attempt</span><span>${esc(j.attempts || 0)}</span>
+      <span>Waits for</span><span class="mono">${esc(waits.join(", ") || "nothing")}</span>
+      <span>Tasks</span><span>${j.status === "merged" ? `${tasks.length} of ${tasks.length} done` : `${tasks.length} in this job`}</span>
+      <span>PR</span><span>${j.pr && j.pr.url ? link(j.pr.url, j.pr.url.replace(/^https?:\/\/(www\.)?github\.com\//, "")) : "no PR yet"}</span>
+      ${j.wait ? `<span>Why it waits</span><span>${esc(j.wait.text)}</span>` : ""}${j.reason ? `<span>Reason</span><span>${esc(j.reason)}</span>` : ""}${j.question ? `<span>Question</span><span>${esc(j.question)}</span>` : ""}</div>
+    <details><summary class="small">All the job's details</summary>${detail(j)}</details>
+  </aside>`;
 }
 function detail(j) {
   const list = (label, items) => `<div><div class="label">${label}</div>${Array.isArray(items) ? `<ul>${items.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : esc(items)}</div>`;
@@ -974,7 +1482,7 @@ function questions(p) {
   }).join("");
   const doneHtml = done.slice().reverse().map(a => `<div class="qa"><span class="small muted">${esc(a.id)}${a.job ? ` · ${esc(a.job)}` : ""} · answered ${esc(when(ms(a.at)))}${a.by ? ` by ${esc(a.by)}` : ""}</span>
     <span>${esc(a.question)}</span><strong>${esc(a.answer)}</strong></div>`).join("");
-  return (open.length ? openHtml : '<div class="empty">No open questions.</div>')
+  return (open.length ? heroGraph(p) : "") + (open.length ? openHtml : '<div class="empty">No open questions.</div>')
     + (done.length ? `<div class="card"><span class="label">Answered</span>${doneHtml}</div>` : "");
 }
 async function sendAnswer(qid) {
@@ -999,7 +1507,8 @@ async function sendAnswer(qid) {
 
 // ---- events, spec and plan
 function events(p) {
-  const ev = p.events.length ? `<ul class="events">${p.events.slice().reverse().map(e => `<li>${esc(e)}</li>`).join("")}</ul>` : '<p class="hint">No events yet.</p>';
+  const isNew = fresh(`ev:${keyOf(p)}`, p.events.map(String));
+  const ev = p.events.length ? `<ul class="events">${p.events.slice().reverse().map(e => `<li class="${isNew(String(e)).trim()}">${esc(e)}</li>`).join("")}</ul>` : '<p class="hint">No events yet.</p>';
   return notices(p) + ev;
 }
 // ---- decisions tab: Marco's verdicts on the closed run's decisions file
@@ -1133,7 +1642,8 @@ function draftBody(d, doc) {
   const secs = view.sections.map(s => draftSection(doc, s, revOf(s.key), editable)).join("");
   const reopened = doc === "spec" && x.status === "approved" && S.draft.reopen
     ? '<div class="problem">The spec is approved. Mark what to change: the header then gives you the command that resumes ark-plan.</div>' : "";
-  return reopened + `<div class="docwrap"><nav class="docidx" aria-label="Sections"><span class="label">${esc(L.sections)}</span>${idx}</nav>
+  const graph = doc === "plan" && manifestJobs(x.text).length ? `<div class="graph-box"><canvas class="graph" data-graph="draft" data-src="draft" data-still="1" data-unlit="1" role="img" aria-label="The jobs this plan declares"></canvas></div>` : "";
+  return reopened + graph + `<div class="docwrap"><nav class="docidx" aria-label="Sections"><span class="label">${esc(L.sections)}</span>${idx}</nav>
     <article class="docbody">${view.title ? `<h1>${inline(view.title)}</h1>` : ""}${view.intro ? `<div class="md">${view.intro}</div>` : ""}${secs || '<p class="hint">No ## sections to review.</p>'}</article></div>`;
 }
 function draftConfirm(d) {
@@ -1265,6 +1775,10 @@ function tookText(r) {
   if (r.wall_minutes == null) return "–";
   return r.budget_minutes ? `${dur(r.wall_minutes)} of ~${dur(r.budget_minutes)}` : dur(r.wall_minutes);
 }
+const thumb = r => {
+  const p = plans().find(x => sameKey(x, r) && FINISHED.includes(x.status) && x.status === r.status);
+  return p && (p.jobs || []).length ? `<span class="hmini"><canvas class="graph" data-graph="${esc(keyOf(p))}" data-mini="1" data-still="1" data-closed="1" data-h="44" role="img" aria-label="Job graph of ${esc(r.slug)}"></canvas></span>` : "<span></span>";
+};
 function historyScreen() {
   if (S.history === null) return '<div class="screen-head"><h1>History</h1></div><p class="muted">Loading history…</p>';
   const all = S.history, rows = historyRows(), f = S.filter;
@@ -1275,8 +1789,8 @@ function historyScreen() {
     <input id="f-text" data-filter="text" type="search" placeholder="Find a plan…" aria-label="Find a plan" value="${esc(f.text)}"></div>`;
   const line = r => `<a class="hrow" href="#/plan/${esc(r.repo)}/${esc(r.slug)}/timeline"><span>${esc(when(ms(r.ended)))}</span><span class="hplan mono">${esc(r.repo)}/${esc(r.slug)}</span>
     <span><span class="pill ${pillKind(r.status)}">${esc(r.status)}</span></span><span>${esc(r.jobs ?? "–")} jobs</span><span>${esc(tookText(r))}</span>
-    <span>${spend({ usd: Number(r.usd || 0), budget_usd: Number(r.budget_usd || 0) })}</span></a>`;
-  const head = '<div class="hrow head"><span>Closed</span><span class="hplan">Plan</span><span>Status</span><span>Jobs</span><span>Took vs estimate</span><span>Spend vs budget</span></div>';
+    <span>${spend({ usd: Number(r.usd || 0), budget_usd: Number(r.budget_usd || 0) })}</span>${thumb(r)}</a>`;
+  const head = '<div class="hrow head"><span>Closed</span><span class="hplan">Plan</span><span>Status</span><span>Jobs</span><span>Took vs estimate</span><span>Spend vs budget</span><span>Graph</span></div>';
   return `<div class="screen-head"><h1>History</h1><span class="small muted">${rows.length} of ${all.length} closed runs</span></div>${filters}
     ${rows.length ? `<div class="lines">${head}${rows.map(line).join("")}</div>` : `<div class="empty">${all.length ? "No run matches these filters." : "No closed runs yet."}</div>`}`;
 }
@@ -1297,7 +1811,7 @@ function euklidesScreen() {
   const ds = e.decisions || [];
   const unreviewed = ds.filter(d => !d.review).length;
   const verdict = d => (d.review ? `<span class="pill ${d.review.verdict === "ok" ? "merged" : "blocked"}">${esc(d.review.verdict)}</span>` : '<span class="pill">not reviewed</span>');
-  const decision = d => `<div class="decision"><div class="top"><span class="pill active">${esc(d.action)}</span>${verdict(d)}
+  const decision = d => `<div class="decision${isNew(String(d.id || d.at))}"><div class="top"><span class="pill active">${esc(d.action)}</span>${verdict(d)}
       <span class="mono small">${esc(d.repo)}/${esc(d.slug)} · ${esc(d.job)}</span><span class="small muted">${esc(when(ms(d.at)))}${d.usd != null ? ` · $${esc(Number(d.usd).toFixed(2))}` : ""}</span></div>
     <span>${esc(d.note)}</span>${d.why ? `<span class="small muted">Why: ${esc(d.why)}</span>` : ""}${d.trigger ? `<span class="small muted">After: ${esc(d.trigger)}</span>` : ""}
     ${d.review && d.review.comment ? `<span class="small">Your verdict: ${esc(d.review.comment)}</span>` : ""}</div>`;
@@ -1308,12 +1822,18 @@ function euklidesScreen() {
     : '<span class="small muted">Notifications are off in this browser.</span>';
   const toggles = NOTE_KINDS.map(([k, label]) => `<label><input type="checkbox" data-pref="${k}"${prefs[k] ? " checked" : ""}> ${label}</label>`).join("");
   const copy = e.review_command || "ark review";
-  return `<div class="screen-head"><h1>Euklides</h1><span class="small muted">decides for a job when it cannot go on, within limits</span></div>
+  const isNew = fresh("euk", ds.map(d => String(d.id || d.at)));
+  const newest = ds[0] ? String(ds[0].id || ds[0].at) : "";
+  if (S.eukLast !== undefined && newest && newest !== S.eukLast) EYE.ring = clockT();
+  S.eukLast = newest;
+  const watching = plans().filter(p => ["running", "held"].includes(p.status));
+  return `<div class="screen-head"><div class="eukhead"><canvas class="eye" data-eye="1" aria-hidden="true"></canvas><h1>Euklides</h1></div><span class="small muted">decides for a job when it cannot go on, within limits</span></div>${ticker()}
+    <div class="card"><span class="label">Watching</span>${watching.length ? `<div class="watching">${watching.map(p => `<a class="pill active" href="${planHref(p)}">${esc(keyOf(p))}</a>`).join("")}</div>` : '<p class="hint">No plan is running.</p>'}</div>
+    <div class="card"><span class="label">Decision stream</span>${ds.length ? ds.map(decision).join("") : '<p class="hint">No decisions yet.</p>'}</div>
     <div class="card"><span class="label">Model and limits</span><div class="kv">${kv("Model", e.model)}${kv("Per call", e.usd_per_call != null ? `$${e.usd_per_call} · ${e.minutes_per_call ?? "–"} min` : null)}${kv("Tools", e.tools)}${kv("Decisions per job without you", e.max_per_job)}</div></div>
     <div class="card"><span class="label">Review its decisions</span><span class="small muted">${unreviewed ? `${unreviewed} of the last ${ds.length} decisions are not reviewed.` : "Every recent decision is reviewed."} Run this in a terminal; your verdicts become lessons.</span>
       <div class="copyline"><code>${esc(copy)}</code><button class="btn" type="button" data-copy="${esc(copy)}">${S.copied === copy ? "Copied" : "Copy"}</button></div></div>
     <div class="card"><span class="label">Lessons</span>${e.lessons ? `<div class="md">${renderBlocks(String(e.lessons).split("\n"), L)}</div>` : '<p class="hint">No lessons yet: they come from your verdicts.</p>'}</div>
-    <div class="card"><span class="label">Recent decisions</span>${ds.length ? ds.map(decision).join("") : '<p class="hint">No decisions yet.</p>'}</div>
     <div class="card"><span class="label">Browser notifications</span><div class="toggles">${toggles}</div>${permLine}</div>`;
 }
 
@@ -1341,6 +1861,20 @@ function dashSpendChart(days, period) {
 function dashHbars(entries) {
   const max = Math.max(.0001, ...entries.map(e => e[1]));
   return entries.length ? entries.map(([k, v]) => `<div class="dhbar"><span>${esc(k)}</span><div class="dtrack"><span style="width:${(v / max * 100).toFixed(1)}%"></span></div><span class="mono" style="text-align:right">${esc(usdText(v))}</span></div>`).join("") : '<div class="empty">No spend in this view.</div>';
+}
+// Right now: what the runner does at this moment, never cut by the filters.
+function rightNow() {
+  const now = NOW(), d = tickerData(plans(), now), today = new Date(now).toDateString();
+  const tokToday = plans().filter(p => { const t = dashTime(p); return t != null && new Date(t).toDateString() === today; }).reduce((a, p) => a + Number((p.cost && p.cost.tokens) || 0), 0);
+  const tile = (label, value, sub) => `<div class="dkpi"><span class="label">${label}</span><strong>${value}</strong>${sub ? `<span class="small muted">${sub}</span>` : ""}</div>`;
+  const rate = spendRate(S.spend, now), last = rate.length ? rate[rate.length - 1].rate : null;
+  return `<section class="band" aria-label="Right now">
+    ${tile("Jobs running", d.running, "now")}
+    ${tile("Spend today", `$${esc(todaySpend().toFixed(2))}`, "API-equivalent")}
+    ${tile("Tokens today", esc(tokText(tokToday)), "plans started or closed today")}
+    ${tile("Since the last event", d.lastEvent ? `<span data-tick="ago" data-at="${d.lastEvent}">${esc(sinceText((now - d.lastEvent) / 1e3))}</span>` : "–", "")}
+    <div class="spark-box"><span class="label">Spend per minute · last minute</span><canvas class="spark" data-spark="1" role="img" aria-label="Spend per minute over the last minute"></canvas><span class="small muted">${last == null ? "Builds from the polls this page sees." : `$${esc(last.toFixed(2))} per minute at the last poll`}</span></div>
+  </section>`;
 }
 function dashboardScreen() {
   if (!S.data) return `<div class="screen-head"><h1>Dashboard</h1></div><p class="muted">${S.meta.stale ? "ark did not answer yet: " + esc(S.meta.error) : "Waiting for ark…"}</p>`;
@@ -1380,7 +1914,7 @@ function dashboardScreen() {
     <div class="dtable"><table><thead><tr><th>Plan</th><th>Status</th><th>Account</th><th class="r">Jobs merged</th><th class="r">Time</th><th class="r">Spend</th><th class="r">Tokens</th><th class="r">Euklides</th></tr></thead>
     <tbody>${shown.map(line).join("") || '<tr><td colspan="8" class="muted">No plans match these filters. Try resetting them.</td></tr>'}</tbody></table></div>
     ${rows.length > shown.length ? '<button class="btn dmore" type="button" data-d="more">Show more</button>' : ""}</section>`;
-  return `<div class="screen-head"><h1>Dashboard</h1><span class="small muted">every filter cuts every number, chart and row</span></div>${bar}${kpis}${charts}${table}`;
+  return `<div class="screen-head"><h1>Dashboard</h1><span class="small muted">every filter cuts every number, chart and row, except Right now</span></div>${ticker()}${rightNow()}${bar}${kpis}${charts}${table}`;
 }
 
 const SCREENS = { home, plan: planScreen, draft: draftScreen, history: historyScreen, euklides: euklidesScreen, dashboard: dashboardScreen };
@@ -1397,8 +1931,10 @@ function render(force) {
   const caret = keepId && typing.tagName === "INPUT" && typing.type === "search" ? typing.selectionStart : null;
   main.innerHTML = SCREENS[S.route.screen]();
   paintDiff();
+  mountGraphs();
   const again = keepId && document.getElementById(keepId);
   if (again) { again.focus(); if (caret != null) again.setSelectionRange(caret, caret); }
+  if (S.focusPanel) { S.focusPanel = false; const x = document.getElementById("jp-close"); if (x) x.focus(); }
 }
 
 let M = Object.assign({ lastAlert: null, loopDown: false, stale: false, done: [], unread: [] }, store.get("ark-ui") || {});
@@ -1427,6 +1963,7 @@ function readNow() {
 }
 function route() {
   const r = parseRoute(location.hash);
+  if (r.tab !== S.route.tab) S.job = null;
   if (r.screen !== S.route.screen || r.repo !== S.route.repo || r.slug !== S.route.slug) {
     S.job = null;
     S.draft = null;
@@ -1442,7 +1979,10 @@ function route() {
 
 window.update = function (data, meta) {
   S.meta = meta || { stale: false, error: "" };
-  if (data) S.data = data;
+  if (data) {
+    S.data = data;
+    S.spend = (S.spend || []).concat({ t: NOW(), usd: plans().reduce((a, p) => a + Number((p.cost && p.cost.usd) || 0), 0) }).slice(-8);
+  }
   render();
   document.body.dataset.rendered = "1";
   notify(data, S.meta);
@@ -1491,8 +2031,10 @@ function copyCommand() {
   try { navigator.clipboard.writeText(c.text).then(() => done(true), () => done(false)); } catch (e) { done(false); }
 }
 document.addEventListener("click", e => {
-  const t = e.target.closest("[data-d],[data-job],[data-answer],[data-goto],[data-cmd],[data-copy],[data-notify],[data-verdict],[data-dv],[data-draft-act],[data-approve-plan],[data-draft-cancel],[data-reopen],#cmd-copy,#cmd-close");
+  const t = e.target.closest("#motion,[data-close-job],[data-d],[data-job],[data-answer],[data-goto],[data-cmd],[data-copy],[data-notify],[data-verdict],[data-dv],[data-draft-act],[data-approve-plan],[data-draft-cancel],[data-reopen],#cmd-copy,#cmd-close");
   if (!t) return;
+  if (t.id === "motion") { setMotion(!moving()); return; }
+  if (t.dataset.closeJob) { closeJob(); return; }
   if (t.dataset.d) { S.dash = dashSet(S.dash || dashFresh(), t.dataset.d, t.dataset.v); render(true); return; }
   if (t.dataset.notify) {
     try { Promise.resolve(Notification.requestPermission()).then(() => render(true), () => render(true)); } catch (err) { render(true); }
@@ -1519,9 +2061,13 @@ document.addEventListener("click", e => {
     return;
   }
   if (t.dataset.goto) { const s = document.getElementById(t.dataset.goto); if (s) s.scrollIntoView({ block: "start" }); return; }
-  if (t.dataset.job) { S.job = S.job === t.dataset.job ? null : t.dataset.job; render(true); }
+  if (t.dataset.job) { if (S.job === t.dataset.job) closeJob(); else openJob(t.dataset.job); }
 });
-document.addEventListener("keydown", e => { if (e.key === "Escape") document.getElementById("cmd").hidden = true; });
+document.addEventListener("keydown", e => {
+  if (e.key !== "Escape") return;
+  if (S.job && document.querySelector(".jpanel")) { closeJob(); return; }
+  document.getElementById("cmd").hidden = true;
+});
 
 let lastGood = "";
 function failed(reason) { window.update(null, { stale: true, error: reason, updated: lastGood }); }
@@ -1552,6 +2098,7 @@ async function load() {
 }
 S.route = parseRoute(location.hash);
 document.body.dataset.screen = S.route.screen;
+setMotion(moving());
 setTitle();
 poll();
 load();
