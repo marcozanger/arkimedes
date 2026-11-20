@@ -45,7 +45,7 @@ def test_the_page_exposes_its_entry_points():
     assert "hashchange" in html and "data-link" not in html
     for route in ('"#/"', '"#/history"', '"#/euklides"', '"#/dashboard"', "#/plan/"):
         assert route in html, route
-    assert 'const TABS = ["timeline", "questions", "events", "decisions", "spec", "plan"]' in html
+    assert 'const TABS = ["timeline", "questions", "events", "decisions", "spec", "plan", "changes"]' in html
 
 
 def test_html_is_built_only_through_render():
@@ -109,3 +109,43 @@ def test_the_logic_block_is_pure():
     block = html.split("// ---- logic: start ----")[1].split("// ---- logic: end ----")[0]
     for banned in ("window", "document", "Notification", "localStorage"):
         assert banned not in block, banned
+
+
+def test_motion_has_a_pause_control_that_follows_reduced_motion():
+    html = PAGE.read_text()
+    assert 'matchMedia("(prefers-reduced-motion: reduce)")' in html      # paused by default when the OS asks for less motion
+    assert 'id="motion"' in html and "Pause motion" in html and "Resume motion" in html
+    assert 'document.body.classList.toggle("paused"' in html
+    assert "body.paused" in html                                          # CSS animations stop with it
+    m = re.search(r"function setMotion\(.*?\n\}", html, re.S)
+    assert m and "store" not in m.group(0)                               # the choice is not stored
+
+
+def test_the_graph_engine_is_one_shared_loop():
+    html = PAGE.read_text()
+    assert html.count("requestAnimationFrame(") == 1
+    for name in ("function drawGraph(", "function mountGraph(", "function mountGraphs("):
+        assert name in html, name
+    assert "devicePixelRatio" in html and "getComputedStyle(document.documentElement)" in html
+
+
+def test_the_live_page_ticks_without_rebuilding_html():
+    html = PAGE.read_text()
+    assert html.count(".innerHTML =") == 3 and html.count("requestAnimationFrame(") == 1
+    assert html.count("setInterval(tick, 1000)") == 1
+    assert "if (!moving() || document.hidden) return;" in html          # paused or hidden: no ticking
+    for tick in ('data-tick="ago"', 'data-tick="dur"', 'data-tick="eta"', 'data-tick="now"'):
+        assert tick in html, tick
+
+
+def test_the_job_panel_is_a_dialog_that_escape_closes():
+    html = PAGE.read_text()
+    assert 'class="jpanel" role="dialog"' in html and 'id="jp-close"' in html
+    assert "if (S.job && document.querySelector(\".jpanel\")) { closeJob(); return; }" in html
+    assert re.search(r"@media \(max-width: 760px\) \{ \.jpanel \{ width: 100vw;", html)
+
+
+def test_canvas_colors_come_from_the_theme_tokens():
+    html = PAGE.read_text()
+    body = html.split("// ---- logic: end ----", 1)[1]
+    assert not re.search(r"(fillStyle|strokeStyle)\s*=\s*['\"]#", body)   # every canvas color is a COL token

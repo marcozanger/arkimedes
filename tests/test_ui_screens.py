@@ -463,3 +463,76 @@ def test_a_plan_with_problems_cannot_be_approved(flows):
     assert "error" not in out, out
     assert out["button"] == "Approve plan…" and out["disabled"] is True
     assert "jobs: page-home has no gate" in out["text"]
+
+
+LIVE = """<!doctype html><html><body>
+<pre id="result"></pre>
+<script>
+const wait = ms => new Promise(r => setTimeout(r, ms));
+async function until(f, what) {
+  for (let i = 0; i < 300; i++) { const v = f(); if (v) return v; await wait(25); }
+  throw new Error("timed out waiting for " + what);
+}
+function open(src) {
+  const f = document.createElement("iframe");
+  f.src = src; f.width = 1360; f.height = 900;
+  document.body.appendChild(f);
+  return new Promise(ok => f.addEventListener("load", () => {
+    f.contentWindow.ERRS = [];
+    f.contentWindow.addEventListener("error", e => f.contentWindow.ERRS.push(String(e.message)));
+    ok(f);
+  }));
+}
+const ROUTES = ["#/", "#/plan/humanharness/notes-edit/timeline", "#/plan/arkimedes/ui-polish/questions",
+  "#/plan/humanharness/notes-edit/events", "#/plan/humanharness/notes-edit/changes", "#/history", "#/euklides",
+  "#/dashboard", "#/draft/socrates/export/plan"];
+(async () => {
+  const out = {};
+  try {
+    const f = await open("/page.html#/plan/humanharness/notes-edit/timeline"), d = f.contentDocument, w = f.contentWindow;
+    await until(() => d.body.dataset.rendered === "1" && d.querySelector("canvas.graph"), "the graph");
+    out.loopOn = d.body.dataset.loop;
+    d.querySelector('[data-job="ui-edit"]').click();
+    await until(() => d.querySelector(".jpanel"), "the panel");
+    out.panel = d.querySelector(".jpanel").innerText;
+    out.focus = d.activeElement && d.activeElement.id;
+    d.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await wait(50);
+    out.closed = !d.querySelector(".jpanel");
+    d.getElementById("motion").click();
+    await wait(100);
+    out.paused = d.body.classList.contains("paused");
+    out.loopOff = d.body.dataset.loop;
+    out.errors = {};
+    for (const r of ROUTES) {
+      w.location.hash = r;
+      await until(() => d.body.dataset.rendered === "1", r);
+      await wait(150);
+      out.errors[r] = w.ERRS.slice();
+      w.ERRS.length = 0;
+    }
+    w.location.hash = "#/";
+    await wait(150);
+    out.minis = d.querySelectorAll(".mini-box canvas").length;
+    out.ticker = (d.querySelector(".ticker") || {}).innerText || "";
+    w.location.hash = "#/draft/socrates/export/plan";
+    await until(() => d.querySelector('canvas[data-src="draft"]'), "the draft graph");
+    out.draftGraph = true;
+  } catch (e) { out.error = String(e); }
+  document.getElementById("result").textContent = JSON.stringify(out);
+})();
+</script></body></html>"""
+
+
+def test_the_live_constellation_opens_the_job_panel_and_pauses(site, profile):
+    chrome, base, root = site
+    (root / "live.html").write_text(LIVE)
+    out = _dump(chrome, f"{base}/live.html", 1360, False, profile)
+    assert "error" not in out, out
+    assert out["loopOn"] == "on"
+    assert "ui-edit" in out["panel"] and "Time" in out["panel"] and "Spend" in out["panel"] and "Waits for" in out["panel"]
+    assert out["focus"] == "jp-close" and out["closed"] is True
+    assert out["paused"] is True and out["loopOff"] == "off"
+    assert all(not e for e in out["errors"].values()), out["errors"]
+    assert out["minis"] >= 3 and "running" in out["ticker"]
+    assert out["draftGraph"] is True
