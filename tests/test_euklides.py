@@ -17,8 +17,9 @@ def job(**over):
     ("question", job(usd=9.0), 2, ["answer", "fixed", "ask"]),
     ("blocked", job(), 2, ["unblock", "fixed", "ask"]),
     ("blocked", job(usd=2.5), 2, ["fixed", "ask"]),
-    ("failure", job(euklides_count=4), 2, ["ask"]),
-    ("question", job(euklides_count=4), 2, ["ask"]),
+    ("failure", job(euklides_count=8), 2, ["ask"]),
+    ("failure", job(euklides_count=4), 2, ["retry", "escalate", "fixed", "ask"]),
+    ("question", job(euklides_count=8), 2, ["ask"]),
 ])
 def test_allowed_actions(trigger, j, budget, expected):
     assert euklides.allowed(trigger, j, budget) == expected
@@ -35,19 +36,48 @@ def test_a_job_without_a_count_has_made_no_decision():
 
 
 def test_fixed_is_read_with_its_note():
-    assert euklides.parse({"action": "fixed", "note": "moved the file into the area"}, ["fixed", "ask"]) == {
-        "action": "fixed", "note": "moved the file into the area", "undo": None, "why": "", "proposal": None}
-    assert euklides.parse({"action": "fixed"}, ["fixed", "ask"]) is None
-    assert euklides.parse({"action": "fixed", "note": "x"}, ["ask"]) is None
+    assert euklides.parse({"action": "fixed", "note": "moved the file into the area", "undo": "job"},
+                          ["fixed", "ask"]) == {
+        "action": "fixed", "note": "moved the file into the area", "undo": "job", "why": "", "proposal": None}
+    assert euklides.parse({"action": "fixed", "undo": "job"}, ["fixed", "ask"]) is None
+    assert euklides.parse({"action": "fixed", "note": "x", "undo": "job"}, ["ask"]) is None
 
 
 def d(**fields):
-    return {"action": "retry", "note": "fix the import", **fields}
+    return {"action": "retry", "note": "fix the import", "undo": "job", **fields}
 
 
 def test_a_minimal_answer_is_read():
     assert euklides.parse(d(), ["retry", "ask"]) == {
-        "action": "retry", "note": "fix the import", "undo": None, "why": "", "proposal": None}
+        "action": "retry", "note": "fix the import", "undo": "job", "why": "", "proposal": None}
+
+
+@pytest.mark.parametrize("action, extra", [("answer", {}), ("retry", {}), ("escalate", {}), ("unblock", {}),
+                                           ("fixed", {}), ("fix_base", {}), ("widen", {"files": ["a.py"]})])
+def test_every_action_that_changes_files_says_its_reach(action, extra):
+    base = {"action": action, "note": "n", **extra}
+    assert euklides.parse(base, [action, "ask"]) is None
+    assert euklides.parse({**base, "undo": "maybe"}, [action, "ask"]) is None
+    for undo in ("job", "run"):
+        got = euklides.parse({**base, "undo": undo}, [action, "ask"])
+        assert got["action"] == action and got["undo"] == undo
+
+
+@pytest.mark.parametrize("undo, reach", [("plan", "what the plan delivers"), ("contract", "a public contract")])
+@pytest.mark.parametrize("action, then", sorted(euklides.UNDO_THEN.items()))
+def test_a_reach_past_the_run_is_an_ask_that_carries_the_same_action(action, then, undo, reach):
+    extra = {"files": ["a.py"]} if action == "widen" else {}
+    got = euklides.parse({"action": action, "note": "n", "undo": undo, "why": "w", **extra}, [action, "ask"])
+    assert got["action"] == "ask" and got["then"] == then and got["proposal"] == "n" and got["undo"] == undo
+    assert reach in got["note"] and f"would {action}" in got["note"]
+    assert got.get("files") == extra.get("files")
+
+
+def test_legacy_asks_undo_only_of_an_answer(ark_home):
+    (ark_home / "workspace.json").write_text(json.dumps({"roots": [], "euklides": {"mode": "legacy"}}))
+    assert euklides.parse({"action": "retry", "note": "n"}, ["retry"])["undo"] is None
+    assert euklides.parse({"action": "fixed", "note": "n", "undo": "contract"}, ["fixed"])["action"] == "fixed"
+    assert euklides.parse({"action": "answer", "note": "n", "undo": "run"}, ["answer"]) is None
 
 
 def test_an_answer_to_the_worker_keeps_its_undo_and_why():
@@ -169,7 +199,7 @@ def test_then_accept_carries_its_gate_stripped():
     ask(),                                         # no then
     ask(then="land"), ask(then=None), ask(then=3),
     ask(then="widen"), ask(then="widen", files=[]), ask(then="widen", files=["../x"]),
-    ask(then="widen", files=["a", "b", "c", "d"]),
+    ask(then="widen", files=[f"f{i}" for i in range(21)]),
     ask(then="raise"), ask(then="raise", usd=0), ask(then="raise", usd=-1), ask(then="raise", usd=float("inf")),
     ask(then="raise", usd=True), ask(then="raise", usd="2"),
     ask(then="go_on", files=["x.py"]), ask(then="go_on", usd=1), ask(then="widen", files=["x.py"], usd=1),
@@ -182,9 +212,9 @@ def test_an_ask_without_a_valid_then_is_not_usable(raw):
 
 
 def test_widen_and_raise_actions_keep_their_own_files_and_usd():
-    got = euklides.parse({"action": "widen", "note": "n", "files": ["a.py"]}, ["widen", "ask"])
+    got = euklides.parse({"action": "widen", "note": "n", "undo": "job", "files": ["a.py"]}, ["widen", "ask"])
     assert got["files"] == ["a.py"] and "then" not in got
-    got = euklides.parse({"action": "raise", "note": "n", "usd": 1}, ["raise", "ask"])
+    got = euklides.parse({"action": "raise", "note": "n", "usd": 1, "diagnosis": DIAG}, ["raise", "ask"])
     assert got["usd"] == 1.0 and "then" not in got
 
 
@@ -214,10 +244,32 @@ def test_the_journal_keeps_then_and_its_files_or_usd(ark_home):
 
 # ---- raise: Euklides may add budget, up to a share of what was planned -------------------------
 
-def test_a_raise_is_read_with_its_usd():
-    got = euklides.parse({"action": "raise", "usd": 0.4, "note": "one more attempt will do"}, ["raise", "ask"])
+DIAG = {"cause": "test_x times out on the fixture", "change": "the fixture is built once per module"}
+
+
+def test_a_raise_is_read_with_its_usd_and_diagnosis():
+    got = euklides.parse({"action": "raise", "usd": 0.4, "note": "one more attempt will do", "diagnosis": DIAG},
+                         ["raise", "ask"])
     assert got == {"action": "raise", "note": "one more attempt will do", "undo": None, "why": "",
-                   "proposal": None, "usd": 0.4}
+                   "proposal": None, "usd": 0.4, "diagnosis": DIAG}
+
+
+@pytest.mark.parametrize("diag", [None, "x", {"cause": "c"}, {"cause": " ", "change": "c"}, {"cause": 1, "change": "c"}])
+def test_a_raise_without_a_diagnosis_is_not_usable(diag):
+    d = {"action": "raise", "usd": 0.4, "note": "n", **({"diagnosis": diag} if diag is not None else {})}
+    assert euklides.parse(d, ["raise", "ask"]) is None
+
+
+def test_legacy_and_run_level_raises_need_no_diagnosis(ark_home):
+    d = {"action": "raise", "usd": 0.4, "note": "n"}
+    assert euklides.parse(d, ["raise", "ask"], then=False)["usd"] == 0.4
+    (ark_home / "workspace.json").write_text(json.dumps({"roots": [], "euklides": {"mode": "legacy"}}))
+    assert euklides.parse(d, ["raise", "ask"])["usd"] == 0.4
+
+
+def test_a_stalled_job_gets_no_raise():
+    assert "raise" in euklides.allowed("failure", job(usd=1.0), 1, 0.5)
+    assert "raise" not in euklides.allowed("failure", job(usd=1.0), 1, 0.5, stalled=True)
 
 
 @pytest.mark.parametrize("raw", [

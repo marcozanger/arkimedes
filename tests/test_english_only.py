@@ -26,6 +26,8 @@ ALLOWLIST = [
     ("lib/ark/cli.py", "sí"),
     # test of those answers
     ("tests/test_cli.py", "sí"),
+    # Marco's Spanish yes, read in the Euklides journal by ark replay
+    ("lib/ark/replay.py", "AGREED = re.compile"),
     # non-ASCII path example
     ("tests/test_proc.py", "diseño"),
     # the Spanish heading the ark-plan skill adds to the review copy

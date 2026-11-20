@@ -152,11 +152,26 @@ def test_the_worker_gets_its_grants_file_and_a_new_grant_reaches_it(feature, mon
     assert kw["grants_file"] == gf and "companions" not in kw
 
 
-def test_companions_over_the_small_rule_still_block(feature, monkeypatch):
+def _legacy(ark_home):
+    f = ark_home / "workspace.json"
+    f.write_text(json.dumps({**json.loads(f.read_text()), "euklides": {"mode": "legacy"}}))
+
+
+def test_companions_over_the_small_rule_still_block_in_legacy(feature, ark_home, monkeypatch):
+    _legacy(ark_home)
     _companions_run(feature, monkeypatch, [f"tests/test_{i}.py" for i in range(loop.SMALL_FILES + 1)])
     drive(waits_for_marco)
     st = state()
     assert not st.get("grants") and st["jobs"]["shell"]["status"] == "waiting_answer"
+
+
+def test_companions_of_any_size_become_grants_when_clear_of_the_reserved_list(feature, monkeypatch):
+    files = [f"tests/test_{i}.py" for i in range(loop.SMALL_FILES + 1)]
+    _companions_run(feature, monkeypatch, files)
+    drive(lambda: state().get("grants"))
+    assert sorted(state()["grants"]["shell"]) == sorted(files)
+    [a] = state()["amendments"]
+    assert (a["kind"], a["by"], a["decision"]) == ("area", "runner", None) and sorted(a["after"]) == sorted(files)
 
 
 def test_a_companion_inside_another_jobs_area_still_blocks(feature, monkeypatch):
@@ -478,7 +493,13 @@ def test_retries_are_capped_by_euklides_decisions_not_by_the_tier(feature, monke
     assert j["status"] == "merged" and j["tier_path"] == ["T1"] and j["attempts"] == 3
 
 
-def test_the_fifth_failure_asks_marco_and_stop_blocks_the_dependents(feature, monkeypatch):
+def _decisions(ark_home, n):
+    f = ark_home / "workspace.json"
+    f.write_text(json.dumps({**json.loads(f.read_text()), "euklides": {"decisions_per_job": n}}))
+
+
+def test_the_fifth_failure_asks_marco_and_stop_blocks_the_dependents(feature, ark_home, monkeypatch):
+    _decisions(ark_home, 4)
     monkeypatch.setenv("FAKE_FAIL", "shell:1,shell:2,shell:3,shell:4,shell:5")
     feature()
     drive(waits_for_marco)
@@ -1071,7 +1092,7 @@ def test_a_review_finding_with_bad_text_is_stored_clean(tmp_path, name, dirty, c
 @pytest.mark.parametrize("name,dirty,clean", BAD_TEXT)
 def test_a_euklides_note_with_bad_text_is_stored_clean(tmp_path, ark_home, name, dirty, clean):
     c = at_euklides(tmp_path, session="s")
-    loop.on_euklides(c, "shell", receipt(json.dumps({"action": "retry", "note": dirty})))
+    loop.on_euklides(c, "shell", euk_answer(action="retry", note=dirty))
     j = c.st["jobs"]["shell"]
     assert j["note"].endswith(clean) and clean in j["resume_msg"] and dirty not in j["resume_msg"]
 
@@ -1384,7 +1405,7 @@ def test_a_verdict_that_is_neither_clean_nor_fix_is_no_verdict(tmp_path):
 
 def test_an_escalation_starts_its_review_rounds_over(tmp_path, ark_home):
     c = at_euklides(tmp_path, review_rounds=2, session="s")
-    loop.on_euklides(c, "shell", receipt(json.dumps({"action": "escalate", "note": "harder"})))
+    loop.on_euklides(c, "shell", euk_answer(action="escalate", note="harder"))
     j = c.st["jobs"]["shell"]
     assert j["tier"] == "T2" and j["review_rounds"] == 0 and j["session"] is None
 
@@ -1964,7 +1985,8 @@ def test_a_changed_job_takes_the_fields_of_the_new_version(feature, monkeypatch)
 # -- what counts as "the model never got to work"
 
 @pytest.mark.parametrize("end", ["exit 1", "kill -KILL $$"])
-def test_a_worker_that_worked_and_crashed_is_charged(feature, monkeypatch, tmp_path, end):
+def test_a_worker_that_worked_and_crashed_is_charged(feature, ark_home, monkeypatch, tmp_path, end):
+    _decisions(ark_home, 4)
     monkeypatch.setattr(loop, "BACKOFF_FIRST", 0)
     shim(tmp_path, monkeypatch, f'''
 if [ "$ARK_ROLE" = worker ]; then
@@ -3318,7 +3340,14 @@ def at_euklides(tmp_path, trigger="failure", allowed=("retry", "escalate", "ask"
                 euklides={"trigger": trigger, "situation": situation, "kind": kind, "allowed": list(allowed)}, **over)
 
 
+DIAGNOSIS = {"cause": "the import fails", "change": "the next attempt fixes the import path"}
+
+
 def euk_answer(**d):
+    if d.get("action") == "raise":
+        d.setdefault("diagnosis", DIAGNOSIS)
+    if d.get("action") in euklides_mod.UNDO_THEN:
+        d.setdefault("undo", "job")
     return receipt(json.dumps(d), usd=0.4)
 
 
@@ -3469,6 +3498,8 @@ def test_ok_to_a_raise_adds_to_the_budget_and_marcos_raises(tmp_path, ark_home):
     loop._apply_answer(c.st, {"id": "q1", "text": "ok"})
     j = c.st["jobs"]["shell"]
     assert j["usd_raised"] == 2 and j["marco_raised"] == 2 and j["status"] == "needs_worker"
+    [a] = c.st["amendments"]
+    assert (a["job"], a["kind"], a["by"]) == ("shell", "budget", "Marco") and a["after"] - a["before"] == 2
 
 
 @pytest.mark.parametrize("trigger, kind", [("question", None), ("blocked", "integrate")])
@@ -3728,10 +3759,29 @@ def test_a_raise_within_the_margin_raises_the_job_and_it_goes_on(tmp_path, ark_h
     j = c.st["jobs"]["shell"]
     assert j["usd_raised"] == 0.4 and j["status"] == "needs_worker" and j["euklides_count"] == 1
     assert "one more attempt fixes the import" in j["resume_msg"]
-    assert any("raised" in e and "$0.40" in e for e in c.st["events"])
+    assert any("raised" in e and "$0.40" in e and "cause: the import fails" in e for e in c.st["events"])
     [row] = euklides_mod.decisions()
     assert row["action"] == "raise" and row["raise_usd"] == 0.4 and row["usd"] == 0.4
     assert not c.st.get("questions")
+    [r] = j["raises"]
+    assert r["usd"] == 0.4 and r["diagnosis"] == DIAGNOSIS and r["decision"] == row["id"] and r["outcome"] is None
+    [a] = c.st["amendments"]
+    assert (a["kind"], a["by"], a["decision"]) == ("budget", "Euklides", row["id"])
+    assert round(a["after"] - a["before"], 4) == 0.4
+
+
+def test_a_raise_without_a_diagnosis_asks_marco(tmp_path, ark_home):
+    margin(ark_home, 0.5)
+    c = over_budget(tmp_path)
+    loop.on_euklides(c, "shell", receipt(json.dumps({"action": "raise", "usd": 0.4, "note": "more"}), usd=0.4))
+    j = c.st["jobs"]["shell"]
+    assert j.get("usd_raised", 0) == 0 and j["status"] == "waiting_answer"
+
+
+def test_a_raise_gets_its_outcome_when_the_job_ends(tmp_path, ark_home):
+    j = {"status": "working", "raises": [{"usd": 1, "outcome": None}, {"usd": 2, "outcome": "merged"}]}
+    loop._raise_outcome(j, "blocked: tests are red")
+    assert [r["outcome"] for r in j["raises"]] == ["blocked: tests are red", "merged"]
 
 
 def test_a_raise_past_the_margin_left_asks_marco_with_the_raise_as_proposal(tmp_path, ark_home):
@@ -3785,3 +3835,9 @@ def test_start_euklides_opens_raise_with_the_margin_and_states_it(tmp_path, ark_
     c.plan = None
     loop.start_euklides(c, "shell")
     assert "raise" in j["euklides"]["allowed"] and seen["margin_left"] == 0.5
+    red = {"kind": "gate", "head": "abc", "tail": "FAILED tests/test_a.py::test_one - boom"}
+    loop.fail(c, "shell", "job gate red", red=red)
+    loop.fail(c, "shell", "job gate red", red=red)  # the same failure on the same head
+    assert "No progress" in j["euklides"]["situation"] and "tests/test_a.py::test_one" in j["euklides"]["situation"]
+    loop.start_euklides(c, "shell")
+    assert "raise" not in j["euklides"]["allowed"]

@@ -62,3 +62,20 @@ def test_then_shows_only_when_ask_is_open():
 def test_the_accept_line_says_when_to_use_it_and_when_never():
     p = " ".join(euk(allowed=["ask"]).split())
     assert "already committed" in p and "narrower form of the job's own gate" in p and "never to skip a red test" in p
+
+
+def test_blast_radius_gives_the_reserved_list_and_asks_for_the_reach(ark_home):
+    p = euk(allowed=["retry", "widen", "fix_base", "ask"])
+    assert "## What is yours" in p and "Everything is your call except this reserved list" in p
+    for r in ("R1 ", "R2 ", "R3 ", "R4 ", "R5 ", "R6 "):
+        assert r in p
+    assert "1 to 20 exact paths" in p and "small-fix rule" not in p and "through a reviewer" in p
+    assert "`plan` and `contract` make your decision a question to Marco" in p
+    assert p.index("## What is yours") < p.index("## Decide")
+
+
+def test_legacy_keeps_the_old_actions_text(ark_home):
+    import json
+    (ark_home / "workspace.json").write_text(json.dumps({"roots": [], "euklides": {"mode": "legacy"}}))
+    p = euk(allowed=["retry", "widen", "fix_base", "ask"])
+    assert "## What is yours" not in p and "1 to 3 exact paths" in p and "small-fix rule" in p

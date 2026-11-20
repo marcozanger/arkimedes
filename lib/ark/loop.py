@@ -21,7 +21,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import accounts, approve, beat, brief, caps, claude, coachqueue, companions, daycap, euklides, forge as forge_mod, gitops, inbox, integrate, merge, notify, paths, proc, questions, reporting, run, sweep, usage, versions
+from . import accounts, amend, approve, beat, brief, caps, claude, coachqueue, companions, daycap, euklides, forge as forge_mod, gitops, inbox, integrate, merge, notify, paths, progress, proc, questions, reporting, reserved, run, sweep, usage, versions
 from .globs import areas_overlap, match_any
 from .plan import load_plan, sha256_file
 from .validate import validate
@@ -289,6 +289,10 @@ def fail(c: Ctx, job: str, why: str, **extra) -> None:
     j, why = c.st["jobs"][job], _clean(why)
     j.update(failure=why, tier_attempts=j["tier_attempts"] + 1)
     run.event(c.st, f"{job} failed ({j['tier']}, attempt {j['tier_attempts']} at this tier): {why}")
+    red = extra.get("red") or {}
+    progress.note(j, red.get("tail") or why, red.get("head") or j.get("head"))
+    if progress.stalled(j):
+        why = f"{why}\n\nNo progress: {progress.why_stalled(j)}. A raise is not open."
     to_euklides(c, job, "failure", why, **extra)
 
 
@@ -300,6 +304,7 @@ def _block(st: dict, job: str, why: str, critical: bool = False) -> None:
     if note and why == proc.STOPPED_BY_MARCO:
         why = f"{why}: {_clean(note)[:300]}"
     j.update(status="blocked", reason=why, blocked_from=j["status"])
+    _raise_outcome(j, f"blocked: {why[:200]}")
     run.alert(st, f"{job} blocked: {why}", critical=critical)
 
 
@@ -723,10 +728,27 @@ def _raise(c: Ctx, job: str, e: dict, d: dict, decision) -> None:
                                                     f"${d['usd']:.2f}, past the ${max(0, left):.2f} left of his margin"},
                       {**d, "proposal": proposal, "then": "raise"}, decision)
         return
+    before = round(budget + j.get("usd_raised", 0), 4)
     j["usd_raised"] = round(j.get("usd_raised", 0) + d["usd"], 4)
     j["euklides_count"] = j.get("euklides_count", 0) + 1
-    run.event(c.st, f"{job}: Euklides raised its budget by ${d['usd']:.2f} (${j['usd_raised']:.2f} raised in all)")
+    diag = d.get("diagnosis") or {}
+    amend.add(c.st, job, "budget", before, round(budget + j["usd_raised"], 4), by="Euklides", decision=decision,
+              why=f"{diag.get('cause', '')} → {diag.get('change', '')}" if diag else d["note"], undo="job")
+    last = (j.get("failures") or [{}])[-1]
+    j.setdefault("raises", []).append({"usd": d["usd"], "decision": decision, "ts": run.now(),
+                                       "diagnosis": d.get("diagnosis"), "spent": j["usd"],
+                                       "sig": last.get("sig"), "outcome": None})
+    run.event(c.st, f"{job}: Euklides raised its budget by ${d['usd']:.2f} (${j['usd_raised']:.2f} raised in all)"
+              + (f"; cause: {d['diagnosis']['cause'][:150]}; change: {d['diagnosis']['change'][:150]}"
+                 if d.get("diagnosis") else ""))
     _go_on(c.st, job, e, d["note"])
+
+
+def _raise_outcome(j: dict, outcome: str) -> None:
+    """A raise's result, once the job ends: merged, or what stopped it. Only raises still open are set."""
+    for r in j.get("raises") or []:
+        if r.get("outcome") is None:
+            r["outcome"] = outcome
 
 
 FIXED_PROPOSAL = ":stop, or say what the job should do"
@@ -810,9 +832,9 @@ def _fixed(c: Ctx, job: str, e: dict, d: dict, decision) -> None:
 
 FIX_PREFIX = "_fix-"  # a job id never starts with "_": these names are the run's, not a job's
 FIX_DONE = ("landed", "failed")
-FIX_RUNNING = {"working": "worker", "gating": "gate"}
-FIX_WAITING_FOR = {"worker": "needs_worker", "gate": "needs_gate"}
-FIX_WAITING = ("needs_worker", "needs_gate", "needs_land")
+FIX_RUNNING = {"working": "worker", "gating": "gate", "reviewing": "review"}
+FIX_WAITING_FOR = {"worker": "needs_worker", "gate": "needs_gate", "review": "needs_review"}
+FIX_WAITING = ("needs_worker", "needs_gate", "needs_review", "needs_land")
 
 
 def _small_fix(c: Ctx, files: list[str], lines: int | None, skip: tuple = ()) -> str | None:
@@ -831,6 +853,31 @@ def _small_fix(c: Ctx, files: list[str], lines: int | None, skip: tuple = ()) ->
     return None
 
 
+def _legacy() -> bool:
+    return euklides.settings()["mode"] == "legacy"
+
+
+def _risk(c: Ctx, files: list[str], wt: Path, skip: tuple = ()) -> str | None:
+    """None when Euklides may make this change without Marco; otherwise why not, in words Marco reads.
+    legacy: the small-fix rule. blast-radius: the reserved list (reserved.py) on the change's diff, against the
+    live areas of this run's other jobs and of every other run of the repo."""
+    base = f"origin/{c.base}"
+    if _legacy():
+        why = _small_fix(c, files, gitops.changed_lines(wt, base, "HEAD", files), skip)
+        return f"over the small-fix rule: {why}" if why else None
+    areas = {other: run.area(c.st, other, mj) for other, mj in c.mjobs.items() if other not in skip}
+    others = reserved.other_runs_areas(c.st["repo"], c.st["slug"])
+    areas = None if others is None else {**areas, **others}
+    hits = reserved.check(files, gitops.diff_text(wt, base, "HEAD", files), areas, euklides.settings()["reserved"])
+    return f"reserved for Marco:\n{reserved.text(hits)}" if hits else None
+
+
+def _big(wt: Path, base: str, files: list[str]) -> bool:
+    """A change a reviewer sees before it lands (blast-radius): over REVIEW_FILES files or REVIEW_LINES lines."""
+    lines = gitops.changed_lines(wt, base, "HEAD", files)
+    return len(files) > reserved.REVIEW_FILES or lines is None or lines > reserved.REVIEW_LINES
+
+
 def _outside(c: Ctx, job: str) -> list[str]:
     """What the job changed outside its area and its grants."""
     return [_printable(f) for f in gitops.changed_files(c.wt(job), f"origin/{c.base}", "HEAD")
@@ -846,13 +893,13 @@ def _widen(c: Ctx, job: str, e: dict, d: dict, decision) -> None:
     elif not set(outside) <= set(files):
         why = f"the job also changed {', '.join(sorted(set(outside) - set(files)))}, which the widen did not name"
     else:
-        why = _small_fix(c, outside, gitops.changed_lines(c.wt(job), f"origin/{c.base}", "HEAD", outside),
-                         skip=(job,))
+        why = _risk(c, outside, c.wt(job), skip=(job,))
     if why:
         grant = outside or files
         d = {**d, "proposal": d["proposal"] or f"widen {job}'s area to {', '.join(grant)}", "then": "widen",
              "files": grant}
-        _euklides_ask(c.st, job, {**e, "situation": f"{e['situation']}\n\nOver the small-fix rule: {why}. "
+        why = why[0].upper() + why[1:]
+        _euklides_ask(c.st, job, {**e, "situation": f"{e['situation']}\n\n{why}. "
                                                     f"Files: {', '.join(grant)}"}, d, decision, mjobs=c.mjobs)
         return
     c.st["jobs"][job]["euklides_count"] = c.st["jobs"][job].get("euklides_count", 0) + 1
@@ -867,10 +914,10 @@ def _absorb_companions(c: Ctx, job: str, outside: list[str]) -> list[str]:
     comps = [f for f in outside if companions.is_companion(f)]
     if not comps:
         return outside
-    why = _small_fix(c, comps, gitops.changed_lines(c.wt(job), f"origin/{c.base}", "HEAD", comps), skip=(job,))
-    if why:
+    if _risk(c, comps, c.wt(job), skip=(job,)):
         return outside
-    _add_grant(c.st, job, comps, "companion files within the small-fix rule", by="runner (companion files)")
+    _add_grant(c.st, job, comps, "companion files clear of the reserved list" if not _legacy() else
+               "companion files within the small-fix rule", by="runner (companion files)")
     run.event(c.st, f"{job}: companion files allowed outside its area: {', '.join(comps)}")
     return [f for f in outside if f not in comps]
 
@@ -886,8 +933,12 @@ def _write_grants(st: dict, job: str) -> None:
 
 def _add_grant(st: dict, job: str, files: list[str], decision, by: str) -> None:
     grants = st.setdefault("grants", {}).setdefault(job, [])
+    before = list(grants)
     grants += [f for f in files if f not in grants]
     _write_grants(st, job)
+    journaled = by in ("Euklides", "Marco")  # the runner's companions pass a reason, not a journal id
+    amend.add(st, job, "area", before, list(grants), by=by.split(" (")[0], why=("" if journaled else decision),
+              decision=decision if journaled else None, undo="job")
     run.alert(st, f"{job}: {by} widened its area to {', '.join(files)} ({decision or 'not journaled'})")
 
 
@@ -910,7 +961,7 @@ def _start_base_fix(st: dict, job: str, e: dict, d: dict, decision, by: str = "E
         if by == "Euklides":
             st["fix_base_count"] = st.get("fix_base_count", 0) + 1
         live = {"n": len(fixes) + 1, "job": job, "note": _clean(d["note"]), "situation": e["situation"],
-                "decision": decision, "status": "needs_worker", "waiting": {}, "lost": 0}
+                "decision": decision, "status": "needs_worker", "waiting": {}, "lost": 0, "by": by}
         fixes.append(live)
         run.alert(st, f"{by} is fixing the base (fix {live['n']}, for {job}): {_clean(d['note'])[:200]}")
     live["waiting"][job] = {**e, "decision": decision, "proposal": d["proposal"] or d["note"]}
@@ -932,7 +983,7 @@ def _start_fix_worker(c: Ctx, f: dict) -> None:
     wt, m = c.wt(name), c.plan.manifest
     gitops.fetch(c.repo)
     gitops.add_worktree(c.repo, wt, c.branch(name), f"origin/{c.base}")  # ark/<slug>-_fix-<n>: no job's name
-    prompt = brief.fix_base_brief(c.st, f, c.plan, SMALL_FILES, SMALL_LINES)
+    prompt = brief.fix_base_brief(c.st, f, c.plan, SMALL_FILES, SMALL_LINES, legacy=_legacy())
     env = claude.runner_env("worker", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo), worktree=wt,
                             area=json.dumps(["**"]), report=c.report(name), gate=m["integration_gate"],
                             run_dir=c.dir, job=name)
@@ -950,6 +1001,18 @@ def _start_fix_gate(c: Ctx, f: dict) -> None:
     proc.start(c.dir, f"{name}.gate", ["sh", "-c", c.plan.manifest["integration_gate"]], cwd=c.wt(name), env=env,
                minutes=integrate.GATE_TIMEOUT / 60, meta={"head": f.get("head")})
     f["status"] = "gating"
+
+
+def _start_fix_review(c: Ctx, f: dict) -> None:
+    """A big base fix (blast-radius) is reviewed before it lands: CLEAN lands it, anything else fails it."""
+    name = f"{FIX_PREFIX}{f['n']}"
+    wt = c.wt(name)
+    prompt = brief.fix_review_brief(c.st, f, base=f"origin/{c.base}", head=f["head"])
+    cmd = claude.agent_cmd("reviewer", claude.MODELS["T1"], prompt, session=str(uuid.uuid4()), usd=FIX_BASE_USD / 2)
+    env = claude.runner_env("reviewer", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo), worktree=wt,
+                            area=json.dumps(["**"]), job=name, run_dir=c.dir)
+    proc.start(c.dir, f"{name}.review", cmd, cwd=wt, env=env, minutes=30, meta={"head": f["head"]})
+    f["status"] = "reviewing"
 
 
 def _move_fixes(c: Ctx, slots: Slots) -> None:
@@ -971,6 +1034,8 @@ def _move_fixes(c: Ctx, slots: Slots) -> None:
                 if not slots.gate(True, c.st, "fix"):
                     continue
                 _start_fix_gate(c, f)
+            elif f["status"] == "needs_review":
+                _start_fix_review(c, f)
             else:
                 _land_fix(c, f)
         except Exception as e:
@@ -1004,17 +1069,27 @@ def on_fix(c: Ctx, name: str, r: dict) -> None:
         if not files:
             return _fix_failed(c, f, "the fix worker changed nothing")
         skip = tuple(j for j, s in c.st["jobs"].items() if s["status"] == "merged")
-        why = _small_fix(c, files, gitops.changed_lines(wt, f"origin/{c.base}", "HEAD", files), skip=skip)
+        why = _risk(c, files, wt, skip=skip)
         if why:
-            return _fix_failed(c, f, f"over the small-fix rule: {why}")
-        f.update(status="needs_gate", head=gitops.rev(wt, "HEAD"), files=files)
-        run.event(c.st, f"base fix {f['n']}: worker done ({', '.join(files)})")
+            return _fix_failed(c, f, why)
+        review = not _legacy() and _big(wt, f"origin/{c.base}", files)
+        f.update(status="needs_gate", head=gitops.rev(wt, "HEAD"), files=files, review=review)
+        run.event(c.st, f"base fix {f['n']}: worker done ({', '.join(files)})"
+                        f"{'; a reviewer sees it before it lands' if review else ''}")
+        return
+    if kind == "review":
+        answer = _review_answer(r)
+        if answer is None or answer[0] != "CLEAN":
+            found = "; ".join(str(x) for x in answer[1])[:800] if answer else "the reviewer gave no verdict"
+            return _fix_failed(c, f, f"the reviewer did not pass the fix: {found}")
+        f["status"] = "needs_land"
+        run.event(c.st, f"base fix {f['n']}: review CLEAN")
         return
     if r["exit"] != 0 or r["reason"]:
         tail = _clean(r.get("result") or "")[-800:]
         return _fix_failed(c, f, f"the integration gate is still red after the fix "
                                  f"(exit {r['exit']}{', ' + r['reason'] if r['reason'] else ''}):\n{tail}")
-    f["status"] = "needs_land"
+    f["status"] = "needs_review" if f.get("review") else "needs_land"
     run.event(c.st, f"base fix {f['n']}: integration gate green")
 
 
@@ -1034,6 +1109,9 @@ def _land_fix(c: Ctx, f: dict) -> None:
     finally:
         gitops._cleanup(c.repo, scratch)
     f["status"] = "landed"
+    amend.add(c.st, ",".join(f["waiting"]) or "-", "base", base[:8], sha[:8], by=f.get("by") or "Euklides",
+              decision=f.get("decision"), why=f"fix {f['n']}: {f['note']} ({', '.join(f['files'])})"
+              + (" · reviewed" if f.get("review") else ""), undo="run")
     run.alert(c.st, f"base fix {f['n']} landed on {c.base}: {', '.join(f['files'])} "
                     f"({f['decision'] or 'not journaled'})")
     for job, e in f["waiting"].items():
@@ -1867,6 +1945,7 @@ def start_integrate(c: Ctx, job: str) -> None:
 
 def _merged(c: Ctx, job: str) -> None:
     c.st["jobs"][job]["status"] = "merged"
+    _raise_outcome(c.st["jobs"][job], "merged")
     run.event(c.st, f"{job}: merged into ark/{c.st['slug']}")
     try:
         gitops.remove_worktree(c.repo, c.wt(job))
@@ -1909,7 +1988,8 @@ def start_euklides(c: Ctx, job: str) -> None:
     e["allowed"] = euklides.allowed(e["trigger"], j, mj["budget"]["usd"], cfg["budget_margin"],  # fixed now: the
                                     kind=e.get("kind"), base_red=bool(e.get("base_red")),  # answer is checked
                                     fixes_used=c.st.get("fix_base_count", 0),  # against it
-                                    regate=regate_open(j, e))
+                                    regate=regate_open(j, e),
+                                    stalled=e["trigger"] == "failure" and progress.stalled(j))
     wt = c.wt(job)
     commits, changed = _branch_lists(wt, f"origin/{c.base}")
     prompt = brief.euklides_prompt(c.st, job, j, mj, c.plan, trigger=e["trigger"], situation=e["situation"],
@@ -2612,8 +2692,12 @@ def _run_then(st: dict, job: str, q: dict, ask: dict, before: dict) -> None:
         _add_grant(st, job, files, ask.get("decision"), by="Marco")
         return _go_on(st, job, e, f"{note}\n\nMarco granted {', '.join(files)} to this job's area.")
     if then == "raise":
+        planned = _budget_usd(st, job) or 0.0  # unreadable plan: the amendment still shows what was raised
+        before = round(planned + j.get("usd_raised", 0), 4)
         j["usd_raised"] = round(j.get("usd_raised", 0) + usd, 4)
         j["marco_raised"] = round(j.get("marco_raised", 0) + usd, 4)  # never against Euklides' margin
+        amend.add(st, job, "budget", float(before), round(planned + j["usd_raised"], 4), by="Marco",
+                  decision=ask.get("decision"), why=f"question {q['id']}: {ask.get('note') or ''}", undo="job")
         run.event(st, f"{job}: Marco raised its budget by ${usd:.2f}")
         return _go_on(st, job, e, ask.get("note") or "go on: Marco raised the budget")
     if then == "fix_base":
@@ -2636,6 +2720,8 @@ def _run_then(st: dict, job: str, q: dict, ask: dict, before: dict) -> None:
             before["accept_why"] = "the job's worktree has uncommitted changes, so its head is not all there is"
         else:
             j.update(accept_gate=ask["gate"], head=gitops.rev(wt, "HEAD"), status="needs_push")
+            amend.add(st, job, "gate", "the plan's gate", ask["gate"], by="Marco", decision=ask.get("decision"),
+                      why=f"question {q['id']}, for head {j['head'][:8]} only", undo="job")
             for k in ("question", "not_before", "push_tries", "step_tries", "rewrite_ok"):
                 j.pop(k, None)
             run.event(st, f"{job}: Marco accepted head {j['head'][:8]} on the replacement gate "

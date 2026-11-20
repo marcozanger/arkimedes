@@ -180,9 +180,12 @@ elif ROLE == "euklides":
     if os.environ.get("FAKE_EUKLIDES_RUN"):
         subprocess.run(["sh", "-c", os.environ["FAKE_EUKLIDES_RUN"]], check=True)
     if os.environ.get("FAKE_EUKLIDES"):
-        emit(os.environ["FAKE_EUKLIDES"], stream=False)  # raw JSON: it can hold any escape
+        raw = os.environ["FAKE_EUKLIDES"]  # raw JSON: it can hold any escape, so it is patched as text
+        if '"undo"' not in raw and re.search(r'"action":\s*"(answer|retry|escalate|unblock|fixed|widen|fix_base)"', raw):
+            raw = raw.replace("{", '{"undo": "job", ', 1)  # like the real one, it says the reach it is asked for
+        emit(raw, stream=False)
     elif "Trigger: failure" in PROMPT and "`retry`" in PROMPT:
-        emit('{"action": "retry", "note": "try again"}', stream=False)
+        emit('{"action": "retry", "note": "try again", "undo": "job"}', stream=False)
     else:
         emit('{"action": "ask", "note": "needs Marco", "proposal": ":stop", "then": "stop"}', stream=False)
 else:

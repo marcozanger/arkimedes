@@ -1808,12 +1808,16 @@ function euklidesScreen() {
   const e = S.euk;
   if (e === null) return '<div class="screen-head"><h1>Euklides</h1></div><p class="muted">Loading Euklides…</p>';
   const kv = (label, value) => `<div><span class="label">${label}</span><strong>${esc(value ?? "–")}</strong></div>`;
-  const ds = e.decisions || [];
-  const unreviewed = ds.filter(d => !d.review).length;
+  const all = e.decisions || [];
+  const ds = S.eukAmended ? all.filter(d => (d.amendments || []).length) : all;
+  const unreviewed = all.filter(d => !d.review).length;
+  const show = v => v == null || (Array.isArray(v) && !v.length) ? "–" : Array.isArray(v) ? v.join(", ") : typeof v === "number" ? `$${v.toFixed(2)}` : String(v);
+  const amended = d => (d.amendments || []).map(a => `<span class="small mono">Amended ${esc(a.id)} · ${esc(a.kind)}: ${esc(show(a.before))} → ${esc(show(a.after))}</span>`).join("");
+  const diag = d => d.diagnosis ? `<span class="small muted">Diagnosis: ${esc(d.diagnosis.cause)} → ${esc(d.diagnosis.change)}</span>` : "";
   const verdict = d => (d.review ? `<span class="pill ${d.review.verdict === "ok" ? "merged" : "blocked"}">${esc(d.review.verdict)}</span>` : '<span class="pill">not reviewed</span>');
   const decision = d => `<div class="decision${isNew(String(d.id || d.at))}"><div class="top"><span class="pill active">${esc(d.action)}</span>${verdict(d)}
       <span class="mono small">${esc(d.repo)}/${esc(d.slug)} · ${esc(d.job)}</span><span class="small muted">${esc(when(ms(d.at)))}${d.usd != null ? ` · $${esc(Number(d.usd).toFixed(2))}` : ""}</span></div>
-    <span>${esc(d.note)}</span>${d.why ? `<span class="small muted">Why: ${esc(d.why)}</span>` : ""}${d.trigger ? `<span class="small muted">After: ${esc(d.trigger)}</span>` : ""}
+    <span>${esc(d.note)}</span>${d.why ? `<span class="small muted">Why: ${esc(d.why)}</span>` : ""}${d.trigger ? `<span class="small muted">After: ${esc(d.trigger)}</span>` : ""}${diag(d)}${amended(d)}
     ${d.review && d.review.comment ? `<span class="small">Your verdict: ${esc(d.review.comment)}</span>` : ""}</div>`;
   const prefs = notePrefs();
   const perm = typeof Notification === "undefined" ? "unsupported" : Notification.permission;
@@ -1829,9 +1833,11 @@ function euklidesScreen() {
   const watching = plans().filter(p => ["running", "held"].includes(p.status));
   return `<div class="screen-head"><div class="eukhead"><canvas class="eye" data-eye="1" aria-hidden="true"></canvas><h1>Euklides</h1></div><span class="small muted">decides for a job when it cannot go on, within limits</span></div>${ticker()}
     <div class="card"><span class="label">Watching</span>${watching.length ? `<div class="watching">${watching.map(p => `<a class="pill active" href="${planHref(p)}">${esc(keyOf(p))}</a>`).join("")}</div>` : '<p class="hint">No plan is running.</p>'}</div>
-    <div class="card"><span class="label">Decision stream</span>${ds.length ? ds.map(decision).join("") : '<p class="hint">No decisions yet.</p>'}</div>
+    <div class="card"><span class="label">Decision stream</span>
+      <label class="small"><input type="checkbox" data-eukamended="1"${S.eukAmended ? " checked" : ""}> Only decisions that changed the plan</label>
+      ${ds.length ? ds.map(decision).join("") : `<p class="hint">${all.length ? "None of the recent decisions changed the plan." : "No decisions yet."}</p>`}</div>
     <div class="card"><span class="label">Model and limits</span><div class="kv">${kv("Model", e.model)}${kv("Per call", e.usd_per_call != null ? `$${e.usd_per_call} · ${e.minutes_per_call ?? "–"} min` : null)}${kv("Tools", e.tools)}${kv("Decisions per job without you", e.max_per_job)}</div></div>
-    <div class="card"><span class="label">Review its decisions</span><span class="small muted">${unreviewed ? `${unreviewed} of the last ${ds.length} decisions are not reviewed.` : "Every recent decision is reviewed."} Run this in a terminal; your verdicts become lessons.</span>
+    <div class="card"><span class="label">Review its decisions</span><span class="small muted">${unreviewed ? `${unreviewed} of the last ${all.length} decisions are not reviewed.` : "Every recent decision is reviewed."} Run this in a terminal; your verdicts become lessons.</span>
       <div class="copyline"><code>${esc(copy)}</code><button class="btn" type="button" data-copy="${esc(copy)}">${S.copied === copy ? "Copied" : "Copy"}</button></div></div>
     <div class="card"><span class="label">Lessons</span>${e.lessons ? `<div class="md">${renderBlocks(String(e.lessons).split("\n"), L)}</div>` : '<p class="hint">No lessons yet: they come from your verdicts.</p>'}</div>
     <div class="card"><span class="label">Browser notifications</span><div class="toggles">${toggles}</div>${permLine}</div>`;
@@ -2031,7 +2037,7 @@ function copyCommand() {
   try { navigator.clipboard.writeText(c.text).then(() => done(true), () => done(false)); } catch (e) { done(false); }
 }
 document.addEventListener("click", e => {
-  const t = e.target.closest("#motion,[data-close-job],[data-d],[data-job],[data-answer],[data-goto],[data-cmd],[data-copy],[data-notify],[data-verdict],[data-dv],[data-draft-act],[data-approve-plan],[data-draft-cancel],[data-reopen],#cmd-copy,#cmd-close");
+  const t = e.target.closest("#motion,[data-close-job],[data-d],[data-job],[data-answer],[data-goto],[data-cmd],[data-copy],[data-notify],[data-eukamended],[data-verdict],[data-dv],[data-draft-act],[data-approve-plan],[data-draft-cancel],[data-reopen],#cmd-copy,#cmd-close");
   if (!t) return;
   if (t.id === "motion") { setMotion(!moving()); return; }
   if (t.dataset.closeJob) { closeJob(); return; }
@@ -2040,6 +2046,7 @@ document.addEventListener("click", e => {
     try { Promise.resolve(Notification.requestPermission()).then(() => render(true), () => render(true)); } catch (err) { render(true); }
     return;
   }
+  if (t.dataset.eukamended) { S.eukAmended = !S.eukAmended; render(true); return; }
   if (t.dataset.copy) {
     const text = t.dataset.copy;
     try { navigator.clipboard.writeText(text).then(() => { S.copied = text; render(true); }, () => {}); } catch (err) { /* select it by hand */ }

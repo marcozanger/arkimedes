@@ -3,7 +3,12 @@
 The loop calls it when a job attempt failed, a worker asked a question, or a job hit a block a new
 attempt can fix. The runner, not the model, decides which actions are open (`allowed`); the model
 only picks one of them and classifies the reach of an answer (`undo`). Every decision is journaled
-under history/euklides/ for Marco's review (`ark review`)."""
+under history/euklides/ for Marco's review (`ark review`).
+
+Two modes (workspace.json `euklides.mode`). `blast-radius`, the default: everything is Euklides' call
+except the reserved list (lib/ark/reserved.py), which the runner checks on every file he or a fix
+worker touches; a big base fix goes to a reviewer, not to Marco. `legacy`: the old small-fix rule
+(SMALL_FILES / SMALL_LINES) and at most MAX_FIX_BASE base fixes a run."""
 from __future__ import annotations
 
 import fcntl
@@ -21,13 +26,29 @@ DEFAULTS = {
     # it repairs the job's branch itself; the push layer and merge-guard keep pushes and PRs the runner's
     "tools": ["Read", "Grep", "Glob", "Bash", "Edit", "Write"],
     "denied_tools": ["WebFetch", "WebSearch", "Task", "Agent", "NotebookEdit"],
-    "budget_margin": 0.10,  # Euklides may raise a job's budget, and a run's total, by this share of the plan
-    "decisions_per_job": 4,  # decisions without Marco per job and run; after that Euklides can only ask
+    # blast-radius: Euklides may do anything the reserved list (reserved.py) does not hold for Marco;
+    # legacy: the small-fix rule and MAX_FIX_BASE, as before 2026-11-20
+    "mode": "blast-radius",
+    "budget_margin": None,  # Euklides may raise a job's budget, and a run's total, by this share of the plan
+    "decisions_per_job": None,  # decisions without Marco per job and run; after that Euklides can only ask
+    "reserved": None,  # R5 path globs: public contracts only Marco changes (None: reserved.DEFAULT_GLOBS)
 }
-MAX_FIX_BASE = 3  # base fixes per run without Marco
+MODES = {  # what an unset budget_margin and decisions_per_job mean in each mode
+    "blast-radius": {"budget_margin": 1.0, "decisions_per_job": 8},  # up to twice the planned budget
+    "legacy": {"budget_margin": 0.10, "decisions_per_job": 4},
+}
+MAX_FIX_BASE = 3  # base fixes per run without Marco, in legacy mode
+WIDEN_FILES = {"legacy": 3, "blast-radius": 20}  # files one widen may name
 TRIGGERS = ("failure", "question", "blocked")
-KEYS = {"action", "note", "undo", "why", "proposal", "files", "usd", "then", "gate"}
+KEYS = {"action", "note", "undo", "why", "proposal", "files", "usd", "then", "gate", "diagnosis"}
 THEN = ("go_on", "escalate", "widen", "fix_base", "raise", "accept", "stop")  # what Marco's ok to an ask makes the runner do
+# blast-radius: the actions that change files or how the plan runs carry `undo`, how far a mistake reaches.
+# job / run: Euklides' call. plan (R1, what is delivered) / contract (R5, a public contract): an ask whose
+# `then` is the same action, so Marco's ok carries it out.
+UNDO = ("job", "run", "plan", "contract")
+UNDO_THEN = {"answer": "go_on", "retry": "go_on", "unblock": "go_on", "fixed": "go_on", "escalate": "escalate",
+             "widen": "widen", "fix_base": "fix_base"}
+UNDO_REACH = {"plan": "what the plan delivers", "contract": "a public contract"}
 RUN = "_run"  # the job name of a run-level decision: a job id never starts with "_"
 RUN_ACTIONS = ["raise", "ask"]
 NOTE_CHARS, WHY_CHARS, PROPOSAL_CHARS = 1000, 300, 1000
@@ -55,6 +76,16 @@ def settings() -> dict:
         if k not in DEFAULTS:
             raise ValueError(f"euklides.{k} is not a setting (known: {', '.join(DEFAULTS)})")
     out = {**{k: (list(v) if isinstance(v, list) else v) for k, v in DEFAULTS.items()}, **block}
+    if out["mode"] not in MODES:
+        raise ValueError(f"euklides.mode must be one of {', '.join(MODES)}")
+    for k, v in MODES[out["mode"]].items():
+        if out[k] is None:
+            out[k] = v
+    if out["reserved"] is None:
+        from .reserved import DEFAULT_GLOBS
+        out["reserved"] = list(DEFAULT_GLOBS)
+    if not isinstance(out["reserved"], list) or not all(isinstance(g, str) and g.strip() for g in out["reserved"]):
+        raise ValueError("euklides.reserved must be a list of non-empty path globs")
     m = out["model"]
     if not (isinstance(m, str) and (m in ("haiku", "sonnet", "opus") or m.startswith("claude-"))):
         raise ValueError("euklides.model must be haiku, sonnet, opus or a string starting with claude-")
@@ -87,13 +118,14 @@ def run_margin_left(st: dict, planned: float, margin: float) -> float:
 
 
 def allowed(trigger: str, j: dict, budget_usd: float, margin: float = 0.0, kind: str | None = None,
-            base_red: bool = False, fixes_used: int = 0, regate: bool = False) -> list[str]:
+            base_red: bool = False, fixes_used: int = 0, regate: bool = False, stalled: bool = False) -> list[str]:
     """The actions open now, `ask` always last. Spending past the budget and its margin, changing the plan
     and blocking are never actions: they can only be proposed to Marco. `raise` opens when the job is at or
     over its budget (plus what was raised) and margin is left. `widen` opens only after an area block,
-    `fix_base` only after an integration gate red on the base too, at most MAX_FIX_BASE a run.
+    `fix_base` only after an integration gate red on the base too (in legacy mode at most MAX_FIX_BASE a run).
     `fixed` (Euklides repaired the branch himself) is open while decisions remain. `regate` opens when the
-    loop says the red head passed before; it ignores the budget."""
+    loop says the red head passed before; it ignores the budget. `stalled` (the last two failures were the same
+    on the same head, lib/ark/progress.py) closes `raise`: more money would buy the same failure."""
     if j.get("euklides_count", 0) >= settings()["decisions_per_job"]:
         return ["ask"]
     under = j["usd"] < budget_usd + j.get("usd_raised", 0)
@@ -108,9 +140,10 @@ def allowed(trigger: str, j: dict, budget_usd: float, margin: float = 0.0, kind:
         out.append("unblock")
         if kind == "area":
             out.append("widen")
-    if trigger == "blocked" and kind == "integrate" and base_red and fixes_used < MAX_FIX_BASE:
+    if trigger == "blocked" and kind == "integrate" and base_red and (
+            settings()["mode"] != "legacy" or fixes_used < MAX_FIX_BASE):
         out.append("fix_base")  # the base's fix is not paid from the job's budget
-    if not under and margin_left(j, budget_usd, margin) > 1e-9:
+    if not under and not stalled and margin_left(j, budget_usd, margin) > 1e-9:
         out.append("raise")
     if regate:
         out.append("regate")  # the same gate again, alone on the machine: no model, no budget
@@ -118,8 +151,8 @@ def allowed(trigger: str, j: dict, budget_usd: float, margin: float = 0.0, kind:
 
 
 def _files(v) -> list[str] | None:
-    """1 to 3 exact relative paths (no glob, no `..`, not absolute), or None."""
-    if not isinstance(v, list) or not 1 <= len(v) <= 3:
+    """1 to WIDEN_FILES exact relative paths (no glob, no `..`, not absolute), or None."""
+    if not isinstance(v, list) or not 1 <= len(v) <= WIDEN_FILES[settings()["mode"]]:
         return None
     out = []
     for f in v:
@@ -160,6 +193,14 @@ def _then(d: dict) -> dict | None:
     return {"then": then}
 
 
+def _diagnosis(v) -> dict | None:
+    """A raise's diagnosis: `cause` (why the job failed) and `change` (what the next attempt does differently)."""
+    if not isinstance(v, dict) or not {"cause", "change"} <= set(v):
+        return None
+    out = {k: _text(v[k], WHY_CHARS) for k in ("cause", "change")}
+    return out if all(out.values()) else None
+
+
 def parse(d, allowed_now: list[str], then: bool = True) -> dict | None:
     """The decision in an answer, or None when it is not usable now (the loop then asks Marco).
 
@@ -186,9 +227,15 @@ def parse(d, allowed_now: list[str], then: bool = True) -> dict | None:
     if not isinstance(why, str) or (proposal is not None and not isinstance(proposal, str)):
         return None
     why, proposal = why.strip()[:WHY_CHARS], (_text(proposal, PROPOSAL_CHARS) or None)
-    undo = d.get("undo") if action == "answer" else None
-    if action == "answer" and undo not in ("job", "plan"):
-        return None
+    legacy = settings()["mode"] == "legacy"
+    if legacy:  # only an answer says its reach, job or plan
+        undo = d.get("undo") if action == "answer" else None
+        if action == "answer" and undo not in ("job", "plan"):
+            return None
+    else:
+        undo = d.get("undo") if action in UNDO_THEN else None
+        if action in UNDO_THEN and undo not in UNDO:
+            return None
     if action == "ask" and not proposal:
         return None
     usd = d.get("usd")
@@ -196,18 +243,26 @@ def parse(d, allowed_now: list[str], then: bool = True) -> dict | None:
         return None
     if action == "raise" and not _usd(usd):
         return None
+    diagnosis = _diagnosis(d.get("diagnosis")) if action == "raise" and then else None
+    if action == "raise" and then and diagnosis is None and settings()["mode"] != "legacy":
+        return None  # blast-radius: a job's raise says what failed and what the money changes
     files = _files(d.get("files")) if action == "widen" else None
     if action == "widen" and files is None:
         return None
-    if action == "answer" and undo == "plan":
+    if legacy and action == "answer" and undo == "plan":
         return {"action": "ask", "note": f"Euklides would answer this, but a wrong answer would reach beyond "
                                          f"this job: {why or 'no reason given'}",
                 "undo": "plan", "why": why, "proposal": note, "then": "go_on"}
+    if not legacy and undo in UNDO_REACH:  # R1 / R5: Marco's; his ok carries out the same action
+        out = {"action": "ask", "note": f"Euklides would {action} here, but a mistake would reach "
+                                        f"{UNDO_REACH[undo]}: {why or 'no reason given'}",
+               "undo": undo, "why": why, "proposal": note, "then": UNDO_THEN[action]}
+        return {**out, "files": files} if action == "widen" else out
     out = {"action": action, "note": note, "undo": undo, "why": why, "proposal": proposal}
     if ask_then:
         return {**out, **ask_then}
     if action == "raise":
-        return {**out, "usd": round(float(usd), 4)}  # only a raise carries usd
+        return {**out, "usd": round(float(usd), 4), **({"diagnosis": diagnosis} if diagnosis else {})}
     return {**out, "files": files} if files else out  # only a widen carries files
 
 
@@ -258,6 +313,8 @@ def record(st: dict, job: str, ctx: dict, d: dict, *, valid: bool, usd: float) -
             row["gate"] = d["gate"]
         if d["action"] == "raise" or d.get("then") == "raise":
             row["raise_usd"] = d["usd"]  # `usd` is what the call cost
+        if d.get("diagnosis"):
+            row["diagnosis"] = d["diagnosis"]
         _append("decisions.jsonl", row)
         return row["id"]
 
