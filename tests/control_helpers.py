@@ -21,14 +21,27 @@ def settled(repo="demo", slug=SLUG):
         and not proc.active(paths.run_dir(repo, slug))
 
 
-def drive(until, cycles=400):
+def drive(until, seconds=60, what=None):
+    """Run loop cycles until `until()` holds. Stops by a time limit, not a count of cycles: a busy machine
+    runs fewer cycles in the same time. The failure names what it waited for and the state it ended in."""
+    import inspect
     from ark import loop
-    for _ in range(cycles):
+    end = time.monotonic() + seconds
+    cycles = 0
+    while True:
         loop.cycle()
+        cycles += 1
         if until():
             return
+        if time.monotonic() > end:
+            break
         time.sleep(0.05)
-    raise AssertionError(f"not reached; state: {state()}")
+    if what is None:
+        try:
+            what = inspect.getsource(until).strip()
+        except (OSError, TypeError):
+            what = getattr(until, "__qualname__", repr(until))
+    raise AssertionError(f"drive gave up after {seconds}s and {cycles} cycles waiting for: {what}\nstate: {state()}")
 
 
 def change_state(**fields_by_job):
@@ -53,7 +66,7 @@ def workspace(ark_home, tmp_path, **limits):
     sent = tmp_path / "sent"
     f = ark_home / "workspace.json"
     ws = json.loads(f.read_text())      # its roots are what makes the demo repo valid
-    ws["limits"] = {**ws.get("limits", {}), **limits}
+    ws["limits"] = {**ws.get("limits", {}), "load_max": 0, **limits}
     ws["notify"] = ["sh", "-c", f'printf "%s\\n" "$1" >> "{sent}"', "notify"]
     f.write_text(json.dumps(ws))
     return sent

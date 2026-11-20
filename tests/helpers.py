@@ -107,3 +107,12 @@ def set_accounts(ark_home, rules):
     ws = json.loads(f.read_text())
     ws["accounts"] = rules
     f.write_text(json.dumps(ws))
+
+
+def no_load_brake(ark_home):
+    """A gate waits while the machine is busy; a test that waits for a run must not depend on how busy it is."""
+    import json
+    f = ark_home / "workspace.json"
+    ws = json.loads(f.read_text())
+    ws["limits"] = {**ws.get("limits", {}), "load_max": 0}
+    f.write_text(json.dumps(ws))
