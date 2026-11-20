@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# ark-test job|full [pytest args] — the suite, for a plan's gates.
+#   job  a job's gate: only the tests the change can affect (pytest-testmon). It runs the whole suite instead when
+#        there is no testmon data, when the diff against the base has a file that is not a .py under lib/ or tests/,
+#        or when testmon itself fails (an exit code that is not "tests failed").
+#   full the integration gate: the whole suite, and it refreshes the testmon data for later `job` runs.
+# The first line says which mode ran. ARK_TEST_BASE is the ref the change is measured against (default origin/main).
+# ARK_TEST_PYTEST overrides the pytest command (tests use it).
+set -u
+root="$(cd "$(dirname "$(realpath "$0")")/.." && pwd)"
+cd "$root" || exit 2
+mode="${1:-}"
+[ $# -gt 0 ] && shift
+case "$mode" in job|full) ;; *) echo "usage: ark-test job|full [pytest args]" >&2; exit 2 ;; esac
+
+data="${ARK_HOME:-$HOME/.claude/arkimedes}/repos/arkimedes/testmondata"
+base="${ARK_TEST_BASE:-origin/main}"
+if [ -n "${ARK_TEST_PYTEST:-}" ]; then read -r -a pytest <<<"$ARK_TEST_PYTEST"; else pytest=(.venv/bin/python -m pytest); fi
+
+run_full() {  # $1: why; the rest are pytest args
+  local why="$1"; shift
+  echo "ark-test: mode=full ($why)"
+  "${pytest[@]}" -q -n auto --testmon-noselect "$@"
+  local code=$?
+  if [ "$code" -eq 0 ] && [ -f .testmondata ]; then
+    mkdir -p "$(dirname "$data")" && cp .testmondata "$data" 2>/dev/null
+  fi
+  return "$code"
+}
+
+if [ "$mode" = full ]; then run_full "integration gate, everything runs" "$@"; exit $?; fi
+
+[ -f .testmondata ] || { [ -f "$data" ] && cp "$data" .testmondata 2>/dev/null; }
+[ -f .testmondata ] || { run_full "no testmon data" "$@"; exit $?; }
+
+mb="$(git merge-base HEAD "$base" 2>/dev/null)" || { run_full "no merge base with $base" "$@"; exit $?; }
+changed="$(git diff --name-only "$mb"; git ls-files --others --exclude-standard)"
+other="$(printf '%s\n' "$changed" | grep -v '^$' | grep -Ev '^(lib|tests)/.*\.py$' | head -3 | tr '\n' ' ')"
+[ -z "$other" ] || { run_full "changed outside lib/ and tests/ .py: $other" "$@"; exit $?; }
+
+echo "ark-test: mode=job (only the tests the change can affect)"
+"${pytest[@]}" -q -n auto --testmon "$@"
+code=$?
+case "$code" in
+  0|5) exit 0 ;;  # 5: testmon selected nothing
+  1) exit 1 ;;
+  *) run_full "testmon failed with exit $code" "$@"; exit $? ;;
+esac

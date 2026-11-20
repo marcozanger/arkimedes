@@ -45,7 +45,7 @@ Files, steps, test first, done check.
 
 ```yaml
 setup: [pnpm install]                 # what a fresh worktree needs
-integration_gate: pnpm test           # runs on ark/<slug> before every merge
+integration_gate: pnpm test           # runs on ark/<slug> before every merge; Arkimedes' own plans: bin/ark-test full
 final_pr_title: "feat(notes): edit and delete notes"
 # merge:                                # only when the plan overlaps plans in flight (parallel-plans)
 #   against: [humanharness/other-plan]  # the plans it overlaps with
@@ -61,7 +61,7 @@ jobs:
     area: [packages/shell/src/notes/**]
     after: []                         # job ids merged first
     tier: T1                          # T0 haiku · T1 sonnet · T2 opus
-    gate: pnpm -F shell test          # gates get ARK_TEST_WORKERS (limits.gate_workers): `vitest --maxWorkers=$ARK_TEST_WORKERS`
+    gate: pnpm -F shell test          # Arkimedes' own plans: bin/ark-test job; gates get ARK_TEST_WORKERS (limits.gate_workers): `vitest --maxWorkers=$ARK_TEST_WORKERS`
     heavy: false                      # heavy gates still run one at a time
     companions: true                  # optional, default true: a few small test/doc files outside the area are allowed; false keeps the area strict
     done:

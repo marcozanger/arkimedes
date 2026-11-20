@@ -354,6 +354,22 @@ finished, the budget for what runs and what is left. Delay is forecast end minus
   which chooses wait (once), steer (twice per job), stop and escalate, or stop and block. The process's hard deadline
   is twice its tier's minutes.
 
+## bin/ark-test
+
+The test gate of a plan for this repo (`gate: bin/ark-test job`, `integration_gate: bin/ark-test full`). Both run
+`pytest -q -n auto`, so `gate_workers` still bounds the processes, and the first output line says which mode ran.
+
+- `job` runs only the tests the change can affect (`pytest-testmon` follows what each test executes). It runs the
+  whole suite instead, and says why, when there is no `.testmondata` (a missing one is first seeded from
+  `$ARK_HOME/repos/arkimedes/testmondata`), when the diff against `origin/main` (`ARK_TEST_BASE`) has a file that is
+  not a `.py` under `lib/` or `tests/` (requirements, `bin/`, templates, docs, data), or when testmon exits with
+  anything but passed, failed or nothing selected. A red test stays red: it is not run again.
+- `full` runs everything and, when green, copies `.testmondata` to the shared path. The integration gate always uses
+  it, so whatever reaches main passed the whole suite; a selection that misses a dependency can only cost a job a
+  late red at integration, never a bad merge.
+- testmon keeps its data relative to the project, so a copy in another worktree path works. A comment-only edit
+  counts as no change.
+
 ## Gate limits
 
 `limits` in `workspace.json` (all optional) also keep gates from overloading the machine:
