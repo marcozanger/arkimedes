@@ -296,6 +296,9 @@ def _block(st: dict, job: str, why: str, critical: bool = False) -> None:
     why = _clean(why)
     j = st["jobs"][job]
     j.pop("regate", None)  # a job that leaves its gate another way never keeps the machine quiet
+    note = j.pop("stop_why", None)  # `ark stop --why`: the sentinel itself stays exact, the note rides after it
+    if note and why == proc.STOPPED_BY_MARCO:
+        why = f"{why}: {_clean(note)[:300]}"
     j.update(status="blocked", reason=why, blocked_from=j["status"])
     run.alert(st, f"{job} blocked: {why}", critical=critical)
 
@@ -2640,6 +2643,21 @@ def _apply_stop(st: dict, item: dict) -> None:
     _block(st, job, proc.STOPPED_BY_MARCO)
 
 
+def _apply_stop_why(st: dict, item: dict) -> None:
+    """`ark stop --why "..."`: the reason Marco gave. It lands on the block that follows his stop, or on the one
+    that already happened, so the history says why instead of only "stopped by Marco"."""
+    job, why = item.get("job"), item.get("why")
+    j = st["jobs"].get(job)
+    why = " ".join(_clean(why).split())[:300] if isinstance(why, str) else ""
+    if j is None or not why:
+        return
+    if j["status"] == "blocked" and j.get("reason") == proc.STOPPED_BY_MARCO:
+        j["reason"] = f"{proc.STOPPED_BY_MARCO}: {why}"
+        return run.event(st, f"{job}: stop reason noted: {why}")
+    if j["status"] not in run.TERMINAL:
+        j["stop_why"] = why
+
+
 ENDED = "run ended by Marco"
 
 
@@ -2969,7 +2987,7 @@ def _settle_final_pr(st: dict, forge) -> None:
 
 ANSWERS = {"worker": _answered_worker, "plan_changed": _answered_plan_changed, "cap_run": _answered_cap_run,
            "refresh": _answered_refresh}
-INBOX = {"answer": _apply_answer, "stop": _apply_stop, "steer": _apply_steer,
+INBOX = {"answer": _apply_answer, "stop": _apply_stop, "stop_why": _apply_stop_why, "steer": _apply_steer,
          "attach": _apply_attach, "attach_done": _apply_attach_done, "retry": _apply_retry}
 
 
