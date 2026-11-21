@@ -419,12 +419,34 @@ def on_worker(c: Ctx, job: str, r: dict) -> None:
     bad = done_check(c, job)
     if bad and bad[0] == "outside":
         return to_euklides(c, job, "blocked", bad[1], "area")
+    if _followup_settled(c, job, bad):
+        return
     if bad:
         return fail(c, job, {"dirty": "the worker ended DONE with uncommitted changes",
                              "empty": "the worker ended DONE without any change"}.get(bad[0],
                                                                                        f"the worker ended DONE, but {bad[1]}"))
     j.update(status="needs_push", head=gitops.rev(c.wt(job), "HEAD"))
     run.event(c.st, f"{job}: worker done, head {j['head'][:8]}")
+
+
+def _followup_settled(c: Ctx, job: str, bad: tuple[str, str] | None) -> bool:
+    """A follow-up (a merged job a new plan version changed) that ends with nothing to add, after a worker's DONE
+    or Euklides' `fixed`: its earlier work is already in the base, so it ends merged with no push, gate or PR,
+    and its dependents go on. An area that only shrank needs no commit. Any other job with no change still fails."""
+    j = c.st["jobs"][job]
+    f = j.get("followup")
+    if not (bad and bad[0] == "empty" and isinstance(f, dict)):
+        return False
+    for k in ("question", "not_before", "push_tries", "step_tries", "euklides", "euklides_ask", "failure"):
+        j.pop(k, None)
+    j.update(status="merged", head=gitops.rev(c.wt(job), "HEAD"))
+    _raise_outcome(j, "merged")
+    run.event(c.st, f"{job}: follow-up of v{f.get('from_version')} needs no change; its merged work stands")
+    try:
+        gitops.remove_worktree(c.repo, c.wt(job))
+    except gitops.GitError as e:  # the job is settled all the same
+        run.event(c.st, f"{job}: its worktree stays: {e}")
+    return True
 
 
 def done_check(c: Ctx, job: str) -> tuple[str, str] | None:
@@ -818,6 +840,8 @@ def _fixed(c: Ctx, job: str, e: dict, d: dict, decision) -> None:
     and a lease) and gated, with no new worker attempt. A failed check asks Marco and pushes nothing."""
     j = c.st["jobs"][job]
     bad = done_check(c, job) if c.wt(job).is_dir() else ("worktree", "the job has no worktree")
+    if _followup_settled(c, job, bad):
+        return
     if bad:
         return _euklides_ask(c.st, job, e, {**d, "note": f"it replied fixed, but {bad[1]}",
                                             "proposal": FIXED_PROPOSAL, "then": "stop"}, decision)

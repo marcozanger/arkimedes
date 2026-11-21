@@ -3841,3 +3841,46 @@ def test_start_euklides_opens_raise_with_the_margin_and_states_it(tmp_path, ark_
     assert "No progress" in j["euklides"]["situation"] and "tests/test_a.py::test_one" in j["euklides"]["situation"]
     loop.start_euklides(c, "shell")
     assert "raise" not in j["euklides"]["allowed"]
+
+
+# -- a follow-up that needs no change: its merged work stands
+
+FOLLOWUP = {"from_version": 1, "diff": "-- a/**\n+- a/x.txt"}
+
+
+def _empty_tree(monkeypatch):
+    monkeypatch.setattr(loop, "done_check", lambda c, job: ("empty", "nothing changed against origin/ark/x"))
+    monkeypatch.setattr(gitops, "rev", lambda wt, ref: "f" * 40)
+    gone = []
+    monkeypatch.setattr(gitops, "remove_worktree", lambda repo, wt: gone.append(wt))
+    return gone
+
+
+def test_a_follow_up_done_with_no_change_ends_merged(tmp_path, monkeypatch):
+    gone = _empty_tree(monkeypatch)
+    c = bare(tmp_path, followup=FOLLOWUP)
+    loop.on_worker(c, "shell", receipt("nothing is missing\nSTATUS: DONE"))
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "merged" and j["pr"] is None and j["attempts"] == 0
+    assert any("follow-up of v1 needs no change; its merged work stands" in e for e in c.st["events"])
+    assert gone == [tmp_path / "shell"]
+
+
+def test_a_follow_up_fixed_with_no_change_ends_merged(tmp_path, monkeypatch, ark_home):
+    _empty_tree(monkeypatch)
+    (tmp_path / "shell").mkdir()
+    c = at_euklides(tmp_path, trigger="question", kind="area", allowed=("unblock", "widen", "fixed", "ask"),
+                    followup=FOLLOWUP)
+    loop.on_euklides(c, "shell", euk_answer(action="fixed", note="the branch equals the base"))
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "merged" and not c.st.get("questions")
+    assert any("its merged work stands" in e for e in c.st["events"])
+
+
+def test_a_job_that_is_not_a_follow_up_still_fails_on_no_change(tmp_path, monkeypatch):
+    _empty_tree(monkeypatch)
+    c = bare(tmp_path)
+    loop.on_worker(c, "shell", receipt("nothing to do\nSTATUS: DONE"))
+    j = c.st["jobs"]["shell"]
+    assert j["status"] != "merged"
+    assert any("without any change" in e for e in c.st["events"])
