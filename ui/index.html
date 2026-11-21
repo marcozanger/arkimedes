@@ -9,7 +9,7 @@
 :root {
   --bg: #f8fafc; --raised: #ffffff; --line: #d3dbe5; --fg: #17212e; --muted: #5a6979;
   --accent: #1f55c4; --accent-soft: #dfe8fa; --attn: #b56d00; --attn-soft: #fbeed5; --attn-ink: #8a5200;
-  --bad: #b3261e; --bad-soft: #fae3e1; --ok: #17693f; --ok-soft: #dcf0e4; --wait: #5d6b7b; --wait-soft: #e6ebf1; --grid: #e3e9f0;
+  --bad: #b3261e; --bad-soft: #fae3e1; --ok: #17693f; --ok-soft: #dcf0e4; --wait: #5d6b7b; --wait-soft: #e6ebf1; --grid: #e3e9f0; --faint: #9aa6b4;
   --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
   --mono: ui-monospace, Menlo, monospace;
   --shadow: 0 6px 24px rgba(23, 33, 46, .14);
@@ -18,7 +18,7 @@
 @media (prefers-color-scheme: dark) { :root {
   --bg: #171e28; --raised: #1f2835; --line: #313d4d; --fg: #e7ecf2; --muted: #9aa8b8;
   --accent: #86aaf5; --accent-soft: #24355a; --attn: #f0b95c; --attn-soft: #413016; --attn-ink: #f0b95c;
-  --bad: #f29b94; --bad-soft: #4a2220; --ok: #79d2a0; --ok-soft: #1c3b2a; --wait: #a3b0bf; --wait-soft: #2a3442; --grid: #263140;
+  --bad: #f29b94; --bad-soft: #4a2220; --ok: #79d2a0; --ok-soft: #1c3b2a; --wait: #a3b0bf; --wait-soft: #2a3442; --grid: #263140; --faint: #5d6b7b;
   --shadow: 0 6px 24px rgba(0, 0, 0, .45);
   color-scheme: dark;
 } }
@@ -27,6 +27,10 @@
 body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 var(--sans); }
 button, input, textarea, select { font: inherit; color: inherit; }
 button { cursor: pointer; }
+::selection { background: var(--accent-soft); color: var(--fg); }
+input, select, textarea { accent-color: var(--accent); }
+.btn, .chip, .nav, .row, .idx, .line, a.hrow, .menu-act { transition: background-color .15s ease-out, border-color .15s ease-out, color .15s ease-out; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 a { color: var(--accent); }
 h1, h2, h3 { margin: 0; }
@@ -41,16 +45,22 @@ h1, h2, h3 { margin: 0; }
 /* shell */
 .app { display: grid; grid-template-columns: 210px minmax(0, 1fr); min-height: 100vh; }
 .menu { border-right: 1px solid var(--line); background: var(--raised); padding: 14px 10px; display: flex; flex-direction: column; gap: 4px; min-width: 0; position: sticky; top: 0; height: 100vh; }
-.brand { font-weight: 700; font-size: 15px; padding: 0 8px 10px; }
+.brand { font-weight: 700; font-size: 16px; padding: 0 8px 12px; }
 .nav { display: block; padding: 7px 8px; border-radius: 6px; color: var(--fg); text-decoration: none; font-weight: 500; }
 .nav:hover { background: var(--wait-soft); }
 .nav[aria-current="page"] { background: var(--accent-soft); color: var(--accent); }
 .nav .count { float: right; font: 500 11.5px var(--mono); color: var(--attn-ink); }
+.menu-acts { display: grid; gap: 6px; padding: 2px 0 10px; border-bottom: 1px solid var(--line); margin-bottom: 6px; }
+.menu-act { border: 1px solid var(--line); background: var(--raised); border-radius: 6px; padding: 6px 10px; font-weight: 550; text-align: left; }
+.menu-act:hover { background: var(--wait-soft); }
+.menu-act.primary { background: var(--accent); border-color: var(--accent); color: var(--raised); text-align: center; }
+.menu-act.primary:hover { background: var(--accent); filter: brightness(1.08); }
+.menu-act[aria-expanded="true"] { border-color: var(--accent); }
 .foot { margin-top: auto; display: grid; gap: 4px; padding: 10px 8px 0; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); margin-right: 6px; vertical-align: 1px; }
 .dot.off { background: var(--bad); }
 .dot.warn { background: var(--attn-ink); }
-.main { padding: 18px 22px 96px; display: grid; gap: 16px; align-content: start; min-width: 0; }
+.main { padding: 18px 24px 48px; display: grid; gap: 16px; align-content: start; min-width: 0; }
 .screen-head { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; justify-content: space-between; }
 .screen-head h1 { font-size: 20px; font-weight: 650; }
 
@@ -248,10 +258,14 @@ a.hrow:hover { background: var(--wait-soft); }
 .copyline code { font: 13px var(--mono); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; }
 
 /* dashboard */
-.dbar { display: grid; gap: 10px; background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; position: sticky; top: 0; z-index: 4; }
+.dbar { display: grid; gap: 8px; background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; z-index: 4; }
+@media (min-height: 860px) and (min-width: 721px) { .dbar { position: sticky; top: 8px; box-shadow: var(--shadow); } }   /* short windows: the bar scrolls away instead of eating the page */
 .dgroup { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-width: 0; }
 .dgroup .label { min-width: 64px; }
-.chip { border: 1px solid var(--line); background: var(--raised); border-radius: 999px; padding: 3px 11px; font-size: 13px; font-weight: 500; }
+.chip { border: 1px solid var(--line); background: var(--raised); border-radius: 999px; padding: 4px 12px; font-size: 13px; font-weight: 500; }
+.chip:hover { background: var(--wait-soft); }
+.chip[aria-pressed="true"]:hover { background: var(--accent-soft); }
+@media (pointer: coarse) { .chip, .btn, .dbar select, .dbar input[type="search"] { min-height: 40px; } }
 .chip[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 .dbar select, .dbar input[type="search"] { border: 1px solid var(--line); background: var(--raised); border-radius: 6px; padding: 4px 8px; min-width: 0; }
 .dbar .reset { margin-left: auto; border: 0; background: none; color: var(--accent); font-weight: 600; }
@@ -259,8 +273,10 @@ a.hrow:hover { background: var(--wait-soft); }
 .dkpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
 .dkpi { background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; display: grid; gap: 2px; min-width: 0; align-content: start; }
 .dkpi strong { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; }
-.dkpi .dd { font-size: 12px; font-weight: 600; color: var(--muted); }
+.dkpi .dd { font-size: 12px; font-weight: 400; color: var(--muted); }
+.dkpi .dd.up, .dkpi .dd.down { font-weight: 650; }
 .dkpi .dd.up { color: var(--ok); } .dkpi .dd.down { color: var(--bad); }
+.dkpis + .hint { margin-top: -8px; }
 .dgrid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 16px; }
 .dpanel { background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; display: grid; gap: 10px; align-content: start; min-width: 0; }
 .dpanel h2 { font-size: 15px; font-weight: 600; }
@@ -279,16 +295,13 @@ a.hrow:hover { background: var(--wait-soft); }
 .dtable th { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .dtable td { padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
 .dtable tr:last-child td { border-bottom: 0; }
-.dtable th.r, .dtable td.r { text-align: right; font-variant-numeric: tabular-nums; }
+.dtable tbody tr:hover td { background: var(--wait-soft); }.dtable th.r, .dtable td.r { text-align: right; font-variant-numeric: tabular-nums; }
 .dtable td a { color: var(--fg); font-weight: 550; text-decoration: none; overflow-wrap: anywhere; }
 .dtable td a:hover { text-decoration: underline; }
 .dmore { justify-self: center; }
 
 /* floating commands */
-.fab { position: fixed; right: 18px; bottom: 18px; display: grid; justify-items: end; gap: 8px; z-index: 5; max-width: calc(100vw - 36px); }
-.fab-buttons { display: flex; gap: 8px; }
-.fab-buttons button { border: 1px solid var(--line); background: var(--raised); border-radius: 18px; padding: 7px 14px; font-weight: 550; box-shadow: var(--shadow); }
-.fab-buttons button.primary { background: var(--accent); border-color: var(--accent); color: var(--raised); }
+.fab { position: fixed; left: 222px; bottom: 18px; z-index: 5; max-width: calc(100vw - 244px); }
 .cmd { background: var(--raised); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; box-shadow: var(--shadow); display: grid; gap: 8px; width: 340px; max-width: 100%; }
 .cmd code { font: 13px var(--mono); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; overflow-wrap: anywhere; user-select: all; }
 .cmd .actions { display: flex; gap: 8px; justify-content: flex-end; }
@@ -311,8 +324,8 @@ a.hrow:hover { background: var(--wait-soft); }
   .app { grid-template-columns: minmax(0, 1fr); align-content: start; }
   .menu { position: static; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center; border-right: 0; border-bottom: 1px solid var(--line); padding: 8px 10px; }
   .brand { padding: 0 8px 0 2px; }
-  .foot { margin: 0; border: 0; padding: 0 2px; width: 100%; display: flex; flex-wrap: wrap; gap: 2px 12px; }
-  .main { padding: 14px 12px 96px; }
+  .foot { order: 3; margin: 0; border: 0; padding: 0 2px; width: 100%; display: flex; flex-wrap: wrap; gap: 2px 12px; }
+  .main { padding: 14px 12px 40px; }
   .line { grid-template-columns: minmax(0, 1fr); gap: 5px; }
   .numbers, .facts { grid-template-columns: minmax(0, 1fr); }
   .hrow { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
@@ -324,7 +337,9 @@ a.hrow:hover { background: var(--wait-soft); }
   .docbody { padding: 12px; }
   .dact { justify-items: start; }
   .dact .why { text-align: left; }
-  .fab { right: 12px; bottom: 12px; max-width: calc(100vw - 24px); }
+  .fab { left: 12px; right: 12px; bottom: 12px; max-width: none; }
+  .menu-acts { display: flex; border: 0; padding: 0; margin: 0 0 0 auto; order: 2; }
+  .menu-act { padding: 4px 10px; }
 }
 /* live motion: one switch for every animation on the page */
 .motion { justify-self: start; margin-top: 4px; border: 1px solid var(--line); background: var(--raised); border-radius: 6px; padding: 3px 9px; font-size: 12px; color: var(--muted); }
@@ -377,10 +392,6 @@ body.paused *, body.paused *::before, body.paused *::after { animation-play-stat
     <span class="small muted" id="cmd-help"></span>
     <code id="cmd-text"></code>
     <div class="actions"><button class="btn" type="button" id="cmd-close">Close</button><button class="btn primary" type="button" id="cmd-copy">Copy</button></div>
-  </div>
-  <div class="fab-buttons">
-    <button type="button" data-cmd="euklides">Ask Euklides</button>
-    <button type="button" class="primary" data-cmd="plan">New plan</button>
   </div>
 </div>
 <script type="module">
@@ -955,7 +966,7 @@ function machineLoad(m) {
 }
 
 function menu() {
-  const r = S.route.screen;
+  const r = S.route.screen, box = document.getElementById("cmd"), open = box && !box.hidden ? box.dataset.name : "";
   const nav = (href, label, on, extra = "") => `<a class="nav" href="${href}"${on ? ' aria-current="page"' : ""}>${label}${extra}</a>`;
   const n = waitsCount();
   const loop = S.data ? (S.data.loop.alive
@@ -963,6 +974,7 @@ function menu() {
     : '<span><i class="dot off"></i>Loop stopped</span>') : "<span>Loop: no data yet</span>";
   const mc = machineLoad(S.data && S.data.machine);
   return `<span class="brand">Arkimedes</span>
+    <div class="menu-acts"><button type="button" class="menu-act primary" data-cmd="plan" aria-controls="cmd" aria-expanded="${open === "plan"}">New plan</button><button type="button" class="menu-act" data-cmd="euklides" aria-controls="cmd" aria-expanded="${open === "euklides"}">Ask Euklides</button></div>
     ${nav("#/", "Home", r === "home" || r === "plan" || r === "draft", n ? `<span class="count" title="${n} ${n === 1 ? "plan waits" : "plans wait"} for you: blocked, paused, or with a question">${n}</span>` : "")}
     ${nav("#/dashboard", "Dashboard", r === "dashboard")}
     ${nav("#/history", "History", r === "history")}
@@ -1844,7 +1856,7 @@ function euklidesScreen() {
 }
 
 // ---- dashboard screen
-const DASH_COLOR = { done: "var(--ok)", running: "var(--accent)", waiting: "var(--line)", held: "var(--attn)", blocked: "var(--bad)", aborted: "var(--muted)" };
+const DASH_COLOR = { done: "var(--ok)", running: "var(--accent)", waiting: "var(--wait)", held: "var(--attn)", blocked: "var(--bad)", aborted: "var(--faint)" };
 function dashSpendChart(days, period) {
   const W = 640, H = 170, LM = 38, B = 22, T = 8, max = Math.max(1, ...days.map(d => d.usd));
   const nice = max <= 5 ? Math.ceil(max) : Math.ceil(max / 5) * 5, bw = (W - LM) / days.length;
@@ -1890,16 +1902,16 @@ function dashboardScreen() {
   const opts = (values, on, any) => [`<option value="">${any}</option>`].concat(values.map(v => `<option value="${esc(v)}"${v === on ? " selected" : ""}>${esc(v)}</option>`)).join("");
   const bar = `<section class="dbar" aria-label="Filters">
     <div class="dgroup"><span class="label">Period</span>${DASH_PERIODS.map(p => chip("period", p, `Last ${p} days`, f.period === p)).join("")}
-      <button class="reset" type="button" data-d="reset"${dashIsFresh(f) ? " disabled" : ""}>Reset filters</button></div>
-    <div class="dgroup"><span class="label">Project</span>${ch.repos.map(r => chip("repos", r, r, f.repos.includes(r))).join("") || '<span class="small muted">none yet</span>'}</div>
-    <div class="dgroup"><span class="label">Status</span>${DASH_STATUSES.map(s => chip("status", s, s, f.status.includes(s))).join("")}</div>
-    <div class="dgroup"><span class="label">More</span>
       <select data-dsel="account" aria-label="Account">${opts(ch.accounts, f.account, "All accounts")}</select>
       <select data-dsel="tier" aria-label="Top tier used">${opts(["T0", "T1", "T2"], f.tier, "Any top tier")}</select>
       <select data-dsel="euk" aria-label="Euklides"><option value="">Euklides: any</option><option value="asked"${f.euk === "asked" ? " selected" : ""}>Euklides asked me</option><option value="none"${f.euk === "none" ? " selected" : ""}>Euklides never stepped in</option></select>
-      <input id="d-q" data-dq="1" type="search" placeholder="Search plan name" aria-label="Search plan name" value="${esc(f.q)}"></div>
-    <div class="small muted">${active.length ? `Filtering by: ${esc(active.join(" · "))}` : "No filters: every project and status."}</div></section>`;
-  const kpis = `<section class="dkpis" aria-label="Metrics">${dashKpis(all, f, now).map(k => `<div class="dkpi"><span class="label">${esc(k.label)}</span><strong>${esc(k.value)}</strong><span class="dd ${k.cls}">${esc(k.text)}</span>${k.note ? `<span class="small muted">${esc(k.note)}</span>` : ""}</div>`).join("")}</section>`;
+      <input id="d-q" data-dq="1" type="search" placeholder="Search plan name" aria-label="Search plan name" value="${esc(f.q)}">
+      <button class="reset" type="button" data-d="reset"${dashIsFresh(f) ? " disabled" : ""}>Reset filters</button></div>
+    <div class="dgroup"><span class="label">Project</span>${ch.repos.map(r => chip("repos", r, r, f.repos.includes(r))).join("") || '<span class="small muted">none yet</span>'}</div>
+    <div class="dgroup"><span class="label">Status</span>${DASH_STATUSES.map(s => chip("status", s, s, f.status.includes(s))).join("")}</div>
+    ${active.length ? `<div class="small muted">Filtering by: ${esc(active.join(" · "))}</div>` : ""}</section>`;
+  const kp = dashKpis(all, f, now), noPrev = k => k.text === "no previous period";   // said once under the cards, not on every card
+  const kpis = `<section class="dkpis" aria-label="Metrics">${kp.map(k => `<div class="dkpi"><span class="label">${esc(k.label)}</span><strong>${esc(k.value)}</strong>${noPrev(k) ? "" : `<span class="dd ${k.cls}">${esc(k.text)}</span>`}${k.note ? `<span class="small muted">${esc(k.note)}</span>` : ""}</div>`).join("")}</section>${kp.some(noPrev) ? `<p class="hint">${kp.every(noPrev) ? "No earlier period to compare with yet." : "Cards without a change have no earlier period to compare with."}</p>` : ""}`;
   const counts = dashStatusCounts(dashRows(all, { ...f, status: [] }, now).rows), total = DASH_STATUSES.reduce((a, s) => a + counts[s], 0);
   const stack = total ? `<div class="dstack" role="img" aria-label="Plans by status">${DASH_STATUSES.filter(s => counts[s]).map(s => `<span style="width:${(counts[s] / total * 100).toFixed(1)}%;background:${DASH_COLOR[s]}" title="${s}: ${counts[s]}"></span>`).join("")}</div>` : '<div class="empty">No plans match.</div>';
   const legend = `<div class="dlegend">${DASH_STATUSES.map(s => `<button class="chip" type="button" data-d="status" data-v="${s}" aria-pressed="${f.status.includes(s)}"><i style="background:${DASH_COLOR[s]}"></i>${s} ${counts[s]}</button>`).join("")}</div>`;
@@ -2021,15 +2033,20 @@ document.addEventListener("input", e => {
   const k = `${keyOf(p)}#${t.dataset.q}`;
   S.answers[k] = { ...(S.answers[k] || {}), text: t.value };
 });
+const menuNow = () => {   // the menu buttons show which command is open (attributes only: HTML is built in render())
+  const box = document.getElementById("cmd");
+  document.querySelectorAll(".menu-act").forEach(b => b.setAttribute("aria-expanded", String(!box.hidden && box.dataset.name === b.dataset.cmd)));
+};
 function openCommand(name) {
   const c = COMMANDS[name], box = document.getElementById("cmd");
-  if (!c || (!box.hidden && box.dataset.name === name)) { box.hidden = true; return; }
+  if (!c || (!box.hidden && box.dataset.name === name)) { box.hidden = true; menuNow(); return; }
   box.dataset.name = name;
   document.getElementById("cmd-title").textContent = c.title;
   document.getElementById("cmd-help").textContent = c.help;
   document.getElementById("cmd-text").textContent = c.text;
   document.getElementById("cmd-copy").textContent = "Copy";
   box.hidden = false;
+  menuNow();
 }
 function copyCommand() {
   const c = COMMANDS[document.getElementById("cmd").dataset.name], btn = document.getElementById("cmd-copy");
@@ -2053,7 +2070,7 @@ document.addEventListener("click", e => {
     return;
   }
   if (t.id === "cmd-copy") { copyCommand(); return; }
-  if (t.id === "cmd-close") { document.getElementById("cmd").hidden = true; return; }
+  if (t.id === "cmd-close") { document.getElementById("cmd").hidden = true; menuNow(); return; }
   if (t.dataset.cmd) { openCommand(t.dataset.cmd); return; }
   if (t.dataset.answer) { sendAnswer(t.dataset.answer); return; }
   if (t.dataset.dv) { pickDecision(t.dataset.dkey, t.dataset.dv); return; }
@@ -2074,6 +2091,7 @@ document.addEventListener("keydown", e => {
   if (e.key !== "Escape") return;
   if (S.job && document.querySelector(".jpanel")) { closeJob(); return; }
   document.getElementById("cmd").hidden = true;
+  menuNow();
 });
 
 let lastGood = "";
