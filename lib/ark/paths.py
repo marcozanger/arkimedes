@@ -56,7 +56,11 @@ DEFAULTS = {
     # gate_workers: test processes a gate may spawn (ARK_TEST_WORKERS); load_max: load average above which a gate
     # waits (0 = no brake); load_wait_max: seconds a gate waits for the load before it starts anyway.
     "limits": {"writers_per_repo": 3, "writers_total": 6, "heavy_gates": 1, "gates_total": 2, "refresh_usd": 3,
-               "gate_workers": 4, "load_max": default_load_max(), "load_wait_max": 900},
+               "gate_workers": 4, "load_max": default_load_max(), "load_wait_max": 900,
+               # stall_minutes: a worker with no new log line for this long calls the intervene tick;
+               # api_quiet_minutes: a worker whose log ends in an API error and stays quiet this long is stopped
+               # and resumed in its session; auto_resumes: how many such resumes one attempt gets.
+               "stall_minutes": 20, "api_quiet_minutes": 3, "auto_resumes": 3},
     "tick_minutes": 15,
     "poll_seconds": 15,
     "notify": [],
