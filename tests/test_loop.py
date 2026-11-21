@@ -2126,14 +2126,12 @@ def test_a_save_that_fails_after_a_receipt_starts_nothing_in_that_cycle(feature,
     monkeypatch.setenv("FAKE_FIX", "shell")
     feature()
     d = paths.run_dir("demo", SLUG)
-    for _ in range(600):
-        if "shell.review" in proc.finished(d):
-            break
-        loop.cycle()
-        for _ in range(4):
-            if "shell.review" in proc.finished(d):
-                break
-            time.sleep(0.02)
+    # Cycle only until the review starts, then wait for its receipt without cycling: a cycle would consume the
+    # receipt, and under load (a busy xdist run) it often did so before the test could look.
+    drive(lambda: "shell.review" in proc.active(d), cycles=600)
+    deadline = time.time() + 60
+    while "shell.review" not in proc.finished(d) and time.time() < deadline:
+        time.sleep(0.02)
     assert "shell.review" in proc.finished(d)
     with monkeypatch.context() as m:
         m.setattr(run, "save", lambda st: (_ for _ in ()).throw(OSError("disk full")))
