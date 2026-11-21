@@ -88,7 +88,8 @@ def _followup_block(st: dict, job_id: str) -> list[str]:
     return [
         f"This job is a follow-up: it merged under v{f.get('from_version')} of this plan, and the plan "
         "changed it since. The base branch already holds that earlier work. Read it first, then do only "
-        "what is missing for the text below; do not redo or revert what is there unless the new text says so.",
+        "what is missing for the text below; do not redo or revert what is there unless the new text says so. "
+        "When nothing is missing (for example the change only narrowed the area), commit nothing and end DONE.",
         "What changed in this job's text since that version (unified diff):",
         f"{fence}diff\n{diff}\n{fence}",
     ]

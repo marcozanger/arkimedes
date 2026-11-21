@@ -42,7 +42,11 @@ The runner adopts a new version in any run state and applies only what changed.
 | removed | dropped (branch and PR cleaned up) | stays in main |
 | added | runs like any new job | n/a |
 
-A follow-up job is a new job: it branches from main and opens its own PR.
+A follow-up job is a new job: it branches from main and opens its own PR. When it ends (a worker's DONE or
+Euklides' `fixed`) with nothing changed against the base, as when the new version only shrank its area, its
+earlier work already covers the new text: it ends `merged` with no push, gate or PR, the event says
+`follow-up of v<N> needs no change; its merged work stands`, and its dependents go on. Any other job that ends
+with no change still fails.
 
 For a finished run:
 
