@@ -444,7 +444,7 @@ def test_approving_the_plan_sends_the_shown_sha_and_goes_home(flows):
     assert "Approved" in out["numbers"] and "Reopen" in out["numbers"] and "$9.50" in out["numbers"]
     assert "2 jobs" in out["confirm"] and "$9.50" in out["confirm"] and "~1h40m" in out["confirm"]
     assert _sent(out) == [("/api/approve-plan", {"repo": "socrates", "slug": "export", "sha256": "plan-sha"})]
-    assert "Approved socrates/export" in out["home"] and "Approved, not started" in out["home"]
+    assert "Approved socrates/export" in out["home"] and "IN PROGRESS" in out["home"].upper()
 
 
 def test_a_refused_approval_says_why(flows):
@@ -513,8 +513,8 @@ const ROUTES = ["#/", "#/plan/humanharness/notes-edit/timeline", "#/plan/arkimed
     }
     w.location.hash = "#/";
     await wait(150);
-    out.minis = d.querySelectorAll(".mini-box canvas").length;
-    out.ticker = (d.querySelector(".ticker") || {}).innerText || "";
+    out.minis = d.querySelectorAll(".hp-run canvas").length;
+    out.tasks = d.querySelectorAll(".hp-task").length;
     w.location.hash = "#/draft/socrates/export/plan";
     await until(() => d.querySelector('canvas[data-src="draft"]'), "the draft graph");
     out.draftGraph = true;
@@ -534,5 +534,5 @@ def test_the_live_constellation_opens_the_job_panel_and_pauses(site, profile):
     assert out["focus"] == "jp-close" and out["closed"] is True
     assert out["paused"] is True and out["loopOff"] == "off"
     assert all(not e for e in out["errors"].values()), out["errors"]
-    assert out["minis"] >= 3 and "running" in out["ticker"]
+    assert out["minis"] >= 3 and out["tasks"] >= 1
     assert out["draftGraph"] is True
