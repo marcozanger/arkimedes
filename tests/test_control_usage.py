@@ -28,7 +28,7 @@ def test_scan_is_incremental_and_waits_for_a_whole_line(tmp_path):
     assert usage.scan(log)["tokens"] == 0
     with open(log, "a") as f:
         f.write(line[10:])
-    assert usage.scan(log) == {"tokens": 4, "last": "hello"}
+    assert usage.scan(log) == {"tokens": 4, "last": "hello", "api_error": None, "api_error_at": None}
 
 
 def test_a_new_file_at_the_same_path_starts_over(tmp_path):
@@ -37,20 +37,20 @@ def test_a_new_file_at_the_same_path_starts_over(tmp_path):
     assert usage.scan(log)["tokens"] == 50
     log.rename(tmp_path / "c.archived")   # what proc.consume does between two attempts
     log.write_text(assistant("m9", "new", output=3))
-    assert usage.scan(log) == {"tokens": 3, "last": "new"}
+    assert usage.scan(log) == {"tokens": 3, "last": "new", "api_error": None, "api_error_at": None}
 
 
 def test_garbage_a_link_and_a_fifo_read_as_nothing(tmp_path):
     log = tmp_path / "d.log"
     log.write_text("not json\n5\n[]\n" + json.dumps({"type": "assistant", "message": "x"}) + "\n")
-    assert usage.scan(log) == {"tokens": 0, "last": ""}
+    assert usage.scan(log) == {"tokens": 0, "last": "", "api_error": None, "api_error_at": None}
     secret = tmp_path / "secret"
     secret.write_text(assistant("m1", "secret", output=1))
     (tmp_path / "link.log").symlink_to(secret)
-    assert usage.scan(tmp_path / "link.log") == {"tokens": 0, "last": ""}
+    assert usage.scan(tmp_path / "link.log") == {"tokens": 0, "last": "", "api_error": None, "api_error_at": None}
     os.mkfifo(tmp_path / "fifo.log")
-    assert usage.scan(tmp_path / "fifo.log") == {"tokens": 0, "last": ""}
-    assert usage.scan(tmp_path / "missing.log") == {"tokens": 0, "last": ""}
+    assert usage.scan(tmp_path / "fifo.log") == {"tokens": 0, "last": "", "api_error": None, "api_error_at": None}
+    assert usage.scan(tmp_path / "missing.log") == {"tokens": 0, "last": "", "api_error": None, "api_error_at": None}
 
 
 def test_last_message_is_cleaned_and_short(tmp_path):

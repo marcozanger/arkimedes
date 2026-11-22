@@ -150,6 +150,8 @@ RESUME = {
     "answer": "The question you stopped on has an answer. Go on with the job:",
     "wake": "The machine slept and your process ended. Nothing is lost: go on with the job from where you were.",
     "steer": "You were stopped to redirect the work. Follow this instruction and go on with the job:",
+    "api": "The API failed and your turn was cut. Nothing is lost: go on with the job from where you were. "
+           "Check `git status` and your report first.",
 }
 
 

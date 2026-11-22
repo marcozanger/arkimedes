@@ -57,7 +57,8 @@ WAITS_FOR_MARCO = ("waiting_answer", "attached")  # statuses only Marco can move
 STEERED = "steered"
 INTERVENED = "stopped by the intervene tick"
 ATTACHED = "handed to Marco"
-OURS = (STEERED, INTERVENED, ATTACHED)  # we stopped it, knowing which session it was
+API_HUNG = "api-hung"  # an API failure cut its turn and it stayed alive: it is resumed in its session
+OURS = (STEERED, INTERVENED, ATTACHED, API_HUNG)  # we stopped it, knowing which session it was
 MAX_STEERS = 2
 
 _net_wait_until = 0.0  # after a wake, nothing new starts before the network is back or this time passes
@@ -288,6 +289,7 @@ def _passed(j: dict, head) -> None:
 def fail(c: Ctx, job: str, why: str, **extra) -> None:
     j, why = c.st["jobs"][job], _clean(why)
     j.update(failure=why, tier_attempts=j["tier_attempts"] + 1)
+    j.pop("auto_resumes", None)  # the next worker is a new attempt
     run.event(c.st, f"{job} failed ({j['tier']}, attempt {j['tier_attempts']} at this tier): {why}")
     red = extra.get("red") or {}
     progress.note(j, red.get("tail") or why, red.get("head") or j.get("head"))
@@ -381,9 +383,36 @@ def _after_stop(st: dict, job: str, then: dict) -> None:
         _to_euklides(st, job, "blocked", f"the intervene tick stopped it: {then['note']}", None)
 
 
+def _resume_api_hung(st: dict, job: str, why: str) -> None:
+    """A worker we stopped because an API failure left it hung goes on in its own session; the attempt it was in
+    is not charged again. A resume while the API is still down dies at once and takes the uncharged backoff."""
+    j = st["jobs"][job]
+    text = f"What the runner saw: {why}"
+    if j["session"]:
+        j["resume_msg"] = brief.resume_message("api", text, st["slug"])
+    else:
+        j["note"] = f"{brief.RESUME['api']}\n\n{text}"
+    j["attempts"] = max(0, j["attempts"] - 1)
+    j["status"] = "needs_worker"
+    limit = paths.load_workspace()["limits"]["auto_resumes"]
+    run.event(st, f"{job}: resumed after an API failure ({j.get('auto_resumes', 0)}/{limit}): {why}")
+
+
+def _stop_api_hung(c: Ctx, job: str, why: str) -> None:
+    """Stop a worker whose turn an API failure cut, to resume it in its session (see _resume_api_hung)."""
+    j = c.st["jobs"][job]
+    j["auto_resumes"] = j.get("auto_resumes", 0) + 1
+    j["api_hung"] = _clean(why)[:usage.LAST_MESSAGE]  # a HANDLING key: nothing else acts on the job meanwhile
+    proc.stop(c.dir, f"{job}.worker", API_HUNG)
+
+
+def _resumes_left(j: dict, limits: dict) -> bool:
+    return j.get("auto_resumes", 0) < int(limits["auto_resumes"])
+
+
 def on_worker(c: Ctx, job: str, r: dict) -> None:
     j = c.st["jobs"][job]
-    steering, then = j.pop("steering", None), j.pop("stop_then", None)
+    steering, then, hung = j.pop("steering", None), j.pop("stop_then", None), j.pop("api_hung", None)
     j.update(resume_msg=None, note=None)  # kept until now: a worker that never ran still needs them
     # only a process that says it had one can be resumed, or one we stopped ourselves
     j["session"] = r.get("session") or ((r.get("meta") or {}).get("session") if r["reason"] in OURS else None)
@@ -393,6 +422,8 @@ def on_worker(c: Ctx, job: str, r: dict) -> None:
         return
     if then and r["reason"] == INTERVENED:
         return _after_stop(c.st, job, then)
+    if hung and r["reason"] == API_HUNG:
+        return _resume_api_hung(c.st, job, hung)
     if steering and r["reason"] == STEERED:
         if j["session"]:
             j["resume_msg"] = brief.resume_message("steer", steering, c.st["slug"])
@@ -600,6 +631,7 @@ def _escalate(j: dict) -> None:
     j["tier"] = claude.NEXT_TIER[j["tier"]]
     j["tier_path"].append(j["tier"])
     j.update(tier_attempts=0, session=None, resume_msg=None, review_rounds=0)
+    j.pop("auto_resumes", None)
 
 
 NO_ANSWER = {"action": "ask", "note": "Euklides gave no usable answer", "undo": None, "why": "", "proposal": None}
@@ -616,6 +648,7 @@ def _go_on(st: dict, job: str, e: dict, text: str) -> None:
         j.update(review_errors=0, status="needs_review")
         return
     _tell_over_budget(st, job)  # a worker is about to be paid for
+    j.pop("auto_resumes", None)  # Euklides' or Marco's go: a new attempt
     if e.get("kind") == "integrate":
         j["integrate_fails"] = 0
     if e["trigger"] == "question":
@@ -1729,6 +1762,10 @@ def on_intervene(c: Ctx, job: str, r: dict, slept: bool = False) -> None:
         if slept:  # looked at with the clocks of before the sleep: watch() looks again with the moved ones
             j["anomaly"] = None
             return run.event(c.st, f"{job}: the intervene tick failed after the machine slept; the worker is looked at again")
+        if ((_learned_nothing(r) or r.get("spoke") is False) and _resumes_left(j, paths.load_workspace()["limits"])
+                and not proc.stop_requested(c.dir, f"{job}.worker")):
+            # the tick got no answer from the model either: most likely the API is down, and the worker with it
+            return _stop_api_hung(c, job, j.get("anomaly") or "the intervene tick got no answer from the model")
         action = next(a for a in ("wait", "stop_escalate", "stop_block") if a in allowed)
         note = f"the intervene tick gave no usable answer; the runner chose {action}: {j.get('anomaly')}"
     note = _clean(str(note or j.get("anomaly") or action))
@@ -2381,15 +2418,22 @@ def _next_step(c: Ctx, job: str, j: dict, slots: Slots):
     return None
 
 
-HANDLING = ("intervening", "stop_then", "steering", "attaching")  # a job with one of these is already being dealt with
+# a job with one of these is already being dealt with
+HANDLING = ("intervening", "stop_then", "steering", "attaching", "api_hung")
 
 
-def _anomaly(j: dict, log: Path, now: float) -> str | None:
+def _quiet(j: dict, log: Path, now: float) -> float:
+    """Seconds since the worker's log last moved, counted from its start or its wake at the earliest."""
+    return now - max(_mtime(log) / 1e9, j["watch_from"], j.get("woke_at", 0))
+
+
+def _anomaly(j: dict, log: Path, now: float, limits: dict | None = None) -> str | None:
     """What looks wrong with this worker, or None (spec §6)."""
+    stall = (limits or {}).get("stall_minutes", claude.STALL_MINUTES)
     if now > j["soft_deadline"]:
         return f"over its time for tier {j['tier']}"
-    if now - max(_mtime(log) / 1e9, j["watch_from"], j.get("woke_at", 0)) > claude.STALL_MINUTES * 60:
-        return f"no output for over {claude.STALL_MINUTES} minutes"
+    if _quiet(j, log, now) > stall * 60:
+        return f"no output for over {stall:g} minutes"
     tokens = usage.scan(log)["tokens"]
     if tokens > claude.TIER_TOKENS[j["tier"]] * j["token_factor"]:
         return f"{tokens} tokens, over the limit for tier {j['tier']}"
@@ -2409,13 +2453,18 @@ def start_intervene(c: Ctx, job: str, why: str) -> None:
 
 
 def watch(c: Ctx) -> None:
-    now, ended = time.time(), proc.finished(c.dir)
+    now, ended, limits = time.time(), proc.finished(c.dir), paths.load_workspace()["limits"]
     for job, j in c.st["jobs"].items():
         name = f"{job}.worker"
         if (j["status"] != "working" or "soft_deadline" not in j or any(k in j for k in HANDLING)
                 or name in ended or proc.stop_requested(c.dir, name)):
             continue
-        why = _anomaly(j, c.dir / f"{name}.log", now)
+        log = c.dir / f"{name}.log"
+        error = usage.scan(log)["api_error"]
+        if error and _quiet(j, log, now) > limits["api_quiet_minutes"] * 60 and _resumes_left(j, limits):
+            _stop_api_hung(c, job, error)
+            continue
+        why = _anomaly(j, log, now, limits)
         if why:
             try:
                 start_intervene(c, job, why)
@@ -2471,6 +2520,8 @@ def _gone_worker(st: dict, job: str, j: dict) -> bool:
         j.update(note=steering, status="needs_worker")
     elif j.pop("attaching", None):
         j["status"] = "attached"
+    elif hung := j.pop("api_hung", None):
+        j.update(note=f"{brief.RESUME['api']}\n\nWhat the runner saw: {hung}", status="needs_worker")
     else:
         return False
     run.event(st, f"{job}: its worker is gone, as was decided")
@@ -2936,7 +2987,8 @@ def _retry_stops(st: dict) -> None:
     for job, j in st["jobs"].items():
         if j["status"] != "working":
             continue
-        for key, reason in (("stop_then", INTERVENED), ("steering", STEERED), ("attaching", ATTACHED)):
+        for key, reason in (("stop_then", INTERVENED), ("steering", STEERED), ("attaching", ATTACHED),
+                            ("api_hung", API_HUNG)):
             if key in j and (d / f"{job}.worker.proc").exists() and not (d / f"{job}.worker.receipt.json").exists():
                 proc.stop(d, f"{job}.worker", reason)
                 break
