@@ -14,6 +14,8 @@ CHUNK = 1 << 20           # bytes read at a time
 MAX_LINE = 1 << 22        # bytes of an unfinished line kept; a longer one fails to parse and is skipped
 TOOL_INPUT = 200          # characters of a tool's input shown by render_line
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+SYNTHETIC = "<synthetic>"  # the model name on a message claude writes itself, not the model
+API_ERROR = "API Error:"
 _COUNTED = ("input_tokens", "cache_creation_input_tokens", "output_tokens")
 
 _seen: dict[str, dict] = {}  # per path, so a log is never read twice from the start
@@ -76,7 +78,8 @@ def _tokens(d: dict) -> int:
     return sum(v for v in values if type(v) is int and v > 0)
 
 
-def _take(s: dict, raw: bytes) -> None:
+def _take(s: dict, raw: bytes, at: int) -> None:
+    """One whole line, which starts at byte `at` of the log."""
     d = _parse(raw)
     if d is None:
         return
@@ -92,30 +95,40 @@ def _take(s: dict, raw: bytes) -> None:
     texts = [b["text"] for b in _blocks(d) if b.get("type") == "text" and isinstance(b.get("text"), str)]
     if any(t.strip() for t in texts):
         s["last"] = clean("\n".join(texts)).strip()[-LAST_MESSAGE:]
+    if _message(d).get("model") != SYNTHETIC:  # the model spoke again: whatever failed is behind it
+        s["api_error"], s["api_error_at"] = None, None
+    elif texts and texts[0].lstrip().startswith(API_ERROR):  # claude's own message when its retries ran out
+        s["api_error"], s["api_error_at"] = clean("\n".join(texts)).strip()[:LAST_MESSAGE], at
 
 
 def scan(path) -> dict:
-    """{"tokens": n, "last": text} of everything in the log so far. Reads only what is new since last time."""
+    """{"tokens": n, "last": text, "api_error": text or None, "api_error_at": offset or None} of everything in the
+    log so far. api_error is the API failure that cut the worker's turn, while no real message came after it;
+    api_error_at is the byte offset of its line. Reads only what is new since last time."""
     key = str(path)
     fd = _open(path)
     if fd is None:
         _seen.pop(key, None)
-        return {"tokens": 0, "last": ""}
+        return {"tokens": 0, "last": "", "api_error": None, "api_error_at": None}
     try:
         info = os.fstat(fd)
         s = _seen.get(key)
         if s is None or s["inode"] != info.st_ino or info.st_size < s["offset"]:
-            s = _seen[key] = {"inode": info.st_ino, "offset": 0, "tail": b"", "usage": {}, "loose": 0, "last": ""}
+            s = _seen[key] = {"inode": info.st_ino, "offset": 0, "tail": b"", "usage": {}, "loose": 0, "last": "",
+                                "api_error": None, "api_error_at": None}
         os.lseek(fd, s["offset"], os.SEEK_SET)
         while chunk := os.read(fd, CHUNK):
+            at = s["offset"] - len(s["tail"])  # where the first line of this chunk starts
             s["offset"] += len(chunk)
             lines = (s["tail"] + chunk).split(b"\n")
             s["tail"] = lines.pop()[-MAX_LINE:]
             for raw in lines:
-                _take(s, raw)
+                _take(s, raw, at)
+                at += len(raw) + 1
     finally:
         os.close(fd)
-    return {"tokens": sum(s["usage"].values()) + s["loose"], "last": s["last"]}
+    return {"tokens": sum(s["usage"].values()) + s["loose"], "last": s["last"], "api_error": s["api_error"],
+            "api_error_at": s["api_error_at"]}
 
 
 def render_line(line) -> str | None:

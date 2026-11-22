@@ -350,9 +350,36 @@ finished, the budget for what runs and what is left. Delay is forecast end minus
   finishes, nothing new starts, and one `cap_day` question per account and day asks (`runs/daycap.json`, ids `c1`, `c2`…;
   `ark ps` shows it). A raise goes to `runs/raises.jsonl` and counts for today only. A new day, or a higher configured
   cap, closes the question. An unreadable ledger counts as over.
-- A worker that is over its tier's minutes, silent for 20 minutes, or over its tier's tokens gets an intervene tick,
-  which chooses wait (once), steer (twice per job), stop and escalate, or stop and block. The process's hard deadline
-  is twice its tier's minutes.
+- A worker that is over its tier's minutes, silent for `limits.stall_minutes` (20), or over its tier's tokens gets an
+  intervene tick, which chooses wait (once), steer (twice per job), stop and escalate, or stop and block. The process's
+  hard deadline is twice its tier's minutes.
+
+### Automatic resumes
+
+An API failure can cut a worker's turn while its process stays alive: claude writes a synthetic `API Error: …`
+message to the log and then waits, doing nothing. The runner notices it with no model and resumes the worker in its
+own session with "The API failed and your turn was cut…". The attempt is not charged (`attempts`, `tier_attempts`,
+`steers` and `review_rounds` stay as they were), and each resume is one run event:
+`<job>: resumed after an API failure (n/3): <error>`.
+
+Two triggers:
+
+- The log's last real message is an `API Error:` one (`api_retry` lines alone do not count) and the log has had no
+  new line for `api_quiet_minutes`.
+- The intervene tick itself gets no answer from the model: it dies at once with nothing learned, or times out
+  without writing a line. The worker is resumed instead of getting more time; a tick that answers, even with no
+  usable action, keeps the usual fallback.
+
+A job already being handled (an intervene tick, a steer, an attach, a stop by Marco) is never resumed. After
+`auto_resumes` resumes in one attempt the next hang takes the intervene path; the count starts over with each new
+attempt (a failure, an escalation, Euklides' or Marco's go). A resume while the API is still down dies at once and
+ends in the existing uncharged backoff for an unreachable model.
+
+| Limit | Default | What |
+|---|---|---|
+| `stall_minutes` | 20 | minutes without a new log line before the intervene tick looks at a worker |
+| `api_quiet_minutes` | 3 | minutes a log ending in an API error stays quiet before the worker is resumed |
+| `auto_resumes` | 3 | automatic resumes per attempt |
 
 ## bin/ark-test
 
