@@ -9,7 +9,7 @@
 :root {
   --bg: #f8fafc; --raised: #ffffff; --line: #d3dbe5; --fg: #17212e; --muted: #5a6979;
   --accent: #1f55c4; --accent-soft: #dfe8fa; --attn: #b56d00; --attn-soft: #fbeed5; --attn-ink: #8a5200;
-  --bad: #b3261e; --bad-soft: #fae3e1; --ok: #17693f; --ok-soft: #dcf0e4; --wait: #5d6b7b; --wait-soft: #e6ebf1; --grid: #e3e9f0;
+  --bad: #b3261e; --bad-soft: #fae3e1; --ok: #17693f; --ok-soft: #dcf0e4; --wait: #5d6b7b; --wait-soft: #e6ebf1; --grid: #e3e9f0; --faint: #9aa6b4;
   --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
   --mono: ui-monospace, Menlo, monospace;
   --shadow: 0 6px 24px rgba(23, 33, 46, .14);
@@ -18,7 +18,7 @@
 @media (prefers-color-scheme: dark) { :root {
   --bg: #171e28; --raised: #1f2835; --line: #313d4d; --fg: #e7ecf2; --muted: #9aa8b8;
   --accent: #86aaf5; --accent-soft: #24355a; --attn: #f0b95c; --attn-soft: #413016; --attn-ink: #f0b95c;
-  --bad: #f29b94; --bad-soft: #4a2220; --ok: #79d2a0; --ok-soft: #1c3b2a; --wait: #a3b0bf; --wait-soft: #2a3442; --grid: #263140;
+  --bad: #f29b94; --bad-soft: #4a2220; --ok: #79d2a0; --ok-soft: #1c3b2a; --wait: #a3b0bf; --wait-soft: #2a3442; --grid: #263140; --faint: #5d6b7b;
   --shadow: 0 6px 24px rgba(0, 0, 0, .45);
   color-scheme: dark;
 } }
@@ -27,6 +27,10 @@
 body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 var(--sans); }
 button, input, textarea, select { font: inherit; color: inherit; }
 button { cursor: pointer; }
+::selection { background: var(--accent-soft); color: var(--fg); }
+input, select, textarea { accent-color: var(--accent); }
+.btn, .chip, .nav, .row, .idx, .line, a.hrow, .menu-act { transition: background-color .15s ease-out, border-color .15s ease-out, color .15s ease-out; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 a { color: var(--accent); }
 h1, h2, h3 { margin: 0; }
@@ -41,16 +45,22 @@ h1, h2, h3 { margin: 0; }
 /* shell */
 .app { display: grid; grid-template-columns: 210px minmax(0, 1fr); min-height: 100vh; }
 .menu { border-right: 1px solid var(--line); background: var(--raised); padding: 14px 10px; display: flex; flex-direction: column; gap: 4px; min-width: 0; position: sticky; top: 0; height: 100vh; }
-.brand { font-weight: 700; font-size: 15px; padding: 0 8px 10px; }
+.brand { font-weight: 700; font-size: 16px; padding: 0 8px 12px; }
 .nav { display: block; padding: 7px 8px; border-radius: 6px; color: var(--fg); text-decoration: none; font-weight: 500; }
 .nav:hover { background: var(--wait-soft); }
 .nav[aria-current="page"] { background: var(--accent-soft); color: var(--accent); }
 .nav .count { float: right; font: 500 11.5px var(--mono); color: var(--attn-ink); }
+.menu-acts { display: grid; gap: 6px; padding: 2px 0 10px; border-bottom: 1px solid var(--line); margin-bottom: 6px; }
+.menu-act { border: 1px solid var(--line); background: var(--raised); border-radius: 6px; padding: 6px 10px; font-weight: 550; text-align: left; }
+.menu-act:hover { background: var(--wait-soft); }
+.menu-act.primary { background: var(--accent); border-color: var(--accent); color: var(--raised); text-align: center; }
+.menu-act.primary:hover { background: var(--accent); filter: brightness(1.08); }
+.menu-act[aria-expanded="true"] { border-color: var(--accent); }
 .foot { margin-top: auto; display: grid; gap: 4px; padding: 10px 8px 0; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); margin-right: 6px; vertical-align: 1px; }
 .dot.off { background: var(--bad); }
 .dot.warn { background: var(--attn-ink); }
-.main { padding: 18px 22px 96px; display: grid; gap: 16px; align-content: start; min-width: 0; }
+.main { padding: 18px 24px 48px; display: grid; gap: 16px; align-content: start; min-width: 0; }
 .screen-head { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; justify-content: space-between; }
 .screen-head h1 { font-size: 20px; font-weight: 650; }
 
@@ -248,10 +258,14 @@ a.hrow:hover { background: var(--wait-soft); }
 .copyline code { font: 13px var(--mono); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; }
 
 /* dashboard */
-.dbar { display: grid; gap: 10px; background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; position: sticky; top: 0; z-index: 4; }
+.dbar { display: grid; gap: 8px; background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; z-index: 4; }
+@media (min-height: 860px) and (min-width: 721px) { .dbar { position: sticky; top: 8px; box-shadow: var(--shadow); } }   /* short windows: the bar scrolls away instead of eating the page */
 .dgroup { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-width: 0; }
 .dgroup .label { min-width: 64px; }
-.chip { border: 1px solid var(--line); background: var(--raised); border-radius: 999px; padding: 3px 11px; font-size: 13px; font-weight: 500; }
+.chip { border: 1px solid var(--line); background: var(--raised); border-radius: 999px; padding: 4px 12px; font-size: 13px; font-weight: 500; }
+.chip:hover { background: var(--wait-soft); }
+.chip[aria-pressed="true"]:hover { background: var(--accent-soft); }
+@media (pointer: coarse) { .chip, .btn, .dbar select, .dbar input[type="search"] { min-height: 40px; } }
 .chip[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 .dbar select, .dbar input[type="search"] { border: 1px solid var(--line); background: var(--raised); border-radius: 6px; padding: 4px 8px; min-width: 0; }
 .dbar .reset { margin-left: auto; border: 0; background: none; color: var(--accent); font-weight: 600; }
@@ -259,8 +273,10 @@ a.hrow:hover { background: var(--wait-soft); }
 .dkpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
 .dkpi { background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; display: grid; gap: 2px; min-width: 0; align-content: start; }
 .dkpi strong { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; }
-.dkpi .dd { font-size: 12px; font-weight: 600; color: var(--muted); }
+.dkpi .dd { font-size: 12px; font-weight: 400; color: var(--muted); }
+.dkpi .dd.up, .dkpi .dd.down { font-weight: 650; }
 .dkpi .dd.up { color: var(--ok); } .dkpi .dd.down { color: var(--bad); }
+.dkpis + .hint { margin-top: -8px; }
 .dgrid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 16px; }
 .dpanel { background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; display: grid; gap: 10px; align-content: start; min-width: 0; }
 .dpanel h2 { font-size: 15px; font-weight: 600; }
@@ -279,16 +295,13 @@ a.hrow:hover { background: var(--wait-soft); }
 .dtable th { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .dtable td { padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
 .dtable tr:last-child td { border-bottom: 0; }
-.dtable th.r, .dtable td.r { text-align: right; font-variant-numeric: tabular-nums; }
+.dtable tbody tr:hover td { background: var(--wait-soft); }.dtable th.r, .dtable td.r { text-align: right; font-variant-numeric: tabular-nums; }
 .dtable td a { color: var(--fg); font-weight: 550; text-decoration: none; overflow-wrap: anywhere; }
 .dtable td a:hover { text-decoration: underline; }
 .dmore { justify-self: center; }
 
 /* floating commands */
-.fab { position: fixed; right: 18px; bottom: 18px; display: grid; justify-items: end; gap: 8px; z-index: 5; max-width: calc(100vw - 36px); }
-.fab-buttons { display: flex; gap: 8px; }
-.fab-buttons button { border: 1px solid var(--line); background: var(--raised); border-radius: 18px; padding: 7px 14px; font-weight: 550; box-shadow: var(--shadow); }
-.fab-buttons button.primary { background: var(--accent); border-color: var(--accent); color: var(--raised); }
+.fab { position: fixed; left: 222px; bottom: 18px; z-index: 5; max-width: calc(100vw - 244px); }
 .cmd { background: var(--raised); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; box-shadow: var(--shadow); display: grid; gap: 8px; width: 340px; max-width: 100%; }
 .cmd code { font: 13px var(--mono); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; overflow-wrap: anywhere; user-select: all; }
 .cmd .actions { display: flex; gap: 8px; justify-content: flex-end; }
@@ -311,8 +324,8 @@ a.hrow:hover { background: var(--wait-soft); }
   .app { grid-template-columns: minmax(0, 1fr); align-content: start; }
   .menu { position: static; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center; border-right: 0; border-bottom: 1px solid var(--line); padding: 8px 10px; }
   .brand { padding: 0 8px 0 2px; }
-  .foot { margin: 0; border: 0; padding: 0 2px; width: 100%; display: flex; flex-wrap: wrap; gap: 2px 12px; }
-  .main { padding: 14px 12px 96px; }
+  .foot { order: 3; margin: 0; border: 0; padding: 0 2px; width: 100%; display: flex; flex-wrap: wrap; gap: 2px 12px; }
+  .main { padding: 14px 12px 40px; }
   .line { grid-template-columns: minmax(0, 1fr); gap: 5px; }
   .numbers, .facts { grid-template-columns: minmax(0, 1fr); }
   .hrow { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
@@ -324,12 +337,52 @@ a.hrow:hover { background: var(--wait-soft); }
   .docbody { padding: 12px; }
   .dact { justify-items: start; }
   .dact .why { text-align: left; }
-  .fab { right: 12px; bottom: 12px; max-width: calc(100vw - 24px); }
+  .fab { left: 12px; right: 12px; bottom: 12px; max-width: none; }
+  .menu-acts { display: flex; border: 0; padding: 0; margin: 0 0 0 auto; order: 2; }
+  .menu-act { padding: 4px 10px; }
 }
 /* live motion: one switch for every animation on the page */
 .motion { justify-self: start; margin-top: 4px; border: 1px solid var(--line); background: var(--raised); border-radius: 6px; padding: 3px 9px; font-size: 12px; color: var(--muted); }
 .motion:hover { background: var(--wait-soft); color: var(--fg); }
 body.paused *, body.paused *::before, body.paused *::after { animation-play-state: paused !important; }
+/* home: runs (what moves) and tasks (what waits for Marco) */
+.hp-sec { display: grid; gap: 10px; min-width: 0; }
+.hp-h { display: flex; align-items: baseline; gap: 10px; padding: 0 4px; }
+.hp-h .c { font: 500 12px var(--mono); color: var(--muted); }
+.hp-list { border-top: 1px solid var(--line); }
+.hp-run { display: grid; grid-template-columns: minmax(0, 1fr) 132px 132px; gap: 6px 28px; align-items: center; padding: 14px 4px; border-bottom: 1px solid var(--line); color: var(--fg); text-decoration: none; min-width: 0; }
+.hp-run:hover, .hp-task:hover { background: var(--raised); }
+.hp-run .who, .hp-task .what { min-width: 0; }
+.hp-run .who { grid-column: 1; grid-row: 1; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.hp-run .who b { font-weight: 600; font-size: 15px; overflow-wrap: anywhere; }
+.repo { font: 12px var(--mono); color: var(--muted); }
+.hp-run .now { grid-column: 1; font-size: 13px; color: var(--muted); min-width: 0; overflow-wrap: anywhere; }
+.hp-run .now b { color: var(--fg); font: 500 13px var(--mono); }
+.hp-run .now .hp-attn, .hp-run .now .hp-attn b { color: var(--attn); }
+.hp-run .now .hp-bad { color: var(--bad); }
+.hp-run .cons { grid-column: 1; min-width: 0; display: block; }
+.hp-run .cons canvas { display: block; width: 100%; }
+.hp-run.queued .who b { color: var(--muted); font-weight: 500; }
+.hp-pct { grid-row: 1 / span 3; display: grid; gap: 6px; align-content: center; }
+.hp-pct .k { font-size: 11px; color: var(--muted); letter-spacing: .04em; text-transform: uppercase; }
+.hp-pct .v { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.hp-meter { display: block; height: 4px; background: var(--wait-soft); border-radius: 2px; overflow: hidden; }
+.hp-meter i { display: block; height: 100%; border-radius: 2px; background: var(--ok); }
+.hp-meter.b i { background: var(--accent); }
+.hp-meter.over i { background: var(--bad); }
+.hp-task { display: grid; grid-template-columns: 96px minmax(0, 1fr) auto; gap: 14px; align-items: baseline; padding: 12px 4px; border-bottom: 1px solid var(--line); color: var(--fg); text-decoration: none; }
+.hp-task .verb { font: 600 12px var(--mono); color: var(--attn); }
+.hp-task .verb.quiet { color: var(--wait); }
+.hp-task .what b { font-weight: 600; overflow-wrap: anywhere; }
+.hp-task .why { display: block; font-size: 13px; color: var(--muted); margin-top: 2px; overflow-wrap: anywhere; }
+.hp-go { font-size: 13px; font-weight: 600; border-radius: 6px; padding: 4px 12px; border: 1px solid var(--line); white-space: nowrap; }
+.hp-go.first { background: var(--attn); border-color: var(--attn); color: #2a1d08; }
+@media (max-width: 820px) {
+  .hp-run { grid-template-columns: minmax(0, 1fr) 84px; gap: 6px 16px; }
+  .hp-run .bud { display: none; }
+  .hp-task { grid-template-columns: minmax(0, 1fr) auto; }
+  .hp-task .verb { grid-column: 1 / -1; }
+}
 /* constellation */
 .graph { display: block; width: 100%; }
 .graph-box { background: var(--raised); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; margin: 8px 0 12px; }
@@ -349,9 +402,6 @@ body.paused *, body.paused *::before, body.paused *::after { animation-play-stat
 .ticker { display: flex; flex-wrap: wrap; gap: 4px 16px; font: 12px var(--mono); color: var(--muted); padding: 6px 0 2px; font-variant-numeric: tabular-nums; }
 .ticker b { color: var(--fg); font-weight: 600; }
 .ticker .dot { margin-right: 4px; }
-.pline > .mini-box, .pline > .waitnote { grid-column: 1 / -1; }
-.pline .waitnote { margin: 0; padding: 4px 8px; font-size: 12px; justify-self: start; }
-.mini-box { display: block; width: 100%; border-radius: 6px; background: var(--bg); border: 1px solid var(--line); overflow: hidden; }
 .hmini { display: block; width: 120px; border-radius: 6px; background: var(--bg); border: 1px solid var(--line); overflow: hidden; }
 .enter { animation: slide-in .5s ease-out; }
 @keyframes slide-in { from { transform: translateY(-8px); opacity: 0; background: var(--accent-soft); } 60% { background: var(--accent-soft); } to { transform: none; opacity: 1; } }
@@ -377,10 +427,6 @@ body.paused *, body.paused *::before, body.paused *::after { animation-play-stat
     <span class="small muted" id="cmd-help"></span>
     <code id="cmd-text"></code>
     <div class="actions"><button class="btn" type="button" id="cmd-close">Close</button><button class="btn primary" type="button" id="cmd-copy">Copy</button></div>
-  </div>
-  <div class="fab-buttons">
-    <button type="button" data-cmd="euklides">Ask Euklides</button>
-    <button type="button" class="primary" data-cmd="plan">New plan</button>
   </div>
 </div>
 <script type="module">
@@ -933,7 +979,6 @@ function todaySpend() {
   const isToday = iso => iso && new Date(iso).toDateString() === today;
   return plans().flatMap(p => p.jobs || []).filter(j => isToday(j.started) || isToday(j.finished)).reduce((a, j) => a + Number(j.usd || 0), 0);
 }
-const waitsCount = () => { const h = homeGroups(plans()); return h.flight.concat(h.queued).filter(p => flagOf(p)).length; };  // only what Home shows
 
 function banner() {
   if (S.meta.stale) return { cls: "bad", text: `Stale data: ${S.meta.error || "ark did not answer"}. Showing what ark returned at ${clock(ms(S.meta.updated))}.` };
@@ -955,15 +1000,16 @@ function machineLoad(m) {
 }
 
 function menu() {
-  const r = S.route.screen;
+  const r = S.route.screen, box = document.getElementById("cmd"), open = box && !box.hidden ? box.dataset.name : "";
   const nav = (href, label, on, extra = "") => `<a class="nav" href="${href}"${on ? ' aria-current="page"' : ""}>${label}${extra}</a>`;
-  const n = waitsCount();
+  const n = taskCount();
   const loop = S.data ? (S.data.loop.alive
     ? `<span><i class="dot"></i>Loop running · beat <span data-tick="ago" data-at="${ms(S.data.loop.last_beat)}">${esc(sinceText((NOW() - ms(S.data.loop.last_beat)) / 1e3))}</span> ago</span>`
     : '<span><i class="dot off"></i>Loop stopped</span>') : "<span>Loop: no data yet</span>";
   const mc = machineLoad(S.data && S.data.machine);
   return `<span class="brand">Arkimedes</span>
-    ${nav("#/", "Home", r === "home" || r === "plan" || r === "draft", n ? `<span class="count" title="${n} ${n === 1 ? "plan waits" : "plans wait"} for you: blocked, paused, or with a question">${n}</span>` : "")}
+    <div class="menu-acts"><button type="button" class="menu-act primary" data-cmd="plan" aria-controls="cmd" aria-expanded="${open === "plan"}">New plan</button><button type="button" class="menu-act" data-cmd="euklides" aria-controls="cmd" aria-expanded="${open === "euklides"}">Ask Euklides</button></div>
+    ${nav("#/", "Home", r === "home" || r === "plan" || r === "draft", n ? `<span class="count" title="${n} ${n === 1 ? "thing waits" : "things wait"} for you">${n}</span>` : "")}
     ${nav("#/dashboard", "Dashboard", r === "dashboard")}
     ${nav("#/history", "History", r === "history")}
     ${nav("#/euklides", "Euklides", r === "euklides")}
@@ -1290,34 +1336,86 @@ function ticker() {
 }
 
 // ---- home
-function planLine(p) {
-  const nums = p.error ? '<span class="num" style="color:var(--bad)">cannot be read</span><span></span>'
-    : `<span class="num" data-tick="eta" data-key="${esc(keyOf(p))}">${esc(etaText(p))}</span><span class="num">${spend(p.cost)}</span>`;
+// Home answers two things: what is moving (one row per plan in flight or approved) and what waits for Marco
+// (one task per thing to do, verb first). Everything else about a plan lives inside it.
+const pctOf = (a, b) => (b > 0 ? Math.round(100 * a / b) : 0);
+function nowLine(p) {
+  if (p.error) return '<span class="hp-bad">Cannot be read: open it for the error.</span>';
+  const jobs = p.jobs || [], tot = p.progress.total, step = Math.min(tot, p.progress.merged + 1), now = NOW();
+  const st = j => nodeState(j, now, jobs).state, at = ` · step ${step} of ${tot}`;
+  if (p.status === "waiting") return esc(p.wait && p.wait.text ? `Queued · ${p.wait.text.split(". ")[0]}` : "Approved · not started yet");
+  const blocked = jobs.find(j => st(j) === "fail"), ask = jobs.find(j => st(j) === "ask");
+  if (blocked) return `<span class="hp-attn">Blocked: <b>${esc(blocked.id)}</b></span>${at}`;
+  if (ask || (p.questions || []).length) return `<span class="hp-attn">Waits for you${ask ? `: <b>${esc(ask.id)}</b>` : ""}</span>${at}`;
+  if (p.status === "held") return `<span class="hp-attn">Paused</span>${at}`;
+  const run = jobs.filter(j => st(j) === "run");
+  if (run.length) return `Now: <b>${esc(run[0].id)}</b>${run.length > 1 ? ` +${run.length - 1}` : ""}${at}`;
+  return esc(p.wait && p.wait.text ? p.wait.text.split(". ")[0] : "Between jobs") + at;
+}
+function runRow(p, cls) {
+  const done = p.error ? 0 : pctOf(p.progress.merged, p.progress.total);
+  const c = p.cost || {}, bud = pctOf(Number(c.usd || 0), Number(c.budget_usd || 0)), over = bud > 100;
   const rows = Math.max(1, ...graphLayout(p.jobs || []).map(n => n.rows));
-  const mini = (p.jobs || []).length && !p.error ? `<span class="mini-box"><canvas class="graph" data-graph="${esc(keyOf(p))}" data-mini="1" data-h="${Math.max(96, rows * 52 + 30)}"${p.status === "waiting" ? ' data-still="1" data-unlit="1"' : ""} role="img" aria-label="Job graph of ${esc(p.title || p.slug)}"></canvas></span>` : "";
-  // the graph shows each job's state: the row only adds the plan's totals, never a second copy of the jobs
-  return `<a class="line pline" href="${planHref(p)}"><span class="who"><b>${esc(p.title || p.slug)}</b><small>${esc(keyOf(p))}</small></span>
-    <span class="num">${p.progress.merged} of ${p.progress.total} merged</span>${nums}<span class="flag">${flagPill(p) || `<span class="pill ${pillKind(p.status)}">${esc(p.status)}</span>`}</span>${mini}${waitNote(p, true)}</a>`;
+  const graph = (p.jobs || []).length && !p.error ? `<canvas class="graph" data-graph="${esc(keyOf(p))}" data-mini="1" data-h="${rows > 1 ? rows * 20 + 16 : 36}"${p.status === "waiting" ? ' data-still="1" data-unlit="1"' : ""} role="img" aria-label="Job graph of ${esc(p.title || p.slug)}: ${p.progress.merged} of ${p.progress.total} jobs merged"></canvas>` : "";
+  const pct = (k, v, m, x = "") => `<span class="hp-pct${x}"><span class="k">${k}</span><span class="v">${v}%</span><span class="hp-meter ${m}"><i style="width:${Math.min(100, v)}%"></i></span></span>`;
+  return `<a class="hp-run${p.status === "waiting" ? " queued" : ""}${cls(keyOf(p))}" href="${planHref(p)}">
+    <span class="who"><b>${esc(p.title || p.slug)}</b><span class="repo">${esc(p.repo)}</span></span>
+    <span class="now">${nowLine(p)}</span><span class="cons">${graph}</span>
+    ${pct("Done", done, "p")}${pct("Budget", bud, over ? "b over" : "b", " bud")}</a>`;
 }
-function draftLine(d) {
-  const rv = (name, doc) => (doc ? `${name} ${doc.review.ok}/${doc.review.total} ok` : "");
-  const est = d.plan && d.plan.estimate ? `~${dur(d.plan.estimate.end_to_end_minutes)} · $${money(d.plan.estimate.total_usd)}` : "";
-  return `<a class="line" href="#/draft/${esc(d.repo)}/${esc(d.slug)}"><span class="who"><b>${esc(d.title || d.slug)}</b><small>${esc(d.repo)}/${esc(d.slug)}</small></span>
-    <span class="num">${esc([rv("spec", d.spec), rv("plan", d.plan)].filter(Boolean).join(" · ") || "no spec or plan yet")}</span>
-    <span class="num">${esc(est)}</span><span class="num muted">${d.approval === "stale" ? "approval stale" : ""}</span><span class="flag"><span class="pill stuck">${esc(d.next)}</span></span></a>`;
+// A series of drafts ("… (minimal core step 1a)") is one task: its first step, and how many follow.
+const SERIES = /\s*\(([^()]+?) step ([^()]+?)\)\s*$/;
+const stepKey = s => String(s).replace(/\d+/g, n => n.padStart(4, "0"));
+const DRAFT_VERB = { "review spec": "Review spec", "approve spec": "Approve spec", "write plan": "Write plan", "fix plan": "Fix plan", "review plan": "Review", "approve plan": "Approve" };
+function homeTasks() {
+  const out = [];
+  homeGroups(plans()).flight.forEach(p => {
+    const f = flagOf(p);
+    if (!f) return;
+    const q = (p.questions || [])[0], b = (p.jobs || []).find(j => j.status === "blocked");
+    out.push({ key: `p:${keyOf(p)}`, verb: f === "Blocked" ? "Unblock" : p.status === "held" && !q ? "Resume" : "Answer", title: p.title || p.slug, repo: p.repo,
+      why: f === "Blocked" ? `${b ? b.id + " is blocked" : "A job is blocked"}.` : q && q.text ? String(q.text).split("\n")[0] : "", href: planHref(p, q ? "questions" : "timeline"), go: true });
+  });
+  const series = new Map(), inRunner = new Set(plans().map(keyOf));
+  (S.drafts || []).forEach(d => {
+    const m = SERIES.exec(d.title || "");
+    if (!m || inRunner.has(`${d.repo}/${d.slug}`)) { out.push(draftTask(d)); return; }  // a step already in the runner is its own task
+    const k = `${d.repo}\n${m[1]}`;
+    if (!series.has(k)) series.set(k, []);
+    series.get(k).push({ d, name: m[1], step: m[2], short: (d.title || "").replace(SERIES, "") });
+  });
+  series.forEach(list => {
+    if (list.length === 1) { out.push(draftTask(list[0].d)); return; }
+    list.sort((a, b) => stepKey(a.step).localeCompare(stepKey(b.step)));
+    const first = list[0], t = draftTask(first.d), name = first.name[0].toUpperCase() + first.name.slice(1);
+    out.push({ ...t, key: `s:${first.d.repo}/${first.name}`, title: name, why: `${list.length} plans in a row. Start with step ${first.step}, ${first.short}.${t.why ? " " + t.why : ""}`, label: `${t.verb} ${first.step}` });
+  });
+  return out;
 }
-function group(label, items, line, empty) {
-  return `<section class="group"><span class="label">${label}</span>${items.length ? `<div class="lines">${items.map(line).join("")}</div>` : `<div class="empty">${empty}</div>`}</section>`;
+function draftTask(d) {
+  const stale = d.approval === "stale", verb = stale ? "Re-approve" : DRAFT_VERB[d.next] || "Open";
+  const why = stale ? "The plan changed after you approved it." : d.next === "write plan" ? "The spec is ready. Run /ark-plan to write the plan."
+    : d.next === "fix plan" ? "The plan does not pass ark validate." : "";
+  return { key: `d:${d.repo}/${d.slug}`, verb, title: d.title || d.slug, repo: d.repo, why, href: `#/draft/${esc(d.repo)}/${esc(d.slug)}`, quiet: d.next === "write plan" && !stale };
+}
+const taskCount = () => homeTasks().length;
+function taskRow(t, i, cls) {
+  return `<a class="hp-task${cls(t.key)}" href="${t.href}"><span class="verb${t.quiet ? " quiet" : ""}">${esc(t.verb)}</span>
+    <span class="what"><b>${esc(t.title)}</b> <span class="repo">${esc(t.repo)}</span>${t.why ? `<span class="why">${esc(t.why)}</span>` : ""}</span>
+    <span class="hp-go${i === 0 && !t.quiet ? " first" : ""}">${esc(t.label || (i === 0 && !t.quiet ? t.verb : "Open"))}</span></a>`;
 }
 function home() {
   if (!S.data) return `<p class="muted">${S.meta.stale ? "ark did not answer yet: " + esc(S.meta.error) : "Waiting for ark…"}</p>`;
   const { flight, queued } = homeGroups(plans());  // finished plans (done, blocked, aborted) are in History only
-  const drafts = S.drafts || [];
-  return `<div class="screen-head"><h1>Plans</h1><span class="small muted">${flight.length} in flight · ${queued.length} approved · ${drafts.length} drafts</span></div>${ticker()}
+  const runs = flight.concat(queued), tasks = homeTasks();
+  const rc = fresh("home-runs", runs.map(keyOf)), tc = fresh("home-tasks", tasks.map(t => t.key));
+  const nRun = flight.length, head = [nRun ? `${nRun} running` : "", queued.length ? `${queued.length} queued` : ""].filter(Boolean).join(" · ");
+  const sec = (label, count, body) => `<section class="hp-sec" aria-label="${label}"><div class="hp-h"><h2 class="label">${label}</h2>${count ? `<span class="c">${count}</span>` : ""}</div>${body}</section>`;
+  return `<div class="screen-head"><h1>Home</h1></div>
     ${S.flash ? `<div class="msg ok">${esc(S.flash)}</div>` : ""}
-    ${group("In flight", flight, planLine, "Nothing is running.")}
-    ${group("Approved, not started", queued, planLine, "No approved plan is waiting to start.")}
-    ${group("Drafts", drafts, draftLine, S.drafts === null ? "Loading drafts…" : "No drafts. Start one with New plan.")}`;
+    ${sec("In progress", head, runs.length ? `<div class="hp-list">${runs.map(p => runRow(p, rc)).join("")}</div>` : '<div class="empty">Nothing is running or approved. Start one with New plan.</div>')}
+    ${sec("Waiting on you", tasks.length ? String(tasks.length) : "", tasks.length ? `<div class="hp-list">${tasks.map((t, i) => taskRow(t, i, tc)).join("")}</div>`
+      : `<div class="empty">${S.drafts === null ? "Loading drafts…" : "Nothing waits for you."}</div>`)}`;
 }
 
 // ---- plan screen
@@ -1754,7 +1852,7 @@ async function approvePlan() {
   render(true);
   const r = await write("/api/approve-plan", { repo: d.repo, slug: d.slug, sha256: d.plan.sha256 });
   if (!r.ok) { await refused(r, "plan"); return; }
-  S.flash = `Approved ${d.repo}/${d.slug}: it waits under Approved, not started, until ark-loop starts it.`;
+  S.flash = `Approved ${d.repo}/${d.slug}: it shows as queued under In progress until ark-loop starts it.`;
   S.drafts = (S.drafts || []).filter(x => `${x.repo}/${x.slug}` !== `${d.repo}/${d.slug}`);
   S.draft = null;
   location.hash = "#/";
@@ -1844,7 +1942,7 @@ function euklidesScreen() {
 }
 
 // ---- dashboard screen
-const DASH_COLOR = { done: "var(--ok)", running: "var(--accent)", waiting: "var(--line)", held: "var(--attn)", blocked: "var(--bad)", aborted: "var(--muted)" };
+const DASH_COLOR = { done: "var(--ok)", running: "var(--accent)", waiting: "var(--wait)", held: "var(--attn)", blocked: "var(--bad)", aborted: "var(--faint)" };
 function dashSpendChart(days, period) {
   const W = 640, H = 170, LM = 38, B = 22, T = 8, max = Math.max(1, ...days.map(d => d.usd));
   const nice = max <= 5 ? Math.ceil(max) : Math.ceil(max / 5) * 5, bw = (W - LM) / days.length;
@@ -1890,16 +1988,16 @@ function dashboardScreen() {
   const opts = (values, on, any) => [`<option value="">${any}</option>`].concat(values.map(v => `<option value="${esc(v)}"${v === on ? " selected" : ""}>${esc(v)}</option>`)).join("");
   const bar = `<section class="dbar" aria-label="Filters">
     <div class="dgroup"><span class="label">Period</span>${DASH_PERIODS.map(p => chip("period", p, `Last ${p} days`, f.period === p)).join("")}
-      <button class="reset" type="button" data-d="reset"${dashIsFresh(f) ? " disabled" : ""}>Reset filters</button></div>
-    <div class="dgroup"><span class="label">Project</span>${ch.repos.map(r => chip("repos", r, r, f.repos.includes(r))).join("") || '<span class="small muted">none yet</span>'}</div>
-    <div class="dgroup"><span class="label">Status</span>${DASH_STATUSES.map(s => chip("status", s, s, f.status.includes(s))).join("")}</div>
-    <div class="dgroup"><span class="label">More</span>
       <select data-dsel="account" aria-label="Account">${opts(ch.accounts, f.account, "All accounts")}</select>
       <select data-dsel="tier" aria-label="Top tier used">${opts(["T0", "T1", "T2"], f.tier, "Any top tier")}</select>
       <select data-dsel="euk" aria-label="Euklides"><option value="">Euklides: any</option><option value="asked"${f.euk === "asked" ? " selected" : ""}>Euklides asked me</option><option value="none"${f.euk === "none" ? " selected" : ""}>Euklides never stepped in</option></select>
-      <input id="d-q" data-dq="1" type="search" placeholder="Search plan name" aria-label="Search plan name" value="${esc(f.q)}"></div>
-    <div class="small muted">${active.length ? `Filtering by: ${esc(active.join(" · "))}` : "No filters: every project and status."}</div></section>`;
-  const kpis = `<section class="dkpis" aria-label="Metrics">${dashKpis(all, f, now).map(k => `<div class="dkpi"><span class="label">${esc(k.label)}</span><strong>${esc(k.value)}</strong><span class="dd ${k.cls}">${esc(k.text)}</span>${k.note ? `<span class="small muted">${esc(k.note)}</span>` : ""}</div>`).join("")}</section>`;
+      <input id="d-q" data-dq="1" type="search" placeholder="Search plan name" aria-label="Search plan name" value="${esc(f.q)}">
+      <button class="reset" type="button" data-d="reset"${dashIsFresh(f) ? " disabled" : ""}>Reset filters</button></div>
+    <div class="dgroup"><span class="label">Project</span>${ch.repos.map(r => chip("repos", r, r, f.repos.includes(r))).join("") || '<span class="small muted">none yet</span>'}</div>
+    <div class="dgroup"><span class="label">Status</span>${DASH_STATUSES.map(s => chip("status", s, s, f.status.includes(s))).join("")}</div>
+    ${active.length ? `<div class="small muted">Filtering by: ${esc(active.join(" · "))}</div>` : ""}</section>`;
+  const kp = dashKpis(all, f, now), noPrev = k => k.text === "no previous period";   // said once under the cards, not on every card
+  const kpis = `<section class="dkpis" aria-label="Metrics">${kp.map(k => `<div class="dkpi"><span class="label">${esc(k.label)}</span><strong>${esc(k.value)}</strong>${noPrev(k) ? "" : `<span class="dd ${k.cls}">${esc(k.text)}</span>`}${k.note ? `<span class="small muted">${esc(k.note)}</span>` : ""}</div>`).join("")}</section>${kp.some(noPrev) ? `<p class="hint">${kp.every(noPrev) ? "No earlier period to compare with yet." : "Cards without a change have no earlier period to compare with."}</p>` : ""}`;
   const counts = dashStatusCounts(dashRows(all, { ...f, status: [] }, now).rows), total = DASH_STATUSES.reduce((a, s) => a + counts[s], 0);
   const stack = total ? `<div class="dstack" role="img" aria-label="Plans by status">${DASH_STATUSES.filter(s => counts[s]).map(s => `<span style="width:${(counts[s] / total * 100).toFixed(1)}%;background:${DASH_COLOR[s]}" title="${s}: ${counts[s]}"></span>`).join("")}</div>` : '<div class="empty">No plans match.</div>';
   const legend = `<div class="dlegend">${DASH_STATUSES.map(s => `<button class="chip" type="button" data-d="status" data-v="${s}" aria-pressed="${f.status.includes(s)}"><i style="background:${DASH_COLOR[s]}"></i>${s} ${counts[s]}</button>`).join("")}</div>`;
@@ -2021,15 +2119,20 @@ document.addEventListener("input", e => {
   const k = `${keyOf(p)}#${t.dataset.q}`;
   S.answers[k] = { ...(S.answers[k] || {}), text: t.value };
 });
+const menuNow = () => {   // the menu buttons show which command is open (attributes only: HTML is built in render())
+  const box = document.getElementById("cmd");
+  document.querySelectorAll(".menu-act").forEach(b => b.setAttribute("aria-expanded", String(!box.hidden && box.dataset.name === b.dataset.cmd)));
+};
 function openCommand(name) {
   const c = COMMANDS[name], box = document.getElementById("cmd");
-  if (!c || (!box.hidden && box.dataset.name === name)) { box.hidden = true; return; }
+  if (!c || (!box.hidden && box.dataset.name === name)) { box.hidden = true; menuNow(); return; }
   box.dataset.name = name;
   document.getElementById("cmd-title").textContent = c.title;
   document.getElementById("cmd-help").textContent = c.help;
   document.getElementById("cmd-text").textContent = c.text;
   document.getElementById("cmd-copy").textContent = "Copy";
   box.hidden = false;
+  menuNow();
 }
 function copyCommand() {
   const c = COMMANDS[document.getElementById("cmd").dataset.name], btn = document.getElementById("cmd-copy");
@@ -2053,7 +2156,7 @@ document.addEventListener("click", e => {
     return;
   }
   if (t.id === "cmd-copy") { copyCommand(); return; }
-  if (t.id === "cmd-close") { document.getElementById("cmd").hidden = true; return; }
+  if (t.id === "cmd-close") { document.getElementById("cmd").hidden = true; menuNow(); return; }
   if (t.dataset.cmd) { openCommand(t.dataset.cmd); return; }
   if (t.dataset.answer) { sendAnswer(t.dataset.answer); return; }
   if (t.dataset.dv) { pickDecision(t.dataset.dkey, t.dataset.dv); return; }
@@ -2074,6 +2177,7 @@ document.addEventListener("keydown", e => {
   if (e.key !== "Escape") return;
   if (S.job && document.querySelector(".jpanel")) { closeJob(); return; }
   document.getElementById("cmd").hidden = true;
+  menuNow();
 });
 
 let lastGood = "";
