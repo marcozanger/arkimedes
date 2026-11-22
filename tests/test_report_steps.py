@@ -123,3 +123,18 @@ def test_a_euklides_step_is_read_and_a_judge_one_still_is(ark_home):
     euklides, judge = build()
     assert (euklides["job"], euklides["kind"]) == ("shell", "euklides")
     assert (judge["job"], judge["kind"]) == ("shell", "judge")
+
+
+def test_each_automatic_resume_is_a_step_in_order(ark_home):
+    receipt("shell.worker", 0, 10, log=result_line())
+    st = run_state(events=[
+        f"{iso(120)} · shell: resumed after an API failure (1/3): API Error 529",
+        f"{iso(300)} · ui: resumed after an API failure (1/3): other",
+        f"{iso(400)} · shell: resumed after an API failure (2/3): API Error 500"])
+    from ark import steps
+    rows = [r for r in steps.build(st) if r["kind"] == "resume"]
+    assert [(r["job"], r["start"], r["reason"]) for r in rows] == \
+        [("shell", iso(120), "API Error 529"), ("ui", iso(300), "other"), ("shell", iso(400), "API Error 500")]
+    all_rows = steps.build(st)
+    assert [r["step"] for r in all_rows] == list(range(1, len(all_rows) + 1))
+    assert [r["start"] for r in all_rows if r["start"]] == sorted(r["start"] for r in all_rows if r["start"])

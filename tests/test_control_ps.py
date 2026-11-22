@@ -190,3 +190,15 @@ def test_ps_says_main_is_red_instead_of_the_waiting_text():
     assert ctl._ps_row(st, "ui", j)[-1] == "waiting: main is red"
     st["main_red"] = None
     assert ctl._ps_row(st, "ui", j)[-1] == "waiting on shell"
+
+
+def test_ps_shows_automatic_resumes_unless_a_question_or_wait_fills_the_column(ark_home):
+    j = {"status": "working", "tier": "T1", "auto_resumes": 1}
+    st = {"repo": "demo", "slug": "x", "jobs": {"ui": j}}
+    assert ctl._ps_row(st, "ui", j)[-1] == "resumed 1/3 after an API failure"
+    j["question"] = "which db?"
+    assert ctl._ps_row(st, "ui", j)[-1] == "which db?"
+    j.pop("question")
+    j["status"], j["waiting_on"] = "waiting_dep", "shell"
+    assert ctl._ps_row(st, "ui", j)[-1] == "waiting on shell"
+    assert "resumed" not in ctl._ps_row(st, "ui", {"status": "working", "tier": "T1"})[-1]

@@ -17,7 +17,7 @@ LINK = re.compile(r"https://[^\s<>&\"']+")
 KIND_LABELS = {"worker": "worker", "review": "review", "gate": "gate", "integrate": "integration",
                "euklides": "euklides", "judge": "judge",  # judge: runs recorded before Euklides
                "intervene": "intervention", "decisions": "decisions", "merge": "merge",
-               "wait-marco": "waiting for Marco"}
+               "wait-marco": "waiting for Marco", "resume": "resumed after API failure"}
 
 CSS = """
 :root { --bg:#fbfaf7; --fg:#1d1d1b; --muted:#6b6a65; --line:#e3e1da; --card:#ffffff; --ok:#1f7a4d; --bad:#b3261e; --est:#8a6d00; }

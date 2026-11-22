@@ -105,6 +105,9 @@ def _ps_row(st: dict, job: str, j: dict) -> list[str]:
     if (st.get("main_red") and st.get("base_green") is False
             and (j["status"] in run.NOT_STARTED or j["status"].startswith("waiting_"))):
         last = "waiting: main is red"
+    if j.get("auto_resumes") and not (j.get("question") or j["status"].startswith("waiting_")):
+        limit = paths.load_workspace()["limits"]["auto_resumes"]
+        last = f"resumed {j['auto_resumes']}/{limit} after an API failure"
     last = " ".join(usage.clean(last).split())[:100]
     return [f"{st['repo']}/{st['slug']}", job, j["status"], j.get("tier", "?"), elapsed, tokens, f"${j.get('usd', 0):.2f}", last]
 

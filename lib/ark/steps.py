@@ -20,6 +20,7 @@ SCRIPTS = ("gate", "integrate")
 DECISIONS = "_decisions.tick"
 TIER_OF = {m: t for t, m in claude.MODELS.items()}       # "sonnet" -> "T1"
 MERGED = re.compile(r"^(\S+) · ([a-z0-9][a-z0-9-]*): merged into ark/")
+RESUMED = re.compile(r"^(\S+) · ([a-z0-9][a-z0-9-]*): resumed after an API failure \(\d+/\d+\): (.*)$")
 ASKED = re.compile(r"^(\S+) · (?:ALERT )?question (q\d+)\b")
 _FIELDS = {"in": "inputTokens", "out": "outputTokens", "cache_read": "cacheReadInputTokens",
            "cache_write": "cacheCreationInputTokens"}
@@ -173,7 +174,7 @@ def build(st: dict) -> list[dict]:
     """Every step of the run, in time order, numbered from 1."""
     attempts: dict = {}
     rows = [row for r, log in _receipts(st) if (row := _row(r, log, attempts))]
-    rows += merges(st) + waits(st)
+    rows += merges(st) + resumes(st) + waits(st)
     rows.sort(key=lambda r: r["start"] or r["end"] or "~")     # no time: last
     for i, r in enumerate(rows, 1):
         r["step"] = i
@@ -196,6 +197,19 @@ def merges(st: dict) -> list[dict]:
         if j.get("status") == "merged" and jid not in seen:
             row = blank("merge", jid, None, None)
             row.update(model="script", outcome="merged", estimated=["time"])
+            rows.append(row)
+    return rows
+
+
+def resumes(st: dict) -> list[dict]:
+    """One row per automatic resume after an API failure, read from the events (the kept 200)."""
+    rows = []
+    for e in st.get("events") or []:
+        m = RESUMED.match(e)
+        if m and m.group(2) in st["jobs"]:
+            t = ts(m.group(1))
+            row = blank("resume", m.group(2), t, t)
+            row.update(model="script", outcome="resumed", reason=_text(m.group(3), 300), minutes=None)
             rows.append(row)
     return rows
 
