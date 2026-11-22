@@ -54,7 +54,8 @@ import json
 def test_workspace_defaults_fill_missing_keys(ark_home):
     ws = paths.load_workspace()
     assert ws["limits"] == {"writers_per_repo": 3, "writers_total": 6, "heavy_gates": 1, "gates_total": 2, "refresh_usd": 3,
-                            "gate_workers": 4, "load_max": paths.default_load_max(), "load_wait_max": 900}
+                            "gate_workers": 4, "load_max": paths.default_load_max(), "load_wait_max": 900,
+                            "stall_minutes": 20, "api_quiet_minutes": 3, "auto_resumes": 3}
     assert ws["tick_minutes"] == 15 and ws["poll_seconds"] == 15
 
 
