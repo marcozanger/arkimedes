@@ -26,6 +26,11 @@ def post(repo: str, slug: str, qid: str, text: str) -> dict:
         raise AnswerError("unknown", f"{repo}/{slug} has no open question {qid}")
     if any(i["kind"] == "answer" and i.get("id") == qid for i in inbox.pending(repo, slug)):
         raise AnswerError("posted", f"{qid} already has an answer waiting for ark-loop")
+    n, opts = questions.number(text), questions.options(q)
+    if opts and n is not None:  # an option by its number
+        if not 1 <= n <= len(opts):
+            raise AnswerError("rejected", f"answer rejected: no option {n}")
+        text = questions.pick(q, text)
     problem = questions.check_answer(q, text)
     if problem:
         raise AnswerError("rejected", f"answer rejected: {problem}")

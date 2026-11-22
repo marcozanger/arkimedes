@@ -21,14 +21,28 @@ def _text(text) -> str:
     return clean(str(text)).strip()[:MAX_TEXT]
 
 
-def ask(st: dict, kind: str, text: str, job: str | None = None, critical: bool = False, quiet: bool = False) -> dict:
-    """The open question of this kind and job, or a new one."""
+MAX_LABEL = 60
+MAX_DETAIL = 300
+
+
+def option(label: str, detail: str, answer: str, confirm: bool = False) -> dict:
+    """One button of a question: what it says, what the runner then does, and the answer text it posts."""
+    return {"label": _text(label)[:MAX_LABEL], "detail": _text(detail)[:MAX_DETAIL], "answer": str(answer),
+            "confirm": bool(confirm)}
+
+
+def ask(st: dict, kind: str, text: str, job: str | None = None, critical: bool = False, quiet: bool = False,
+        options: list[dict] | None = None) -> dict:
+    """The open question of this kind and job, or a new one. An open one keeps its own options."""
     open_questions = st.setdefault("questions", [])
     for q in open_questions:
         if q["kind"] == kind and q["job"] == job:
             return q
     st["question_seq"] = st.get("question_seq", 0) + 1
     q = {"id": f"q{st['question_seq']}", "kind": kind, "job": job, "text": _text(text), "asked": run.now()}
+    if options:
+        q["options"] = [option(o.get("label", ""), o.get("detail", ""), o["answer"], o.get("confirm", False))
+                        for o in options]
     open_questions.append(q)
     if quiet:
         run.event(st, f"question {q['id']}: {q['text'][:300]}")
@@ -56,6 +70,28 @@ def _positive(word: str) -> bool:
     return math.isfinite(n) and n > 0
 
 
+def options(q: dict) -> list[dict]:
+    """The question's options of a usable shape; none for a question asked without them."""
+    opts = q.get("options")
+    if not isinstance(opts, list):
+        return []
+    return [o for o in opts if isinstance(o, dict) and isinstance(o.get("answer"), str)]
+
+
+def number(text: str) -> int | None:
+    """The option number an answer names, or None when it is not a bare number."""
+    text = str(text).strip()
+    return int(text) if text.isascii() and text.isdigit() and len(text) < 6 else None
+
+
+def pick(q: dict, text: str) -> str:
+    """The answer text of the option an answer names by number; any other text unchanged."""
+    n, opts = number(text), options(q)
+    if opts and n is not None and 1 <= n <= len(opts):
+        return opts[n - 1]["answer"]
+    return text
+
+
 def check_answer(q: dict, text: str) -> str | None:
     """What is wrong with this answer, or None."""
     text = text.strip()
@@ -76,6 +112,9 @@ def resolve(st: dict, qid: str, text: str) -> dict:
     st["questions"].remove(q)
     answer = {"id": q["id"], "kind": q["kind"], "job": q["job"], "question": q["text"], "answer": text.strip(),
               "asked": q.get("asked"), "at": run.now()}
+    chosen = next((o for o in options(q) if o["answer"].strip() == text.strip()), None)
+    if chosen:
+        answer["option"] = chosen.get("label", "")
     st.setdefault("answers", []).append(answer)
     return answer
 

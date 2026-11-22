@@ -43,6 +43,39 @@ def test_resolve_moves_it_to_the_answers():
     assert questions.ask(st, "worker", "next", job="x")["id"] == "q2"   # ids are not reused
 
 
+OPTS = [{"label": "Go on " + "x" * 80, "detail": "the proposal", "answer": "ok"},
+        {"label": "Stop the job", "detail": "x ends blocked", "answer": ":stop", "confirm": True}]
+
+
+def test_ask_stores_options_and_an_open_question_keeps_its_own():
+    st = blank()
+    q = questions.ask(st, "worker", "go on?", job="x", options=OPTS)
+    assert [o["answer"] for o in q["options"]] == ["ok", ":stop"]
+    assert len(q["options"][0]["label"]) == questions.MAX_LABEL and q["options"][1]["confirm"] is True
+    again = questions.ask(st, "worker", "go on?", job="x", options=[{"label": "Other", "detail": "", "answer": "z"}])
+    assert again is q and [o["answer"] for o in again["options"]] == ["ok", ":stop"]
+    assert "options" not in questions.ask(st, "worker", "which?", job="y")
+
+
+def test_pick_by_number():
+    st = blank()
+    q = questions.ask(st, "worker", "go on?", job="x", options=OPTS)
+    assert questions.pick(q, "2") == ":stop" and questions.pick(q, " 1 ") == "ok"
+    for text in ("3", "0", "two", "SQLite"):
+        assert questions.pick(q, text) == text
+    assert questions.pick(questions.ask(st, "worker", "which?", job="y"), "1") == "1"
+
+
+def test_resolve_names_the_option_chosen():
+    st = blank()
+    q = questions.ask(st, "worker", "go on?", job="x", options=OPTS)
+    questions.resolve(st, q["id"], ":stop")
+    assert st["answers"][0]["option"] == "Stop the job"
+    q = questions.ask(st, "worker", "go on?", job="x", options=OPTS)
+    questions.resolve(st, q["id"], "do it another way")
+    assert "option" not in st["answers"][1]
+
+
 def test_drop_kind_filters_by_job():
     st = blank()
     questions.ask(st, "worker", "a", job="x")
@@ -373,3 +406,55 @@ def test_an_alert_that_never_was_in_a_state_is_delivered_clean(feature, monkeypa
     monkeypatch.setattr(loop, "_orphans", lambda approved, alerts: alerts.append(SURROGATE))
     assert "bad ? text" in loop.cycle()[1]
     assert "bad ? text" in (paths.runs_dir() / "alerts.jsonl").read_text(encoding="utf-8")
+
+
+def test_a_question_without_options_takes_a_number_as_text(feature, monkeypatch, capsys):
+    waiting(feature, monkeypatch)
+    st = state()
+    [q] = st["questions"]
+    q.pop("options")  # a question saved before options existed
+    run.save(st)
+    capsys.readouterr()
+    assert "  1. " not in ark(capsys, "answer", "--list")[1]
+    assert ark(capsys, "answer", "--run", f"demo/{SLUG}", q["id"], "2")[0] == 0
+    assert [i["text"] for i in inbox.pending("demo", SLUG)] == ["2"]
+
+
+def test_a_held_run_asks_with_one_option_to_end_it(feature, monkeypatch, tmp_path):
+    monkeypatch.setenv("FAKE_HOLD", str(tmp_path / "go"))
+    _, plan = feature()
+    drive(lambda: job_status("shell") == "working")
+    plan.write_text(plan.read_text() + "\n")
+    drive(lambda: state()["status"] == "held")
+    [q] = state()["questions"]
+    assert [(o["label"], o["answer"], o["confirm"]) for o in q["options"]] == [("End the run", "stop", True)]
+    assert questions.check_answer(q, "stop") is None
+    (tmp_path / "go").touch()
+
+
+def _euklides_waiting(feature, monkeypatch):
+    feature()
+    loop.cycle()
+    st = state()
+    q = questions.ask(st, "worker", "go on?", job="shell",
+                      options=[{"label": "Go on", "detail": "move shell to T3", "answer": "ok"},
+                               {"label": "Stop the job", "detail": "shell ends blocked", "answer": ":stop"}])
+    run.save(st)
+    return q
+
+
+def test_answer_lists_options_numbered(feature, monkeypatch, capsys):
+    _euklides_waiting(feature, monkeypatch)
+    capsys.readouterr()
+    code, out = ark(capsys, "answer", "--list")
+    assert code == 0
+    assert "go on?\n  1. Go on — move shell to T3\n  2. Stop the job — shell ends blocked\n" in out
+
+
+def test_answer_takes_an_option_by_number(feature, monkeypatch, capsys):
+    q = _euklides_waiting(feature, monkeypatch)
+    capsys.readouterr()
+    assert ark(capsys, "answer", "--run", f"demo/{SLUG}", q["id"], "3")[0] == 1
+    assert inbox.pending("demo", SLUG) == []
+    assert ark(capsys, "answer", "--run", f"demo/{SLUG}", q["id"], "2")[0] == 0
+    assert [i["text"] for i in inbox.pending("demo", SLUG)] == [":stop"]

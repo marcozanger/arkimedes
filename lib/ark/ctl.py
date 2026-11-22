@@ -310,7 +310,9 @@ def _open_questions() -> list[tuple[dict, dict]]:
 
 def _show(st: dict, q: dict) -> None:
     job = f" · job {q['job']}" if q["job"] else ""
-    print(f"{st['repo']}/{st['slug']} · {q['id']}{job}\nplan: {st['plan']}\n\n{q['text']}\n")
+    opts = "".join(f"  {n}. {o.get('label', '')} — {o.get('detail', '')}\n"
+                   for n, o in enumerate(questions.options(q), 1))
+    print(f"{st['repo']}/{st['slug']} · {q['id']}{job}\nplan: {st['plan']}\n\n{q['text']}\n{opts}")
 
 
 def _post_answer(st: dict, q: dict, text: str) -> None:

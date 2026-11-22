@@ -63,3 +63,35 @@ def test_a_runner_process_cannot_answer(live_run_with_question, monkeypatch):
     with pytest.raises(answers.AnswerError) as e:
         answers.post(*live_run_with_question, "x")
     assert e.value.kind == "role"
+
+
+def _two_options(ark_home):
+    st = run.new_state({"repo": "demo", "slug": "notes-edit", "plan": "/p/plan.md", "sha256": "0" * 64,
+                        "approved_at": "2026-11-05T10:00:00+00:00"})
+    st["status"] = "running"
+    q = questions.ask(st, "worker", "go on?", job="x",
+                      options=[{"label": "Go on", "detail": "the proposal", "answer": "ok"},
+                               {"label": "Stop the job", "detail": "x ends blocked", "answer": ":stop",
+                                "confirm": True}])
+    run.save(st)
+    return "demo", "notes-edit", q["id"]
+
+
+def test_an_option_number_posts_its_answer_text(ark_home):
+    repo, slug, qid = _two_options(ark_home)
+    assert answers.post(repo, slug, qid, " 1 ")["text"] == "ok"
+    assert [i["text"] for i in inbox.pending(repo, slug)] == ["ok"]
+
+
+def test_a_number_past_the_last_option_is_rejected(ark_home):
+    repo, slug, qid = _two_options(ark_home)
+    with pytest.raises(answers.AnswerError) as e:
+        answers.post(repo, slug, qid, "9")
+    assert e.value.kind == "rejected" and "no option 9" in str(e.value)
+    assert inbox.pending(repo, slug) == []
+
+
+def test_a_number_without_options_is_plain_text(live_run_with_question):
+    repo, slug, qid = live_run_with_question
+    answers.post(repo, slug, qid, "2")
+    assert [i["text"] for i in inbox.pending(repo, slug)] == ["2"]

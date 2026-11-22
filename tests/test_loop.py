@@ -3882,3 +3882,54 @@ def test_a_job_that_is_not_a_follow_up_still_fails_on_no_change(tmp_path, monkey
     j = c.st["jobs"]["shell"]
     assert j["status"] != "merged"
     assert any("without any change" in e for e in c.st["events"])
+
+
+def _ask_options(tmp_path, **d):
+    c = at_euklides(tmp_path, trigger="question", allowed=("ask",), situation="which file?", session="s1")
+    loop.on_euklides(c, "shell", euk_answer(action="ask", note="n", **d))
+    [q] = c.st["questions"]
+    for o in q["options"]:
+        assert questions.check_answer(q, o["answer"]) is None, o
+    return c, q
+
+
+def test_euklides_ask_offers_the_proposal_then_stop(tmp_path, ark_home):
+    c, q = _ask_options(tmp_path, proposal="move shell to the next tier " + "x" * 80, then="escalate")
+    first, stop = q["options"]
+    assert first["label"] == ("move shell to the next tier " + "x" * 80)[:60] and first["answer"] == "ok"
+    assert first["detail"] == loop._then_text(c.st, "shell", c.st["jobs"]["shell"]["euklides_ask"])
+    assert (stop["label"], stop["detail"], stop["answer"], stop["confirm"]) == \
+        ("Stop the job", "shell ends blocked", ":stop", True)
+
+
+def test_euklides_ask_with_then_stop_has_one_option_and_its_answer_is_ok(tmp_path, ark_home):
+    _, q = _ask_options(tmp_path, proposal="p", then="stop")
+    assert [(o["label"], o["answer"]) for o in q["options"]] == [("Stop the job", "ok")]
+
+
+def test_euklides_ask_whose_ok_is_refused_offers_only_stop(tmp_path, ark_home):
+    c = at_euklides(tmp_path, trigger="question", allowed=("ask",), situation="which file?", session="s1")
+    c.mjobs["ui"] = job("ui", ["T1"], ["src/ui/**"])
+    loop.on_euklides(c, "shell", euk_answer(action="ask", note="n", proposal="p", then="widen",
+                                            files=["src/ui/x.ts"]))
+    [q] = c.st["questions"]
+    assert [o["answer"] for o in q["options"]] == [":stop"]
+    assert questions.check_answer(q, ":stop") is None
+
+
+def test_the_run_budget_question_offers_euklides_raise_then_end(tmp_path, ark_home):
+    st = {"repo": "r", "slug": "s", "status": "running", "jobs": {}, "alerts": [], "events": [], "updated": ""}
+    loop._ask_cap_run(st, 12, 10, "\n\nProposal: raise 3.5", planned=10, usd=loop._raise_usd("raise 3.5"))
+    [q] = st["questions"]
+    assert [(o["label"], o["answer"], o["confirm"]) for o in q["options"]] == \
+        [("Raise $3.5", "raise 3.5", True), ("End the run", "stop", True)]
+    for o in q["options"]:
+        assert questions.check_answer(q, o["answer"]) is None
+
+
+def test_the_run_budget_raise_defaults_to_a_quarter_of_the_plan(tmp_path, ark_home):
+    for planned, n in ((10, 3), (2, 1), (0, 1)):
+        st = {"repo": "r", "slug": "s", "status": "running", "jobs": {}, "alerts": [], "events": [], "updated": ""}
+        loop._ask_cap_run(st, 12, 10, planned=planned, usd=loop._raise_usd("stop"))
+        assert st["questions"][0]["options"][0]["answer"] == f"raise {n}"
+

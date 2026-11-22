@@ -128,6 +128,10 @@ def test_retry_starts_one_more_worker(feature, monkeypatch):
     drive(lambda: state()["base_green"])
     main = clash(repo)
     drive(lambda: refresh_question(state()))
+    q = refresh_question(state())
+    assert [(o["label"], o["answer"], o["detail"]) for o in q["options"]] == [
+        ("Retry", "retry", "one more refresh worker with the same budget"),
+        ("Skip", "skip", "the base stays until main moves again")]
     n = state()["refresh"]["n"]
     monkeypatch.setenv("FAKE_REFRESH", "theirs")
     inbox.post("demo", SLUG, "answer", id=refresh_question(state())["id"], text="retry")
