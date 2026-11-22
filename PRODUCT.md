@@ -37,7 +37,7 @@ Runs are graphs of jobs over time. The "constellation", which shows jobs as node
 ## Brand Commitments
 - Dark only. The UI is always dark and does not follow the system's light mode. (Marco, 2026-11-21.)
 - The names Arkimedes and Euklides.
-- The constellation is the visual signature, and every screen should read as a view of the same graph: History shows past constellations, drafts are unlit nodes, and Euklides decisions are annotations on nodes. (Marco chose "todo constelación", 2026-11-21.)
+- The constellation is the visual signature, and every screen should read as a view of the same graph: History shows past constellations, drafts are unlit nodes, and Euklides decisions are annotations on nodes. (Marco chose "everything is a constellation", 2026-11-21.)
 
 ## Evidence on Hand
 - Real runner data comes from `ark ui` (`/api/runs`, drafts, history, Euklides).
