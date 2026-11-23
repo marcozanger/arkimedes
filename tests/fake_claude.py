@@ -14,6 +14,8 @@ tick      the decisions file when asked for one, else `retry` (no intervene acti
 FAKE_COMPANION=job with FAKE_COMPANION_FILES=a,b also writes those files, wherever they are.
 FAKE_EARLY_OUTSIDE=job makes a first commit outside the area, under a last commit inside it.
 FAKE_DIRTY=job:n leaves attempt n's file uncommitted; FAKE_EMPTY=job:n changes nothing. Both end DONE.
+FAKE_SUBJECT=<prefix> starts every worker commit subject with it ("T1:" gives "T1: <job> attempt <n>").
+FAKE_NOREPORT=job:n,... makes attempt n commit, write no report and end FAILED, as a worker that died.
 
 FAKE_DOWN=1 makes every role end at once with exit 1 and no result line, as an unreachable model
 does; FAKE_STATE/down.count counts those.
@@ -148,7 +150,12 @@ elif ROLE == "worker":
             subprocess.run(["git", "add", str(early)], cwd=wt, check=True)
             subprocess.run(["git", "commit", "-q", "-m", f"{job} early"], cwd=wt, check=True)
         subprocess.run(["git", "add", "-A"], cwd=wt, check=True)
-        subprocess.run(["git", "commit", "-q", "-m", f"{job} attempt {n}"], cwd=wt, check=True)
+        prefix = os.environ.get("FAKE_SUBJECT")
+        subject = f"{prefix} {job} attempt {n}" if prefix else f"{job} attempt {n}"
+        subprocess.run(["git", "commit", "-q", "-m", subject], cwd=wt, check=True)
+        if f"{job}:{n}" in os.environ.get("FAKE_NOREPORT", "").split(","):
+            emit("it died\nSTATUS: FAILED — it died before its report")
+            sys.exit(0)
         Path(os.environ["ARK_REPORT"]).write_text(
             f"## What I did\n\n{job} attempt {n}.\n\n## Tests\n\nnone\n\n## DECISIONS\n\n"
             f"- Wrote {rel}. Why: the fake always does. Rejected: nothing.\n\n## Open issues\n\nnone\n")

@@ -306,6 +306,11 @@ def _cleanup(repo, path: Path) -> None:
         pass
 
 
+def status_lines(worktree) -> list[str]:
+    """`git status --porcelain`, one entry per non-empty line, unstripped (the status columns count). Read-only."""
+    return [line for line in _checked(worktree, "status", "--porcelain").splitlines() if line.strip()]
+
+
 def is_clean(worktree) -> bool:
     return git(worktree, "status", "--porcelain") == ""
 
