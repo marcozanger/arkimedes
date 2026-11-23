@@ -703,6 +703,8 @@ def _then_text(st: dict, job: str, ask: dict) -> str:
                 "again)")
     if then == "stop":
         return f"stop {job} (it ends blocked)"
+    if ask.get("label"):  # an alternative: its label is what the worker is told, not the proposal above
+        return f"go on with: {_clean(str(ask['label']))}"
     return "go on with the proposal above"
 
 
