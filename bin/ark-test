@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # ark-test job|full [pytest args] — the suite, for a plan's gates.
-#   job  a job's gate: only the tests the change can affect (pytest-testmon). It runs the whole suite instead when
-#        there is no testmon data, when the diff against the base has a file that is not a .py under lib/ or tests/,
-#        or when testmon itself fails (an exit code that is not "tests failed").
+#   job  a job's gate: only the tests the change can affect (pytest-testmon). A changed path that is not a .py under
+#        lib/ or tests/ adds the test files under tests/ that name it (its path or basename). It runs the whole
+#        suite instead when there is no testmon data, when the change touches a forcing file (requirements.txt,
+#        pytest.ini, bin/ark-test), or when testmon itself fails (an exit code that is not "tests failed").
 #   full the integration gate: the whole suite, and it refreshes the testmon data for later `job` runs.
-# The first line says which mode ran. ARK_TEST_BASE is the ref the change is measured against (default origin/main).
+# The first line says which mode ran; the last is `ark-test: mode=<job|full> tests=<n> (<why>)`.
+# ARK_TEST_BASE is the ref the change is measured against (default origin/main).
 # ARK_TEST_PYTEST overrides the pytest command (tests use it).
 set -u
 root="$(cd "$(dirname "$(realpath "$0")")/.." && pwd)"
@@ -15,16 +17,44 @@ case "$mode" in job|full) ;; *) echo "usage: ark-test job|full [pytest args]" >&
 
 data="${ARK_HOME:-$HOME/.claude/arkimedes}/repos/arkimedes/testmondata"
 base="${ARK_TEST_BASE:-origin/main}"
+forcing="requirements.txt pytest.ini bin/ark-test"
 if [ -n "${ARK_TEST_PYTEST:-}" ]; then read -r -a pytest <<<"$ARK_TEST_PYTEST"; else pytest=(.venv/bin/python -m pytest); fi
+
+out="$(mktemp)"; trap 'rm -f "$out"' EXIT
+count=""  # tests the last pytest call reported as run; "?" when unreadable
+total=0
+
+pyrun() {  # pytest args; sets $count from the final -q line; returns pytest's exit code
+  "${pytest[@]}" "$@" 2>&1 | tee "$out"
+  local code=${PIPESTATUS[0]} line n=0 found=0 k
+  line="$(grep -E '^(=+ )?[0-9]+ (passed|failed|error|errors|skipped|deselected|xfailed|xpassed)|^(=+ )?no tests ran' "$out" | tail -1)"
+  for k in $(printf '%s\n' "$line" | grep -oE '[0-9]+ (passed|failed|errors?|skipped)' | cut -d' ' -f1); do n=$((n + k)); found=1; done
+  if [ "$found" = 0 ]; then  # pytest.ini adds -q, so `-q` is `-qq`: no summary line, only the progress lines
+    n="$(grep -E '^[.FEsxX]+ +\[ *[0-9]+%\]$' "$out" | sed 's/ .*//' | tr -d '\n' | wc -c | tr -d ' ')"
+    [ "$n" -gt 0 ] && { found=1; line=""; }
+  fi
+  if [ "$found" = 1 ]; then count="$n"; elif printf '%s' "$line" | grep -q 'no tests ran'; then count=0; else count="?"; fi
+  return "$code"
+}
+
+add_count() {  # $1: tests of one more call
+  if [ "$1" = "?" ] || [ "$total" = "?" ]; then total="?"; else total=$((total + $1)); fi
+}
+
+summary() {  # $1: mode, $2: why
+  echo "ark-test: mode=$1 tests=$total ($2)"
+}
 
 run_full() {  # $1: why; the rest are pytest args
   local why="$1"; shift
   echo "ark-test: mode=full ($why)"
-  "${pytest[@]}" -q -n auto --testmon-noselect "$@"
+  pyrun -q -n auto --testmon-noselect "$@"
   local code=$?
+  total="$count"
   if [ "$code" -eq 0 ] && [ -f .testmondata ]; then
     mkdir -p "$(dirname "$data")" && cp .testmondata "$data" 2>/dev/null
   fi
+  summary full "$why"
   return "$code"
 }
 
@@ -34,15 +64,40 @@ if [ "$mode" = full ]; then run_full "integration gate, everything runs" "$@"; e
 [ -f .testmondata ] || { run_full "no testmon data" "$@"; exit $?; }
 
 mb="$(git merge-base HEAD "$base" 2>/dev/null)" || { run_full "no merge base with $base" "$@"; exit $?; }
-changed="$(git diff --name-only "$mb"; git ls-files --others --exclude-standard)"
-other="$(printf '%s\n' "$changed" | grep -v '^$' | grep -Ev '^(lib|tests)/.*\.py$' | head -3 | tr '\n' ' ')"
-[ -z "$other" ] || { run_full "changed outside lib/ and tests/ .py: $other" "$@"; exit $?; }
+changed="$({ git diff --name-only "$mb"; git ls-files --others --exclude-standard; } | grep -v '^$' | sort -u)"
 
-echo "ark-test: mode=job (only the tests the change can affect)"
-"${pytest[@]}" -q -n auto --testmon "$@"
+forced=""
+hits="$(mktemp)"; trap 'rm -f "$out" "$hits"' EXIT
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  case "$f" in lib/*.py|tests/*.py) continue ;; esac
+  for x in $forcing; do [ "$f" = "$x" ] && forced="$forced$f "; done
+  grep -rlF -e "$f" -e "$(basename "$f")" --include='test_*.py' tests >>"$hits" 2>/dev/null
+done <<<"$changed"
+forced="${forced% }"
+[ -z "$forced" ] || { run_full "changed a file that forces the whole suite: $forced" "$@"; exit $?; }
+
+named=()
+while IFS= read -r t; do [ -n "$t" ] && named+=("$t"); done < <(sort -u "$hits")
+
+why="only the tests the change can affect"
+[ "${#named[@]}" -eq 0 ] || why="$why, plus ${#named[@]} test files that name a changed file"
+echo "ark-test: mode=job ($why)"
+pyrun -q -n auto --testmon "$@"
 code=$?
 case "$code" in
-  0|5) exit 0 ;;  # 5: testmon selected nothing
-  1) exit 1 ;;
+  0|5|1) ;;
   *) run_full "testmon failed with exit $code" "$@"; exit $? ;;
 esac
+total="$count"
+# testmon with explicit files would still skip the unaffected ones among them, so the test files that name a
+# changed file run in their own call; either red is red.
+if [ "${#named[@]}" -gt 0 ]; then
+  pyrun -q -n auto "${named[@]}" "$@"
+  code2=$?
+  add_count "$count"
+  [ "$code2" -eq 0 ] || code=1
+fi
+summary job "$why"
+[ "$code" -eq 1 ] && exit 1
+exit 0

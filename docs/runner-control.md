@@ -396,18 +396,55 @@ ends in the existing uncharged backoff for an unreachable model.
 ## bin/ark-test
 
 The test gate of a plan for this repo (`gate: bin/ark-test job`, `integration_gate: bin/ark-test full`). Both run
-`pytest -q -n auto`, so `gate_workers` still bounds the processes, and the first output line says which mode ran.
+`pytest -q -n auto`, so `gate_workers` still bounds the processes. The first output line says which mode ran; the last
+is `ark-test: mode=<job|full> tests=<n> (<why>)` for every mode and fallback, `n` being the tests pytest reports as
+run (passed, failed, errors, skipped; `?` when it cannot be read).
 
 - `job` runs only the tests the change can affect (`pytest-testmon` follows what each test executes). It runs the
   whole suite instead, and says why, when there is no `.testmondata` (a missing one is first seeded from
-  `$ARK_HOME/repos/arkimedes/testmondata`), when the diff against `origin/main` (`ARK_TEST_BASE`) has a file that is
-  not a `.py` under `lib/` or `tests/` (requirements, `bin/`, templates, docs, data), or when testmon exits with
-  anything but passed, failed or nothing selected. A red test stays red: it is not run again.
+  `$ARK_HOME/repos/arkimedes/testmondata`), when the diff against `origin/main` (`ARK_TEST_BASE`) has a forcing file
+  (`requirements.txt`, `pytest.ini`, `bin/ark-test`), or when testmon exits with anything but passed, failed or
+  nothing selected. A red test stays red: it is not run again.
+- A changed path that is not a `.py` under `lib/` or `tests/` (docs, role files, hooks, UI, fixtures, `bin/` tools) no
+  longer forces the suite: the test files under `tests/` whose text contains its path or its basename (fixed-string
+  grep) run in a second `pytest -q -n auto <files>` call after the testmon selection (testmon with explicit files
+  would still skip the unaffected ones among them); either call red is red. A deleted file counts like a changed one.
+  `conftest.py` needs no entry in the forcing list: it is a `.py` under `tests/` that testmon tracks.
 - `full` runs everything and, when green, copies `.testmondata` to the shared path. The integration gate always uses
   it, so whatever reaches main passed the whole suite; a selection that misses a dependency can only cost a job a
   late red at integration, never a bad merge.
+- Measured on 2026-11-23 (suite: 2382 tests, `full` 4 min 12 s; testmon data seeded by that full run; each run one
+  uncommitted edit, on a machine shared with other work, so times are indicative):
+
+  | Change | Tests run | Time |
+  |---|---|---|
+  | only `lib/ark/loop.py` | 755 of 2382 | 3 min 39 s |
+  | only `lib/ark/ctl.py` | 142 of 2382 | 42 s |
+  | only `docs/runner-control.md` | 544 of 2382 (the testmon selection plus 4 test files that name it) | 1 min 58 s |
+
+  `loop.py` is imported by a third of the suite, so a change there still pays most of the cost; the others are far
+  cheaper.
 - testmon keeps its data relative to the project, so a copy in another worktree path works. A comment-only edit
   counts as no change.
+
+## The worker's gate receipt
+
+A worker does not run the job gate itself: it runs the tests of what it touched while it works, and the stop hook
+(`hooks/done-gate.sh`) runs the job gate when it tries to finish, sending it back while the gate is red. When that gate
+is green and `git status --porcelain` in the worktree is empty before and after it, on the same head, the hook writes
+`<run>/<job>.workergate.json`: `head` (`git rev-parse HEAD`), `gate` (the exact `ARK_GATE`), `ok: true`, `summary`
+(the last non-empty line of the gate's output) and `at`. A red gate or a dirty tree removes any receipt; the hook's
+blocking is unchanged.
+
+When the job reaches its gate (`needs_gate`), the runner reads the receipt once and removes it. It reuses it only
+when it is a regular file holding JSON with `ok: true`, `head` equal to the job's head and `gate` equal to the plan's
+gate command, and the job has neither a quiet re-run (`regate`) nor an accepted replacement gate (`accept_gate`) in
+progress. Then no gate process starts: `<job>.gate.json` records `ok: true`, `reused: "worker"` and the receipt's
+`summary`, `done/` gets a gate step of zero minutes, and the job goes on to its PR as after any green gate. Any
+mismatch, a missing or unreadable receipt, or a regate runs the gate as before. The integration gate is never reused.
+
+Every gate record (`<job>.gate.json`, `<job>.integrate.json`) also carries `mode` and `tests` when the output has an
+`ark-test: mode=<m> tests=<n>` line (the last one counts).
 
 ## Gate limits
 

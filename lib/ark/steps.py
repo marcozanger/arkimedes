@@ -97,6 +97,8 @@ def _outcome(kind: str, r: dict) -> str:
     if kind == "worker":
         return brief.worker_status(text)[0].lower() if code == 0 else "error"
     if kind == "gate":
+        if code == 0 and r.get("outcome") == "green (reused)":   # the worker's green gate, reused by the runner
+            return "green (reused)"
         return "green" if code == 0 else "red"
     d = brief.parse_json_line(text)
     if kind == "review":

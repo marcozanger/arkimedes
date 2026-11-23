@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -501,20 +502,72 @@ def done_check(c: Ctx, job: str) -> tuple[str, str] | None:
     return None
 
 
+GATE_SUMMARY = re.compile(r"^ark-test: mode=([a-z]+) tests=(\d+)\b", re.M)
+WORKER_GATE_LIMIT = 1 << 16
+
+
+def gate_summary(text: str) -> dict:
+    """mode and tests from the last `ark-test: mode=<m> tests=<n>` line of a gate's output; {} without one."""
+    m = None
+    for m in GATE_SUMMARY.finditer(str(text or "")):
+        pass
+    return {"mode": m.group(1), "tests": int(m.group(2))} if m else {}
+
+
+def _worker_gate(c: Ctx, job: str) -> dict | None:
+    """The worker's stop-hook receipt (hooks/done-gate.sh), read once and removed, when it vouches for this job's
+    gate: green, on the job's head, with the plan's gate command. Never during a regate or for an accepted
+    replacement gate: those must run here. None for anything else, and then the gate runs as before."""
+    j = c.st["jobs"][job]
+    path = Path(c.dir) / f"{job}.workergate.json"
+    if not os.path.lexists(path):
+        return None
+    try:
+        d = json.loads(paths.read_regular(path, WORKER_GATE_LIMIT))
+    except (OSError, ValueError):
+        d = None
+    finally:
+        path.unlink(missing_ok=True)
+    if j.get("regate") or j.get("accept_gate") or not isinstance(d, dict):
+        return None
+    if d.get("ok") is not True or not j.get("head") or d.get("head") != j["head"] or d.get("gate") != c.mjobs[job]["gate"]:
+        return None
+    return d
+
+
+def reuse_gate(c: Ctx, job: str, receipt: dict) -> None:
+    """A green gate the worker's stop hook ran on this head: archived as a gate step of zero minutes, then taken
+    as a green gate is, with no process started."""
+    j, now = c.st["jobs"][job], time.time()
+    summary = _clean(str(receipt.get("summary") or ""))[-500:]
+    r = {"name": f"{job}.gate", "exit": 0, "reason": "", "result": summary, "usd": None, "session": None,
+         "is_error": None, "start": now, "end": now, "outcome": "green (reused)",
+         "meta": {"head": j["head"], "reused": "worker"}}
+    done = Path(c.dir) / "done"
+    done.mkdir(parents=True, exist_ok=True)
+    run._atomic(done / f"{job}.gate-{time.time_ns()}.json", json.dumps({**r, "proc": {}}, indent=2))
+    on_gate(c, job, r)
+
+
 def on_gate(c: Ctx, job: str, r: dict) -> None:
     ok = r["exit"] == 0 and not r["reason"]
     tail = _clean(r["result"] or "")[-2000:]
     j = c.st["jobs"][job]
     accepted = j.pop("accept_gate", None)  # it applies to one run of the gate: a red one asks again
     extra = {"accepted_gate": accepted} if accepted else {}
-    merge.record(c.dir, job, "gate", {"ok": ok, "head": r["meta"].get("head"), "exit": r["exit"], "tail": tail, **extra})
+    reused = r["meta"].get("reused")
+    if reused:
+        extra.update(reused=reused, summary=tail)
+    merge.record(c.dir, job, "gate", {"ok": ok, "head": r["meta"].get("head"), "exit": r["exit"], "tail": tail,
+                                      **gate_summary(r["result"] or ""), **extra})
     rg = j.pop("regate", None) if ok else None
     if ok:
         _passed(j, r["meta"].get("head"))
         if rg:
             _flaky(c, job, rg)
         j["status"] = "needs_pr"
-        run.event(c.st, f"{job}: job gate green" + (f" (the replacement gate `{_clean(accepted)[:200]}`)" if accepted else ""))
+        run.event(c.st, f"{job}: job gate green" + (f" (the replacement gate `{_clean(accepted)[:200]}`)" if accepted else "")
+                  + (" (reused: the worker's stop hook ran it on this head)" if reused else ""))
     elif j.get("regate"):
         return _regate_ask(c, job, "the job gate is red again, alone on the machine", tail)
     elif accepted:
@@ -584,7 +637,8 @@ def on_integrate(c: Ctx, job: str, r: dict) -> None:
     j.pop("not_before", None)
     merge.record(c.dir, job, "integrate", {"ok": ok, "base": out.get("base"),
                                            "head": out.get("head") or r["meta"].get("head"),
-                                           "reason": reason, "tail": out.get("tail", "")})
+                                           "reason": reason, "tail": out.get("tail", ""),
+                                           **gate_summary(out.get("tail", ""))})
     if ok:
         rg = j.pop("regate", None)
         if rg:
@@ -2456,6 +2510,9 @@ def _next_step(c: Ctx, job: str, j: dict, slots: Slots):
             return lambda: _regate_ask(c, job, "the quiet re-run waited past the gate's deadline for the machine")
         if rg and slots.regate():
             return lambda: _start_regate(c, job, start)
+        receipt = _worker_gate(c, job) if s == "needs_gate" and not rg else None
+        if receipt:
+            return lambda: reuse_gate(c, job, receipt)
         if not rg and slots.gate(j["heavy"] or s == "needs_integrate", c.st, job):
             return lambda: start(c, job)
     else:
