@@ -389,3 +389,13 @@ def test_euklides_prompt_offers_fixed():
 def test_resume_after_euklides():
     m = brief.resume_message("euklides", "red\n\nNote: fix it", "notes-edit")
     assert m.startswith("Your previous attempt did not finish") and "fix it" in m
+
+
+def test_worker_brief_asks_for_a_commit_per_task_and_a_current_report(tmp_path):
+    st, plan, mj = setup(tmp_path)
+    b = brief.worker_brief(st, "shell", mj["shell"], plan, worktree="/wt", report="/r/x.report.md")
+    assert "Commit each task once its done check passes" in b and "`T2: …`" in b
+    assert "keep the prefix" in b
+    assert "after each task's commit and again before you finish" in b and "/r/x.report.md" in b
+    role = (Path(__file__).parent.parent / "agents" / "ark-dev.md").read_text()
+    assert "T<n>: " in role and "report" in role and "after each task" in role

@@ -111,12 +111,15 @@ def worker_brief(st: dict, job_id: str, mj: dict, plan: Plan, *, worktree, repor
             "Do not read ~/.claude/arkimedes/desk or ~/.claude/arkimedes/approvals: this brief is your whole plan.",
             "A change the job needs outside its area: do not make it; write it under Open issues and end BLOCKED.",
             "Write the test first when a task adds behaviour. Make the gate pass before you finish.",
+            "Commit each task once its done check passes, with a subject starting with its id (`T2: …`). "
+            "More commits for the same task keep the prefix.",
             "Finish DONE only with everything committed (a clean `git status`).",
             f"If you are asked to integrate the current integration branch: `git fetch origin` and "
             f"`git merge origin/ark/{slug}`, fix, commit.",
         ]),
         "## Report",
-        f"Before you finish, write {report} (overwrite it) with exactly these sections:",
+        f"Write {report} after each task's commit and again before you finish, overwriting it each time "
+        f"with its sections as they stand. Exactly these sections:",
         _bullets([
             "`## What I did` — 2-5 lines.",
             "`## Tests` — what you ran and the result.",
