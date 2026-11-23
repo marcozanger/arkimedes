@@ -23,7 +23,23 @@ fi
 count_file="$ARK_RUN_DIR/$ARK_JOB.doneblocks"
 n=$(cat "$count_file" 2>/dev/null || echo 0)
 [ "$n" -ge 3 ] && exit 0
+# The receipt (<job>.workergate.json) lets the runner skip its own gate on the same head and gate
+# command: written only for a green gate on a clean tree whose head did not move, removed otherwise.
+receipt="$ARK_RUN_DIR/$ARK_JOB.workergate.json"
+rm -f "$receipt"
+clean_head() {
+  [ -z "$(git -C "$ARK_WORKTREE" status --porcelain 2>/dev/null || echo dirty)" ] &&
+    git -C "$ARK_WORKTREE" rev-parse HEAD 2>/dev/null
+}
+head_before=$(clean_head)
 out=$(cd "$ARK_WORKTREE" && sh -c "$ARK_GATE" 2>&1) && {
+  if [ -n "$head_before" ] && [ "$(clean_head)" = "$head_before" ]; then
+    jq -n --arg head "$head_before" --arg gate "$ARK_GATE" \
+      --arg summary "$(printf '%s\n' "$out" | awk 'NF { l = $0 } END { print l }')" \
+      --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      '{head: $head, gate: $gate, ok: true, summary: $summary, at: $at}' > "$receipt.tmp" &&
+      mv "$receipt.tmp" "$receipt"
+  fi
   [ -n "$ARK_DONE_COUNT" ] && [ -n "$ARK_REPORT" ] || exit 0
   have=$(awk '/^## /{s = ($0 ~ /^##[[:blank:]]*Done when/)} s && /^- / && /evidence:/{c++} END{print c+0}' "$ARK_REPORT" 2>/dev/null)
   [ "${have:-0}" -ge "$ARK_DONE_COUNT" ] && exit 0
