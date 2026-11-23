@@ -123,6 +123,9 @@ def worker_brief(st: dict, job_id: str, mj: dict, plan: Plan, *, worktree, repor
         _bullets([
             "`## What I did` — 2-5 lines.",
             "`## Tests` — what you ran and the result.",
+            "`## Done when` — one bullet per Done-when item, in order: the item, then "
+            "` — evidence: <test id or command> → <what it showed>`. An item you could not meet: "
+            "` — not met: <why>`, and then you do not end DONE.",
             "`## DECISIONS` — 0-3 bullets, only what a reviewer would ask about: a choice between real "
             "alternatives, an interpretation of the plan, an assumption filling a gap. Each: the decision "
             "in one sentence, then `Why:` and `Rejected:`.",
@@ -191,7 +194,9 @@ def resume_message(kind: str, text: str, slug: str) -> str:
             "\n\nThen update your report and end with the STATUS line, as before.")
 
 
-def reviewer_brief(st: dict, job_id: str, mj: dict, plan: Plan, *, base: str, head: str) -> str:
+def reviewer_brief(st: dict, job_id: str, mj: dict, plan: Plan, *, base: str, head: str,
+                   report: str | None = None) -> str:
+    done = _section(report or "", "Done when")
     return "\n\n".join([
         f"You review job `{job_id}` of the plan `{st['slug']}` in the repo `{st['repo']}`. Do not change any file.",
         f"The diff to review: `git diff {base}...{head}` (this worktree has {head} checked out).",
@@ -200,9 +205,14 @@ def reviewer_brief(st: dict, job_id: str, mj: dict, plan: Plan, *, base: str, he
         "finding.",
         "## What the job had to do",
         *_job_block(mj, plan, _grants(st, job_id)),
+        "## The worker's evidence",
+        _untrusted("Its Done when section", done) if done
+        else "The worker's report has no `## Done when` section.",
         "## Check",
         _bullets([
             "Does the diff do what the tasks and the `Done when` items ask?",
+            "Each Done-when item: does the cited evidence exist and show it (read the test; run it when it is "
+            "quick)? An item with no evidence, or evidence that does not show it, is a FIX finding.",
             "Does it go beyond Includes, or touch anything in Excludes (extra features, refactors, "
             "unrelated files)? Each is a finding.",
             "Bugs, broken edge cases, new behaviour without a test.",

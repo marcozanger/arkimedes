@@ -444,3 +444,23 @@ def test_worker_brief_without_handoff_has_no_section(tmp_path, handoff):
     st, plan, mj = setup(tmp_path)
     b = brief.worker_brief(st, "shell", mj["shell"], plan, worktree="/wt", report="/r", handoff=handoff)
     assert "Previous attempt" not in b and "UNTRUSTED" not in b
+
+
+def test_worker_brief_asks_for_a_done_when_section_with_evidence(tmp_path):
+    st, plan, mj = setup(tmp_path)
+    b = brief.worker_brief(st, "shell", mj["shell"], plan, worktree="/wt", report="/r")
+    assert "`## Done when`" in b and "one bullet per Done-when item" in b
+    assert " — evidence: <test id or command> → <what it showed>" in b
+    assert " — not met: <why>" in b
+
+
+def test_reviewer_brief_shows_the_done_when_evidence_fenced(tmp_path):
+    st, plan, mj = setup(tmp_path)
+    report = "## What I did\n\nx\n\n## Done when\n\n- item one — evidence: test_a → passes\n\n## Open issues\n\nnone"
+    b = brief.reviewer_brief(st, "ui", mj["ui"], plan, base="b", head="h", report=report)
+    assert "## The worker's evidence" in b
+    assert "- item one — evidence: test_a → passes" in fenced(b)
+    assert "does the cited evidence exist and show it" in b and "FIX finding" in b
+    none = "The worker's report has no `## Done when` section."
+    assert none in brief.reviewer_brief(st, "ui", mj["ui"], plan, base="b", head="h", report="## What I did\n\nx")
+    assert none in brief.reviewer_brief(st, "ui", mj["ui"], plan, base="b", head="h")

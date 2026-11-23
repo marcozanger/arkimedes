@@ -23,7 +23,14 @@ fi
 count_file="$ARK_RUN_DIR/$ARK_JOB.doneblocks"
 n=$(cat "$count_file" 2>/dev/null || echo 0)
 [ "$n" -ge 3 ] && exit 0
-out=$(cd "$ARK_WORKTREE" && sh -c "$ARK_GATE" 2>&1) && exit 0
+out=$(cd "$ARK_WORKTREE" && sh -c "$ARK_GATE" 2>&1) && {
+  [ -n "$ARK_DONE_COUNT" ] && [ -n "$ARK_REPORT" ] || exit 0
+  have=$(awk '/^## /{s = ($0 ~ /^##[[:blank:]]*Done when/)} s && /^- / && /evidence:/{c++} END{print c+0}' "$ARK_REPORT" 2>/dev/null)
+  [ "${have:-0}" -ge "$ARK_DONE_COUNT" ] && exit 0
+  echo $((n + 1)) > "$count_file"
+  jq -n --arg r "Your report's \`## Done when\` section has evidence for ${have:-0} of $ARK_DONE_COUNT items. Add one bullet per item with \`evidence:\`, or end with STATUS: FAILED — <why>." '{decision: "block", reason: $r}'
+  exit 0
+}
 echo $((n + 1)) > "$count_file"
 tail=$(printf '%s' "$out" | tail -c 3000)
 jq -n --arg r "The job gate is red ($((n + 1))/3). Fix it before you finish, or end with STATUS: FAILED — <why>.
