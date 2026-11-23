@@ -744,6 +744,7 @@ def _euklides_ask(st: dict, job: str, e: dict, d: dict, decision: str | None, mj
     alt = d.get("alternative") if d.get("then") else None
     if alt:
         alt = {k: alt[k] for k in ("label", "then", "files", "usd", "gate") if alt.get(k) is not None}
+        alt["label"] = _clean(alt["label"])
         if alt.get("gate") is not None:
             alt["gate"] = _clean(alt["gate"])
         why = _foreign(st, job, alt["files"], mjobs) if alt["then"] == "widen" else None

@@ -198,7 +198,7 @@ def _then(d: dict) -> dict | None:
 
 def _label(v) -> str | None:
     """A button's text: one line, whitespace collapsed, cut to LABEL_CHARS; None when empty or not a string."""
-    return (" ".join(v.split())[:LABEL_CHARS] or None) if isinstance(v, str) else None
+    return (" ".join(v.replace("\0", "").split())[:LABEL_CHARS] or None) if isinstance(v, str) else None
 
 
 def _alternative(v, then: str) -> dict | None:

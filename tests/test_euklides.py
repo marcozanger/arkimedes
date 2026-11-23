@@ -373,3 +373,9 @@ def test_asks_the_parser_builds_have_no_alternative(ark_home):
     (ark_home / "workspace.json").write_text(json.dumps({"roots": [], "euklides": {"mode": "legacy"}}))
     got = euklides.parse({"action": "answer", "note": "n", "undo": "plan", "why": "w"}, ["answer", "ask"])
     assert got["action"] == "ask" and "alternative" not in got and "label" not in got
+
+
+def test_a_nul_in_a_label_is_dropped():
+    got = euklides.parse(ask(then="go_on", label="Go\u0000 on",
+                             alternative={"label": "Move\u0000 up", "then": "escalate"}), ["ask"])
+    assert got["label"] == "Go on" and got["alternative"]["label"] == "Move up"

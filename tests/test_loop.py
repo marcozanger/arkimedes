@@ -3993,3 +3993,14 @@ def test_ok_2_without_an_alternative_is_refused(tmp_path, ark_home):
     loop._apply_answer(c.st, {"id": "q1", "text": "ok 2"})
     assert c.st["jobs"]["shell"]["status"] == "waiting_answer" and c.st["questions"]
     assert any("was refused" in a for a in c.st["alerts"])
+
+
+def test_a_nul_in_the_alternatives_label_never_reaches_the_state(tmp_path, ark_home):
+    c = at_euklides(tmp_path, trigger="question", allowed=("ask",), situation="which file?", session="s1")
+    e = c.st["jobs"]["shell"].pop("euklides")
+    d = {"action": "ask", "note": "n", "proposal": "go on", "then": "go_on",
+         "alternative": {"label": "Move\u0000 it up", "then": "escalate"}}
+    loop._euklides_ask(c.st, "shell", e, d, None, mjobs=c.mjobs)
+    [q] = c.st["questions"]
+    assert c.st["jobs"]["shell"]["euklides_ask"]["alternative"]["label"] == "Move it up"
+    assert [o["label"] for o in q["options"] if o["answer"] == "ok 2"] == ["Move it up"]
