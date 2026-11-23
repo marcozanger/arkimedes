@@ -987,3 +987,55 @@ def test_a_directory_as_proc_leaks_no_descriptor_through_the_loops_reads(tmp_pat
         assert proc._read(tmp_path / "evil.proc") is None
         assert proc.overdue(tmp_path) == []
     assert len(os.listdir("/dev/fd")) == before
+
+
+# ---- consume: a resumed session's cost is what this process added, not the session's total -------
+
+def _finish(tmp_path, name, session, total):
+    line = json.dumps({"type": "result", "result": "STATUS: DONE", "session_id": session, "total_cost_usd": total})
+    proc.start(tmp_path, name, ["sh", "-c", f"echo '{line}'"], cwd=tmp_path, env=dict(os.environ), minutes=1)
+    wait_receipt(tmp_path, name)
+
+
+def test_a_resumed_session_charges_only_what_it_added(tmp_path):
+    # claude -p --resume reports total_cost_usd for the whole session, every earlier attempt included
+    costs = []
+    for total in (7.28, 8.49, 8.95):
+        _finish(tmp_path, "j.worker", "s-1", total)
+        costs.append(proc.consume(tmp_path, "j.worker")["usd"])
+    assert costs == pytest.approx([7.28, 1.21, 0.46])
+    archived = sorted((json.loads(f.read_text()) for f in (tmp_path / "done").glob("j.worker-*.json")),
+                      key=lambda a: a["end"])
+    assert [a["usd"] for a in archived] == pytest.approx([7.28, 1.21, 0.46])
+    assert [a["session_usd"] for a in archived] == pytest.approx([7.28, 8.49, 8.95])
+
+
+def test_another_session_and_a_session_total_that_went_down_are_charged_whole(tmp_path):
+    _finish(tmp_path, "j.worker", "s-1", 5.0)
+    proc.consume(tmp_path, "j.worker")
+    _finish(tmp_path, "j.review", "s-2", 1.5)
+    assert proc.consume(tmp_path, "j.review")["usd"] == pytest.approx(1.5)
+    _finish(tmp_path, "j.worker", "s-1", 2.0)        # not a running total of that session after all: all of it
+    assert proc.consume(tmp_path, "j.worker")["usd"] == pytest.approx(2.0)
+
+
+def test_an_archive_from_before_the_fix_counts_as_the_session_total(tmp_path):
+    (tmp_path / "done").mkdir()
+    (tmp_path / "done" / "j.worker-1.json").write_text(json.dumps({"name": "j.worker", "usd": 12.34, "session": "s-1"}))
+    _finish(tmp_path, "j.worker", "s-1", 13.56)
+    assert proc.consume(tmp_path, "j.worker")["usd"] == pytest.approx(1.22)
+
+
+def test_a_consume_repeated_after_a_crash_charges_the_same(tmp_path, monkeypatch):
+    _finish(tmp_path, "j.worker", "s-1", 4.0)
+    proc.consume(tmp_path, "j.worker")
+    _finish(tmp_path, "j.worker", "s-1", 6.0)
+
+    def crash(self, *a, **k):
+        raise Crash
+    with monkeypatch.context() as m:
+        m.setattr(Path, "replace", crash)       # the archive is written, the log never moves
+        with pytest.raises(Crash):
+            proc.consume(tmp_path, "j.worker")
+    restart()
+    assert proc.consume(tmp_path, "j.worker")["usd"] == pytest.approx(2.0)
