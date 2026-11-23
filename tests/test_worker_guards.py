@@ -673,3 +673,40 @@ def test_done_gate_wants_evidence_for_each_done_item(tmp_path):
     (tmp_path / "run/shell.doneblocks").unlink()
     del env["ARK_DONE_COUNT"]
     assert stop() is None                                   # as before
+
+
+def receipt_env(tmp_path, gate):
+    env = done_gate_env(tmp_path)
+    wt = Path(env["ARK_WORKTREE"])
+    g = lambda *a: subprocess.run(["git", "-C", str(wt), *a], check=True, capture_output=True, text=True).stdout
+    g("init", "-q")
+    g("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init")
+    env["ARK_GATE"] = gate
+    return env, wt, Path(env["ARK_RUN_DIR"]) / "shell.workergate.json", g("rev-parse", "HEAD").strip()
+
+
+def test_done_gate_leaves_a_receipt_for_a_green_gate_on_a_clean_head(tmp_path):
+    env, wt, receipt, head = receipt_env(tmp_path, "echo running; echo 'ark-test: mode=job tests=12'")
+    stop = lambda: hook("done-gate.sh", {"last_assistant_message": "STATUS: DONE"}, **env)
+    assert stop() is None
+    r = json.loads(receipt.read_text())
+    assert r["head"] == head and r["gate"] == env["ARK_GATE"] and r["ok"] is True
+    assert r["summary"] == "ark-test: mode=job tests=12" and r["at"]
+    (wt / "loose.txt").write_text("x")                      # a dirty tree: no receipt
+    assert stop() is None and not receipt.exists()
+
+
+def test_done_gate_removes_the_receipt_when_the_gate_is_red(tmp_path):
+    env, wt, receipt, head = receipt_env(tmp_path, "test -f ok || (echo gate is red; exit 1)")
+    receipt.write_text(json.dumps({"head": head, "gate": env["ARK_GATE"], "ok": True}))
+    out = hook("done-gate.sh", {"last_assistant_message": "STATUS: DONE"}, **env)
+    assert out["decision"] == "block" and "gate is red" in out["reason"]   # blocking unchanged
+    assert not receipt.exists()
+
+
+def test_done_gate_receipt_does_not_change_the_evidence_block(tmp_path):
+    env, wt, receipt, head = receipt_env(tmp_path, "true")
+    env.update(ARK_DONE_COUNT="1", ARK_REPORT=str(tmp_path / "missing.md"))
+    out = hook("done-gate.sh", {"last_assistant_message": "STATUS: DONE"}, **env)
+    assert out["decision"] == "block" and "0 of 1" in out["reason"]
+    assert json.loads(receipt.read_text())["head"] == head

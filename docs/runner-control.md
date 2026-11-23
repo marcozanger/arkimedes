@@ -427,6 +427,25 @@ run (passed, failed, errors, skipped; `?` when it cannot be read).
 - testmon keeps its data relative to the project, so a copy in another worktree path works. A comment-only edit
   counts as no change.
 
+## The worker's gate receipt
+
+A worker does not run the job gate itself: it runs the tests of what it touched while it works, and the stop hook
+(`hooks/done-gate.sh`) runs the job gate when it tries to finish, sending it back while the gate is red. When that gate
+is green and `git status --porcelain` in the worktree is empty before and after it, on the same head, the hook writes
+`<run>/<job>.workergate.json`: `head` (`git rev-parse HEAD`), `gate` (the exact `ARK_GATE`), `ok: true`, `summary`
+(the last non-empty line of the gate's output) and `at`. A red gate or a dirty tree removes any receipt; the hook's
+blocking is unchanged.
+
+When the job reaches its gate (`needs_gate`), the runner reads the receipt once and removes it. It reuses it only
+when it is a regular file holding JSON with `ok: true`, `head` equal to the job's head and `gate` equal to the plan's
+gate command, and the job has neither a quiet re-run (`regate`) nor an accepted replacement gate (`accept_gate`) in
+progress. Then no gate process starts: `<job>.gate.json` records `ok: true`, `reused: "worker"` and the receipt's
+`summary`, `done/` gets a gate step of zero minutes, and the job goes on to its PR as after any green gate. Any
+mismatch, a missing or unreadable receipt, or a regate runs the gate as before. The integration gate is never reused.
+
+Every gate record (`<job>.gate.json`, `<job>.integrate.json`) also carries `mode` and `tests` when the output has an
+`ark-test: mode=<m> tests=<n>` line (the last one counts).
+
 ## Gate limits
 
 `limits` in `workspace.json` (all optional) also keep gates from overloading the machine:
