@@ -426,7 +426,8 @@ def _dump(chrome, url, width, dark, profile):
         args.insert(1, "--blink-settings=preferredColorScheme=0")
     # the suite's sandbox HOME makes Chrome hang at start: give it the real one
     env = {**os.environ, "HOME": pwd.getpwuid(os.getuid()).pw_dir}
-    r = subprocess.run(args, capture_output=True, text=True, timeout=90, env=env)
+    # a loaded machine (many runs at once) can keep a headless Chrome over 90 s; the check is the same
+    r = subprocess.run(args, capture_output=True, text=True, timeout=300, env=env)
     m = re.search(r'<pre id="result">(.*?)</pre>', r.stdout, re.S)
     assert m and m.group(1), r.stdout[-2000:] + r.stderr[-2000:]
     return json.loads(html.unescape(m.group(1)))
