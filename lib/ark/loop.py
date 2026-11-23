@@ -1936,7 +1936,7 @@ def start_worker(c: Ctx, job: str) -> bool:
     else:
         j["session"] = None  # known again only when this process says what it had: one may never start
         prompt = brief.worker_brief(c.st, job, mj, c.plan, worktree=wt, report=report,
-                                    note=j["note"] or j["resume_msg"], previous_report=c.read_report(job))
+                                    note=j["note"] or j["resume_msg"], handoff={"report": c.read_report(job)})
     _write_grants(c.st, job)
     env = claude.runner_env("worker", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo), worktree=wt, area=json.dumps(run.area(c.st, job, mj)),
                             report=report, gate=mj["gate"], run_dir=c.dir, job=job, grants_file=grants_file(c.st, job),
