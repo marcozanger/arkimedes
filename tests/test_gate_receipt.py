@@ -99,7 +99,7 @@ def test_a_matching_receipt_skips_the_gate_and_records_it_reused(feature, gates,
     assert rec["mode"] == "job" and rec["tests"] == 7
     assert not seen["path"].exists()                              # removed once read
     [row] = [r for r in steps.build(st) if r["kind"] == "gate" and r["job"] == "shell"]
-    assert row["minutes"] == 0 and row["outcome"].startswith("green")
+    assert row["minutes"] == 0 and row["outcome"] == "green (reused)"
 
 
 @pytest.mark.parametrize("over", [
