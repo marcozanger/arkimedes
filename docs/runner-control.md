@@ -396,16 +396,34 @@ ends in the existing uncharged backoff for an unreachable model.
 ## bin/ark-test
 
 The test gate of a plan for this repo (`gate: bin/ark-test job`, `integration_gate: bin/ark-test full`). Both run
-`pytest -q -n auto`, so `gate_workers` still bounds the processes, and the first output line says which mode ran.
+`pytest -q -n auto`, so `gate_workers` still bounds the processes. The first output line says which mode ran; the last
+is `ark-test: mode=<job|full> tests=<n> (<why>)` for every mode and fallback, `n` being the tests pytest reports as
+run (passed, failed, errors, skipped; `?` when it cannot be read).
 
 - `job` runs only the tests the change can affect (`pytest-testmon` follows what each test executes). It runs the
   whole suite instead, and says why, when there is no `.testmondata` (a missing one is first seeded from
-  `$ARK_HOME/repos/arkimedes/testmondata`), when the diff against `origin/main` (`ARK_TEST_BASE`) has a file that is
-  not a `.py` under `lib/` or `tests/` (requirements, `bin/`, templates, docs, data), or when testmon exits with
-  anything but passed, failed or nothing selected. A red test stays red: it is not run again.
+  `$ARK_HOME/repos/arkimedes/testmondata`), when the diff against `origin/main` (`ARK_TEST_BASE`) has a forcing file
+  (`requirements.txt`, `pytest.ini`, `bin/ark-test`), or when testmon exits with anything but passed, failed or
+  nothing selected. A red test stays red: it is not run again.
+- A changed path that is not a `.py` under `lib/` or `tests/` (docs, role files, hooks, UI, fixtures, `bin/` tools) no
+  longer forces the suite: the test files under `tests/` whose text contains its path or its basename (fixed-string
+  grep) run in a second `pytest -q -n auto <files>` call after the testmon selection (testmon with explicit files
+  would still skip the unaffected ones among them); either call red is red. A deleted file counts like a changed one.
+  `conftest.py` needs no entry in the forcing list: it is a `.py` under `tests/` that testmon tracks.
 - `full` runs everything and, when green, copies `.testmondata` to the shared path. The integration gate always uses
   it, so whatever reaches main passed the whole suite; a selection that misses a dependency can only cost a job a
   late red at integration, never a bad merge.
+- Measured on 2026-11-23 (suite: 2382 tests, `full` 4 min 12 s; testmon data seeded by that full run; each run one
+  uncommitted edit, on a machine shared with other work, so times are indicative):
+
+  | Change | Tests run | Time |
+  |---|---|---|
+  | only `lib/ark/loop.py` | 755 of 2382 | 3 min 39 s |
+  | only `lib/ark/ctl.py` | 142 of 2382 | 42 s |
+  | only `docs/runner-control.md` | 544 of 2382 (the testmon selection plus 4 test files that name it) | 1 min 58 s |
+
+  `loop.py` is imported by a third of the suite, so a change there still pays most of the cost; the others are far
+  cheaper.
 - testmon keeps its data relative to the project, so a copy in another worktree path works. A comment-only edit
   counts as no change.
 
