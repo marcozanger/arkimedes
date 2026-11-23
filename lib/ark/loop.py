@@ -1916,6 +1916,18 @@ def _watch_from(j: dict, start: float) -> None:
              anomaly=None)
 
 
+def _handoff(c: Ctx, job: str, wt) -> dict:
+    """What earlier attempts left in a worktree a fresh worker takes over, read from git; a git error leaves the
+    commits and the tree out and never stops the start."""
+    commits, dirty = [], []
+    try:
+        commits = gitops.branch_commits(wt, c.st["jobs"][job].get("base") or f"origin/{c.base}")
+        dirty = gitops.status_lines(wt)
+    except gitops.GitError:
+        pass
+    return {"commits": commits, "dirty": dirty, "report": c.read_report(job)}
+
+
 def start_worker(c: Ctx, job: str) -> bool:
     """Whether a worker was started: a job whose worktree is held stays where it is."""
     if not _worktree_free(c, job):
@@ -1936,10 +1948,10 @@ def start_worker(c: Ctx, job: str) -> bool:
     else:
         j["session"] = None  # known again only when this process says what it had: one may never start
         prompt = brief.worker_brief(c.st, job, mj, c.plan, worktree=wt, report=report,
-                                    note=j["note"] or j["resume_msg"], previous_report=c.read_report(job))
+                                    note=j["note"] or j["resume_msg"], handoff=None if fresh else _handoff(c, job, wt))
     _write_grants(c.st, job)
     env = claude.runner_env("worker", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo), worktree=wt, area=json.dumps(run.area(c.st, job, mj)),
-                            report=report, gate=mj["gate"], run_dir=c.dir, job=job, grants_file=grants_file(c.st, job),
+                            report=report, gate=mj["gate"], done_count=str(len(mj["done"])), run_dir=c.dir, job=job, grants_file=grants_file(c.st, job),
                             **({"companions": "0"} if mj.get("companions") is False else {}))
     sid = j["session"] or str(uuid.uuid4())  # the worker's id before it says so: a kill may come first
     cmd = claude.agent_cmd("worker", claude.MODELS[j["tier"]], prompt, session=sid, resume=resume, usd=mj["budget"]["usd"])
@@ -2016,7 +2028,8 @@ def ensure_pr(c: Ctx, job: str) -> None:
 def start_review(c: Ctx, job: str) -> None:
     j, mj = c.st["jobs"][job], c.mjobs[job]
     tier = "T2" if j["tier"] == "T2" else "T1"
-    prompt = brief.reviewer_brief(c.st, job, mj, c.plan, base=f"origin/{c.base}", head=j["head"])
+    prompt = brief.reviewer_brief(c.st, job, mj, c.plan, base=f"origin/{c.base}", head=j["head"],
+                                 report=c.read_report(job))
     cmd = claude.agent_cmd("reviewer", claude.MODELS[tier], prompt, session=str(uuid.uuid4()),
                            usd=max(1, mj["budget"]["usd"] / 2))
     env = claude.runner_env("reviewer", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo), worktree=c.wt(job),

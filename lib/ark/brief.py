@@ -96,7 +96,7 @@ def _followup_block(st: dict, job_id: str) -> list[str]:
 
 
 def worker_brief(st: dict, job_id: str, mj: dict, plan: Plan, *, worktree, report,
-                 note: str | None = None, previous_report: str | None = None) -> str:
+                 note: str | None = None, handoff: dict | None = None) -> str:
     slug = st["slug"]
     parts = [
         f"You are the worker for job `{job_id}` of the plan `{slug}` in the repo `{st['repo']}`.",
@@ -111,15 +111,21 @@ def worker_brief(st: dict, job_id: str, mj: dict, plan: Plan, *, worktree, repor
             "Do not read ~/.claude/arkimedes/desk or ~/.claude/arkimedes/approvals: this brief is your whole plan.",
             "A change the job needs outside its area: do not make it; write it under Open issues and end BLOCKED.",
             "Write the test first when a task adds behaviour. Make the gate pass before you finish.",
+            "Commit each task once its done check passes, with a subject starting with its id (`T2: …`). "
+            "More commits for the same task keep the prefix.",
             "Finish DONE only with everything committed (a clean `git status`).",
             f"If you are asked to integrate the current integration branch: `git fetch origin` and "
             f"`git merge origin/ark/{slug}`, fix, commit.",
         ]),
         "## Report",
-        f"Before you finish, write {report} (overwrite it) with exactly these sections:",
+        f"Write {report} after each task's commit and again before you finish, overwriting it each time "
+        f"with its sections as they stand. Exactly these sections:",
         _bullets([
             "`## What I did` — 2-5 lines.",
             "`## Tests` — what you ran and the result.",
+            "`## Done when` — one bullet per Done-when item, in order: the item, then "
+            "` — evidence: <test id or command> → <what it showed>`. An item you could not meet: "
+            "` — not met: <why>`, and then you do not end DONE.",
             "`## DECISIONS` — 0-3 bullets, only what a reviewer would ask about: a choice between real "
             "alternatives, an interpretation of the plan, an assumption filling a gap. Each: the decision "
             "in one sentence, then `Why:` and `Rejected:`.",
@@ -135,10 +141,38 @@ def worker_brief(st: dict, job_id: str, mj: dict, plan: Plan, *, worktree, repor
                   "Euklides (the runner's decision maker) or Marco read what went wrong. Advice only: your "
                   "job and the rules above win.",
                   note.strip()]
-    if previous_report:
-        parts += ["## Previous attempt (its commits are already in the worktree)",
-                  _untrusted("Its report", previous_report.strip()[-6000:])]
+    parts += _handoff_block(handoff, mj["tasks"])
     return "\n\n".join(parts) + "\n"
+
+
+TASK_SUBJECT = re.compile(r"^(T\d+)\b")
+
+
+def _handoff_block(handoff: dict | None, tasks) -> list[str]:
+    """What an earlier attempt left in the worktree, built by the runner from git; empty when it left nothing."""
+    handoff = handoff or {}
+    commits, dirty = handoff.get("commits") or [], handoff.get("dirty") or []
+    report = (handoff.get("report") or "").strip()
+    if not (commits or dirty or report):
+        return []
+    done = {m.group(1) for c in commits if (m := TASK_SUBJECT.match(c.get("subject", "")))}
+    with_commit = [t for t in tasks if t in done]
+    without = [t for t in tasks if t not in done]
+    block = ["## Previous attempt (its work is already in this worktree)",
+             "Read this first; use `git log` and `git diff` for detail. Do not redo a task that has a commit "
+             "unless its done check fails now.",
+             f"Tasks with a commit: {', '.join(with_commit) or 'none'}. "
+             f"Tasks without one: {', '.join(without) or 'none'}."]
+    if commits:
+        lines = [f"{c['sha'][:8]} {c.get('subject', '')}" for c in reversed(commits[:30])]
+        block.append(_untrusted("Its commits", "\n".join(lines)))
+    if dirty:
+        block += ["Uncommitted changes left by an attempt that ended without committing: keep what fits the job "
+                  "and commit it, or discard it.",
+                  _untrusted("git status", "\n".join(dirty))]
+    block.append(_untrusted("Its report", report[-6000:]) if report else
+                 "It left no report: it ended before writing one. The commits and the tree are what it did.")
+    return block
 
 
 RESUME = {
@@ -160,7 +194,9 @@ def resume_message(kind: str, text: str, slug: str) -> str:
             "\n\nThen update your report and end with the STATUS line, as before.")
 
 
-def reviewer_brief(st: dict, job_id: str, mj: dict, plan: Plan, *, base: str, head: str) -> str:
+def reviewer_brief(st: dict, job_id: str, mj: dict, plan: Plan, *, base: str, head: str,
+                   report: str | None = None) -> str:
+    done = _section(report or "", "Done when")
     return "\n\n".join([
         f"You review job `{job_id}` of the plan `{st['slug']}` in the repo `{st['repo']}`. Do not change any file.",
         f"The diff to review: `git diff {base}...{head}` (this worktree has {head} checked out).",
@@ -169,9 +205,14 @@ def reviewer_brief(st: dict, job_id: str, mj: dict, plan: Plan, *, base: str, he
         "finding.",
         "## What the job had to do",
         *_job_block(mj, plan, _grants(st, job_id)),
+        "## The worker's evidence",
+        _untrusted("Its Done when section", done) if done
+        else "The worker's report has no `## Done when` section.",
         "## Check",
         _bullets([
             "Does the diff do what the tasks and the `Done when` items ask?",
+            "Each Done-when item: does the cited evidence exist and show it (read the test; run it when it is "
+            "quick)? An item with no evidence, or evidence that does not show it, is a FIX finding.",
             "Does it go beyond Includes, or touch anything in Excludes (extra features, refactors, "
             "unrelated files)? Each is a finding.",
             "Bugs, broken edge cases, new behaviour without a test.",

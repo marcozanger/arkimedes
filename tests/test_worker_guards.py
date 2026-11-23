@@ -651,3 +651,25 @@ def test_read_guard_denies_a_brace_that_climbs_out(tmp_path):
     assert r({"pattern": f"{{src,{home}/desk}}/**"}) == "deny"
     assert r({"pattern": "{src,lib}/**/*.py"}) == "allow"
     assert r({"pattern": "*.{py,md}"}) == "allow"
+
+
+def test_done_gate_wants_evidence_for_each_done_item(tmp_path):
+    env = done_gate_env(tmp_path)
+    env["ARK_GATE"] = "true"
+    report = tmp_path / "report.md"
+    env.update(ARK_DONE_COUNT="2", ARK_REPORT=str(report))
+    stop = lambda: hook("done-gate.sh", {"last_assistant_message": "STATUS: DONE"}, **env)
+    out = stop()                                            # no report: zero
+    assert out["decision"] == "block" and "0 of 2" in out["reason"]
+    report.write_text("## Done when\n\n- a — evidence: t → ok\n- b — not met: why\n\n## Open issues\n- x evidence: y\n")
+    out = stop()
+    assert out["decision"] == "block" and "1 of 2" in out["reason"]
+    assert (tmp_path / "run/shell.doneblocks").read_text().strip() == "2"
+    report.write_text("## Done when\n\n- a — evidence: t → ok\n- b — evidence: u → ok\n")
+    assert stop() is None
+    report.write_text("")
+    assert stop()["decision"] == "block"                    # third block
+    assert stop() is None                                   # only three
+    (tmp_path / "run/shell.doneblocks").unlink()
+    del env["ARK_DONE_COUNT"]
+    assert stop() is None                                   # as before
