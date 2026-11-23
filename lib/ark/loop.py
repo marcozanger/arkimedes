@@ -1951,7 +1951,7 @@ def start_worker(c: Ctx, job: str) -> bool:
                                     note=j["note"] or j["resume_msg"], handoff=None if fresh else _handoff(c, job, wt))
     _write_grants(c.st, job)
     env = claude.runner_env("worker", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo), worktree=wt, area=json.dumps(run.area(c.st, job, mj)),
-                            report=report, gate=mj["gate"], run_dir=c.dir, job=job, grants_file=grants_file(c.st, job),
+                            report=report, gate=mj["gate"], done_count=str(len(mj["done"])), run_dir=c.dir, job=job, grants_file=grants_file(c.st, job),
                             **({"companions": "0"} if mj.get("companions") is False else {}))
     sid = j["session"] or str(uuid.uuid4())  # the worker's id before it says so: a kill may come first
     cmd = claude.agent_cmd("worker", claude.MODELS[j["tier"]], prompt, session=sid, resume=resume, usd=mj["budget"]["usd"])
@@ -2028,7 +2028,8 @@ def ensure_pr(c: Ctx, job: str) -> None:
 def start_review(c: Ctx, job: str) -> None:
     j, mj = c.st["jobs"][job], c.mjobs[job]
     tier = "T2" if j["tier"] == "T2" else "T1"
-    prompt = brief.reviewer_brief(c.st, job, mj, c.plan, base=f"origin/{c.base}", head=j["head"])
+    prompt = brief.reviewer_brief(c.st, job, mj, c.plan, base=f"origin/{c.base}", head=j["head"],
+                                 report=c.read_report(job))
     cmd = claude.agent_cmd("reviewer", claude.MODELS[tier], prompt, session=str(uuid.uuid4()),
                            usd=max(1, mj["budget"]["usd"] / 2))
     env = claude.runner_env("reviewer", repo_name=c.st["repo"], origin_url=gitops.origin_url(c.repo), worktree=c.wt(job),
