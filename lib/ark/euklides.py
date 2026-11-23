@@ -40,7 +40,8 @@ MODES = {  # what an unset budget_margin and decisions_per_job mean in each mode
 MAX_FIX_BASE = 3  # base fixes per run without Marco, in legacy mode
 WIDEN_FILES = {"legacy": 3, "blast-radius": 20}  # files one widen may name
 TRIGGERS = ("failure", "question", "blocked")
-KEYS = {"action", "note", "undo", "why", "proposal", "files", "usd", "then", "gate", "diagnosis"}
+KEYS = {"action", "note", "undo", "why", "proposal", "files", "usd", "then", "gate", "diagnosis", "label",
+        "alternative"}
 THEN = ("go_on", "escalate", "widen", "fix_base", "raise", "accept", "stop")  # what Marco's ok to an ask makes the runner do
 # blast-radius: the actions that change files or how the plan runs carry `undo`, how far a mistake reaches.
 # job / run: Euklides' call. plan (R1, what is delivered) / contract (R5, a public contract): an ask whose
@@ -52,6 +53,8 @@ UNDO_REACH = {"plan": "what the plan delivers", "contract": "a public contract"}
 RUN = "_run"  # the job name of a run-level decision: a job id never starts with "_"
 RUN_ACTIONS = ["raise", "ask"]
 NOTE_CHARS, WHY_CHARS, PROPOSAL_CHARS = 1000, 300, 1000
+LABEL_CHARS = 60  # a button's text (questions.MAX_LABEL)
+ALT_KEYS = {"label", "then", "files", "usd", "gate"}
 GATE_CHARS = 500  # a replacement gate is one shell command; a longer one is not a gate
 SITUATION_CHARS = 600
 LESSONS_CHARS = 8000  # a hand-edited file that grew too long is cut, never fails the call
@@ -193,6 +196,22 @@ def _then(d: dict) -> dict | None:
     return {"then": then}
 
 
+def _label(v) -> str | None:
+    """A button's text: one line, whitespace collapsed, cut to LABEL_CHARS; None when empty or not a string."""
+    return (" ".join(v.replace("\0", "").split())[:LABEL_CHARS] or None) if isinstance(v, str) else None
+
+
+def _alternative(v, then: str) -> dict | None:
+    """An ask's one alternative: a label and a `then` (with its parameters, checked as `_then` does) other than the
+    ask's own and other than stop, which the runner always offers. None when not usable: the ask stands without it."""
+    if not isinstance(v, dict) or not set(v) <= ALT_KEYS:
+        return None
+    label, alt = _label(v.get("label")), _then(v)
+    if not label or alt is None or alt["then"] in (then, "stop"):
+        return None
+    return {"label": label, **alt}
+
+
 def _diagnosis(v) -> dict | None:
     """A raise's diagnosis: `cause` (why the job failed) and `change` (what the next attempt does differently)."""
     if not isinstance(v, dict) or not {"cause", "change"} <= set(v):
@@ -212,15 +231,18 @@ def parse(d, allowed_now: list[str], then: bool = True) -> dict | None:
     action, note = d["action"], _text(d["note"], NOTE_CHARS)
     if not isinstance(action, str) or action not in allowed_now or not note:
         return None
-    if ("then" in d or "gate" in d) and action != "ask":
+    if ({"then", "gate", "label", "alternative"} & set(d)) and action != "ask":
         return None
-    if not then:  # a run-level ask: Marco answers `raise <usd>` or `stop`, no `then` to carry out
-        d = {k: v for k, v in d.items() if k != "then"}
+    if not then:  # a run-level ask: Marco answers `raise <usd>` or `stop`, no `then` to carry out, no buttons
+        d = {k: v for k, v in d.items() if k not in ("then", "label", "alternative")}
     ask_then = _then(d) if action == "ask" and then else None
     if action == "ask" and then:
         if ask_then is None:
             return None
-        d = {k: v for k, v in d.items() if k not in ("then", "files", "usd", "gate")}
+        label, alternative = _label(d.get("label")), _alternative(d.get("alternative"), ask_then["then"])
+        ask_then = {**ask_then, **({"label": label} if label else {}),
+                    **({"alternative": alternative} if alternative else {})}
+        d = {k: v for k, v in d.items() if k not in ("then", "files", "usd", "gate", "label", "alternative")}
     why, proposal = d.get("why", ""), d.get("proposal")
     if why is None:
         why = ""

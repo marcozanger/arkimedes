@@ -706,6 +706,20 @@ def _then_text(st: dict, job: str, ask: dict) -> str:
     return "go on with the proposal above"
 
 
+def _euklides_options(st: dict, job: str, ask: dict, d: dict, refuse: str | None) -> list[dict]:
+    """The buttons of Euklides' ask: his proposal (its ok carries out `then`), his alternative if any (`ok 2`), then
+    stop the job. A `then` of stop is the stop option and its ok; an ok the runner refuses leaves no first option."""
+    stop = {"label": "Stop the job", "detail": f"{job} ends blocked", "answer": questions.STOP_JOB, "confirm": True}
+    alt = ask.get("alternative")
+    second = [{"label": alt["label"], "detail": _then_text(st, job, alt), "answer": questions.OK_2}] if alt else []
+    if ask.get("then") == "stop":
+        return [{**stop, "answer": "ok"}] + second
+    if refuse or not (ask.get("then") or ask.get("proposal")):
+        return second + [stop]
+    label = _clean(str(d.get("label") or ask.get("proposal") or _then_text(st, job, ask)))
+    return [{"label": label[:questions.MAX_LABEL], "detail": _then_text(st, job, ask), "answer": "ok"}, *second, stop]
+
+
 def _foreign(st: dict, job: str, files: list[str], mjobs: dict | None) -> str | None:
     """Why a widen cannot be granted: a file inside another job's area. None when it can."""
     for other, mj in (mjobs or {}).items():
@@ -716,8 +730,9 @@ def _foreign(st: dict, job: str, files: list[str], mjobs: dict | None) -> str | 
 
 
 def _euklides_ask(st: dict, job: str, e: dict, d: dict, decision: str | None, mjobs: dict | None = None) -> None:
-    """Marco decides. The question ends with what his ok makes the runner do (`then`) and the other answers;
-    a `then` the runner refuses (a widen into another job's area) says why instead, and ok is refused."""
+    """Marco decides. The question ends with what his ok makes the runner do (`then`), what `ok 2` does when
+    Euklides offered an alternative, and the other answers; a `then` the runner refuses (a widen into another job's
+    area) says why instead, and ok is refused. Such an alternative is dropped, with an event."""
     j = st["jobs"][job]
     proposal = d["proposal"] or "(none: write what the job should do, or :stop)"
     ask = {"proposal": d["proposal"], "decision": decision, "ctx": e, "note": d["note"]}
@@ -726,16 +741,30 @@ def _euklides_ask(st: dict, job: str, e: dict, d: dict, decision: str | None, mj
         if d.get("gate") is not None:
             ask["gate"] = _clean(d["gate"])
     refuse = _foreign(st, job, ask["files"], mjobs) if ask.get("then") == "widen" else None
+    alt = d.get("alternative") if d.get("then") else None
+    if alt:
+        alt = {k: alt[k] for k in ("label", "then", "files", "usd", "gate") if alt.get(k) is not None}
+        alt["label"] = _clean(alt["label"])
+        if alt.get("gate") is not None:
+            alt["gate"] = _clean(alt["gate"])
+        why = _foreign(st, job, alt["files"], mjobs) if alt["then"] == "widen" else None
+        if why:
+            run.event(st, f"{job}: Euklides' alternative was dropped: {why}")
+        else:
+            ask["alternative"] = alt
     tail = [OTHER_ANSWERS]
+    if ask.get("alternative"):
+        tail.insert(0, f"Answer ok 2 to: {_then_text(st, job, ask['alternative'])}")
     if refuse:
         ask["refuse_ok"] = f"ok cannot be granted: {refuse}"
         tail.insert(0, f"The widen cannot be granted: {refuse}. Answer :stop or say what the job should do.")
     elif ask.get("then"):
         tail.insert(0, f"Answer ok to: {_then_text(st, job, ask)}")
     tail_text = "\n\n".join(tail)
+    options = _euklides_options(st, job, ask, d, refuse)
     head = _clean(f"{e['situation']}\n\nEuklides: {d['note']}\n\nProposal: {proposal}").strip()
     head = head[:max(0, questions.MAX_TEXT - len(tail_text) - 2)]  # the answer lines always survive the cut
-    q = questions.ask(st, "worker", f"{head}\n\n{tail_text}", job=job)
+    q = questions.ask(st, "worker", f"{head}\n\n{tail_text}", job=job, options=options)
     if refuse:
         q["refuse_ok"] = ask["refuse_ok"]
     j["euklides_ask"] = ask
@@ -1397,7 +1426,11 @@ def _start_refresh_gate(c: Ctx, r: dict) -> None:
 def _ask_refresh(st: dict, r: dict, why: str) -> None:
     """Marco decides: one more worker, or the base stays until main moves again."""
     r["status"], r["why"] = "waiting_answer", _clean(why)[:1200]
-    questions.ask(st, "refresh", _refresh_question(r))
+    questions.ask(st, "refresh", _refresh_question(r), options=REFRESH_OPTIONS)
+
+
+REFRESH_OPTIONS = [{"label": "Retry", "detail": "one more refresh worker with the same budget", "answer": "retry"},
+                   {"label": "Skip", "detail": "the base stays until main moves again", "answer": "skip"}]
 
 
 def _refresh_question(r: dict) -> str:
@@ -1521,7 +1554,7 @@ def _answered_refresh(st: dict, q: dict, text: str) -> None:
         return run.event(st, f"refresh {r['n']}: Marco asked for one more worker")
     if word == "skip":
         return _finish_refresh(st, r, "skipped", "Marco skipped it; the base stays until main moves again")
-    questions.ask(st, "refresh", _refresh_question(r))
+    questions.ask(st, "refresh", _refresh_question(r), options=REFRESH_OPTIONS)
 
 
 def _land_refresh(c: Ctx, r: dict) -> None:
@@ -2697,13 +2730,24 @@ def _answered_worker(st: dict, q: dict, text: str) -> None:
             euklides.set_marco(ask["decision"], text)
         except OSError as err:
             run.event(st, f"{job}: the Euklides journal could not be written: {err}")
-    if ask and text.strip().lower() in questions.OK_WORDS and not ask.get("refuse_ok"):
+    choice = questions.ok_choice(text) if ask else None
+    if choice == 1 and not ask.get("refuse_ok"):
         return _carry_out(st, job, q, ask)
+    if choice == 2 and ask.get("alternative"):
+        return _carry_out(st, job, q, _with_alternative(ask))
     if text == questions.STOP_JOB or text.startswith(questions.STOP_JOB + " "):
         return _block(st, job, f"stopped by Marco at question {q['id']}: {text}"[:600])
     if ask:
         return _go_on(st, job, ask["ctx"], text)
     _resume_with_answer(st, job, text)  # a question asked before Euklides
+
+
+def _with_alternative(ask: dict) -> dict:
+    """Euklides' ask with its alternative in place of the first option: its `then` and parameters, and its label
+    as the proposal (what a go_on tells the worker). The note, decision and situation stay."""
+    alt = ask["alternative"]
+    out = {k: v for k, v in ask.items() if k not in ("then", "files", "usd", "gate", "alternative", "refuse_ok")}
+    return {**out, **{k: v for k, v in alt.items() if k != "label"}, "proposal": alt["label"]}
 
 
 def _effect_ok(st: dict, job: str, then: str | None, ask: dict, before: dict) -> str | None:
@@ -2907,10 +2951,18 @@ def _run_budget(c: Ctx) -> tuple[float, float, float]:
     return caps.run_spent(st), planned, planned + st.get("usd_raised", 0) + st.get("euklides_raised", 0)
 
 
-def _ask_cap_run(st: dict, spent: float, budget: float, euk: str = "") -> None:
+def _ask_cap_run(st: dict, spent: float, budget: float, euk: str = "", planned: float = 0,
+                 usd: float | None = None) -> None:
+    """Marco decides: raise by Euklides' amount (or a quarter of the planned total), or end the run."""
+    n = usd if usd is not None and math.isfinite(usd) and usd > 0 else max(1, math.ceil(planned * 0.25))
+    amount = f"{n:g}"
+    options = [{"label": f"Raise ${amount}", "detail": f"add ${amount} to the run's budget and go on",
+                "answer": f"raise {amount}", "confirm": True},
+               {"label": "End the run", "detail": "running workers finish; the run ends", "answer": "stop",
+                "confirm": True}]
     questions.ask(st, "cap_run", f"This run spent ${spent:.2f}, over the ${budget:.2f} of its budgets. Running "
                                  "workers finish; nothing new starts. Answer `raise <usd>` to add budget, or "
-                                 f"`stop` to end the run.{euk}", critical=True)
+                                 f"`stop` to end the run.{euk}", critical=True, options=options)
 
 
 def _check_run_cap(c: Ctx) -> None:
@@ -2927,7 +2979,7 @@ def _check_run_cap(c: Ctx) -> None:
         left = euklides.run_margin_left(st, planned, cfg["budget_margin"])
         if left > 1e-9 and st.get("euklides_run_count", 0) < cfg["decisions_per_job"]:
             return _start_run_euklides(c, spent, planned, left, cfg)
-        _ask_cap_run(st, spent, budget)
+        _ask_cap_run(st, spent, budget, planned=planned)
 
 
 def _start_run_euklides(c: Ctx, spent: float, planned: float, left: float, cfg: dict) -> None:
@@ -2978,7 +3030,23 @@ def on_run_euklides(c: Ctx, r: dict) -> None:
     past = f" (a raise of ${d['usd']:.2f}, past the ${max(0, left):.2f} left of his margin)" \
         if d["action"] == "raise" else ""
     st["cap_decision"] = decision
-    _ask_cap_run(st, spent, budget, f"\n\nEuklides{past}: {_clean(d['note'])}\n\nProposal: {_clean(proposal)}")
+    _ask_cap_run(st, spent, budget, f"\n\nEuklides{past}: {_clean(d['note'])}\n\nProposal: {_clean(proposal)}",
+                 planned=planned, usd=_raise_usd(proposal))
+
+
+def _raise_usd(proposal: str) -> float | None:
+    """The amount of a run-level proposal `raise <number>`, or None."""
+    words = str(proposal).split()
+    if len(words) == 2 and words[0] == "raise":
+        try:
+            return float(words[1])
+        except ValueError:
+            return None
+    return None
+
+
+PLAN_CHANGED_OPTIONS = [{"label": "End the run", "detail": "the run ends; restore or approve the plan to go on instead",
+                         "answer": "stop", "confirm": True}]
 
 
 def _retry_stops(st: dict) -> None:
@@ -3224,7 +3292,7 @@ def step(st: dict, states: list[dict], forge, slots: Slots, hold: bool = False) 
                           "(`ark approve`) and the run takes it as the next version.")
         questions.ask(st, "plan_changed", "The plan changed after its approval, so this run is held. To go on, restore "
                                           "the approved text or approve the new one. Answer `stop` to end the run.",
-                      quiet=True)  # the alert above says it; ask again finds the same one
+                      quiet=True, options=PLAN_CHANGED_OPTIONS)  # the alert above says it; ask again finds the same one
         return
     if st["status"] == "held":
         st["status"] = "running"

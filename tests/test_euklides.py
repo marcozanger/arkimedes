@@ -315,3 +315,67 @@ def test_the_prompt_states_the_budget_what_was_raised_and_the_margin_left():
     p = euk(allowed=["raise", "ask"], usd_raised=0.25, margin_left=0.25)
     assert "planned $2" in p and "raised $0.25" in p and "margin left $0.25" in p
     assert "`raise`" in p and "a total" in p
+
+
+# ---- label and alternative: the buttons of a job-level ask ------------------------------------------
+
+def test_an_ask_keeps_its_label_cleaned_and_cut():
+    got = euklides.parse(ask(then="go_on", label="  Grant the\nfixture   and go on " + "x" * 80), ["ask"])
+    assert got["label"] == ("Grant the fixture and go on " + "x" * 80)[:60]
+    assert "label" not in euklides.parse(ask(then="go_on"), ["ask"])
+    assert "label" not in euklides.parse(ask(then="go_on", label=3), ["ask"])
+    assert "label" not in euklides.parse(ask(then="go_on", label="   "), ["ask"])
+
+
+@pytest.mark.parametrize("alt, kept", [
+    ({"label": "Move up a tier", "then": "escalate"}, {"label": "Move up a tier", "then": "escalate"}),
+    ({"label": "Raise", "then": "raise", "usd": 2}, {"label": "Raise", "then": "raise", "usd": 2.0}),
+    ({"label": "Grant", "then": "widen", "files": [" x.py "]}, {"label": "Grant", "then": "widen", "files": ["x.py"]}),
+    ({"label": "Accept", "then": "accept", "gate": " pytest -q "},
+     {"label": "Accept", "then": "accept", "gate": "pytest -q"}),
+    ({"label": "Fix base " + "y" * 80, "then": "fix_base"}, {"label": ("Fix base " + "y" * 80)[:60], "then": "fix_base"}),
+])
+def test_a_valid_alternative_is_kept(alt, kept):
+    got = euklides.parse(ask(then="go_on", label="Go on", alternative=alt), ["ask"])
+    assert got["alternative"] == kept and got["then"] == "go_on" and got["label"] == "Go on"
+
+
+@pytest.mark.parametrize("alt", [
+    {"label": "Same", "then": "go_on"},                      # the same then as the ask
+    {"label": "Stop", "then": "stop"},                       # the runner adds stop itself
+    {"then": "escalate"}, {"label": "", "then": "escalate"}, {"label": 3, "then": "escalate"},
+    {"label": "x", "then": "land"}, {"label": "x"},
+    {"label": "x", "then": "raise"}, {"label": "x", "then": "raise", "usd": 0},
+    {"label": "x", "then": "widen", "files": ["../x"]}, {"label": "x", "then": "escalate", "usd": 1},
+    {"label": "x", "then": "accept", "gate": ""},
+    {"label": "x", "then": "escalate", "note": "extra key"},
+    "escalate", ["escalate"], None,
+])
+def test_an_unusable_alternative_is_dropped_and_the_ask_kept(alt):
+    got = euklides.parse(ask(then="go_on", alternative=alt), ["ask"])
+    assert got is not None and got["action"] == "ask" and got["then"] == "go_on" and "alternative" not in got
+
+
+@pytest.mark.parametrize("key, value", [("label", "x"), ("alternative", {"label": "x", "then": "escalate"})])
+def test_label_or_alternative_on_another_action_is_not_usable(key, value):
+    assert euklides.parse({"action": "retry", "note": "x", "undo": "job", key: value}, ["retry", "ask"]) is None
+
+
+def test_a_run_level_ask_drops_label_and_alternative():
+    got = euklides.parse({"action": "ask", "note": "n", "proposal": "raise 3", "label": "Raise",
+                          "alternative": {"label": "x", "then": "escalate"}}, euklides.RUN_ACTIONS, then=False)
+    assert got["action"] == "ask" and "label" not in got and "alternative" not in got
+
+
+def test_asks_the_parser_builds_have_no_alternative(ark_home):
+    got = euklides.parse({"action": "retry", "note": "n", "undo": "plan", "why": "w"}, ["retry", "ask"])
+    assert got["action"] == "ask" and "alternative" not in got
+    (ark_home / "workspace.json").write_text(json.dumps({"roots": [], "euklides": {"mode": "legacy"}}))
+    got = euklides.parse({"action": "answer", "note": "n", "undo": "plan", "why": "w"}, ["answer", "ask"])
+    assert got["action"] == "ask" and "alternative" not in got and "label" not in got
+
+
+def test_a_nul_in_a_label_is_dropped():
+    got = euklides.parse(ask(then="go_on", label="Go\u0000 on",
+                             alternative={"label": "Move\u0000 up", "then": "escalate"}), ["ask"])
+    assert got["label"] == "Go on" and got["alternative"]["label"] == "Move up"

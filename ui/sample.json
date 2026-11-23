@@ -408,7 +408,19 @@
           "kind": "worker",
           "job": "copy",
           "text": "Keep the old labels as tooltips?",
-          "asked": "2026-11-07T09:30:00+00:00"
+          "asked": "2026-11-07T09:30:00+00:00",
+          "options": [
+            {"label": "Yes, as tooltips", "detail": "Keep the old labels as tooltips and go on", "answer": "ok"},
+            {"label": "Drop the old labels", "detail": "Remove them and rewrite the copy tests", "answer": "drop", "confirm": true},
+            {"label": "Stop the job", "detail": "End the copy job here", "answer": ":stop"}
+          ]
+        },
+        {
+          "id": "q3",
+          "kind": "worker",
+          "job": "copy",
+          "text": "Which tone should the short labels use?",
+          "asked": "2026-11-07T09:35:00+00:00"
         }
       ],
       "answers": [
@@ -417,7 +429,8 @@
           "kind": "worker",
           "job": "layout",
           "question": "Is 720 px the right break point?",
-          "answer": "Yes, 720 px.",
+          "answer": "ok",
+          "option": "Yes, 720 px",
           "asked": "2026-11-07T08:20:00+00:00",
           "at": "2026-11-07T08:25:00+00:00",
           "by": "ark answer"

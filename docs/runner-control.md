@@ -18,6 +18,12 @@ them.
 | `ark sweep [--dry-run]` | clears what finished and abandoned runs leave behind (see Sweep below); `--dry-run` only shows it |
 | `ark answer [--list] [--run <repo>/<slug> <id> "<text>"] [--cap <id> "<text>"]` | answers open questions, one by one (account questions first); `--cap` answers an account's daily cap question |
 
+`ark answer` lists each run question's options numbered under its text (`  1. <label> — <detail>`), and an answer
+may be an option's number: it is posted as that option's answer text, and a number past the last option is
+rejected (`no option <n>`). `ok` is option 1 of a Euklides ask; stop is always last. A question without options
+(account questions, or one saved before options existed) takes a number as plain text. The answered record names the
+chosen option's `label` when the answer text equals one option's answer.
+
 `<job>` also takes the form `<repo>/<slug>:<job>`, needed when two live runs share a job name or the run has finished.
 
 ## ark retry
@@ -100,6 +106,12 @@ The `sweep` block of `workspace.json`:
 | plan_changed | the plan changed after its approval and the run is held | `stop` ends the run; restoring or re-approving the plan closes it |
 | cap_run | the run spent more than the sum of its budgets and raises, and Euklides could not raise it within his margin | `raise <usd>`, or `stop` to end the run |
 | cap_day | an account reached its daily cap (one per account and day) | `raise <usd>` adds to today's cap; `stop` waits until tomorrow |
+
+Each run question carries `options` (`label`, `detail`, `answer`, `confirm`), stop last, and every option's answer
+passes the question's own check: a Euklides ask offers his proposal (`ok`, its detail the runner's `then` text) and
+`Stop the job` (`:stop`), only stop when `then` is stop (its answer `ok`) or his ok is refused; `cap_run` offers
+`Raise $N` (Euklides' run-level `raise <N>`, else a quarter of the planned total rounded up, at least 1) and `End the
+run`; `refresh` offers `Retry` and `Skip`; `plan_changed` offers `End the run`.
 
 `questions.md` at the Arkimedes root lists them. It is rewritten by the loop and never read back.
 

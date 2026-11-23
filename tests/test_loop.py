@@ -3882,3 +3882,125 @@ def test_a_job_that_is_not_a_follow_up_still_fails_on_no_change(tmp_path, monkey
     j = c.st["jobs"]["shell"]
     assert j["status"] != "merged"
     assert any("without any change" in e for e in c.st["events"])
+
+
+def _ask_options(tmp_path, **d):
+    c = at_euklides(tmp_path, trigger="question", allowed=("ask",), situation="which file?", session="s1")
+    loop.on_euklides(c, "shell", euk_answer(action="ask", note="n", **d))
+    [q] = c.st["questions"]
+    for o in q["options"]:
+        assert questions.check_answer(q, o["answer"]) is None, o
+    return c, q
+
+
+def test_euklides_ask_offers_the_proposal_then_stop(tmp_path, ark_home):
+    c, q = _ask_options(tmp_path, proposal="move shell to the next tier " + "x" * 80, then="escalate")
+    first, stop = q["options"]
+    assert first["label"] == ("move shell to the next tier " + "x" * 80)[:60] and first["answer"] == "ok"
+    assert first["detail"] == loop._then_text(c.st, "shell", c.st["jobs"]["shell"]["euklides_ask"])
+    assert (stop["label"], stop["detail"], stop["answer"], stop["confirm"]) == \
+        ("Stop the job", "shell ends blocked", ":stop", True)
+
+
+def test_euklides_ask_with_then_stop_has_one_option_and_its_answer_is_ok(tmp_path, ark_home):
+    _, q = _ask_options(tmp_path, proposal="p", then="stop")
+    assert [(o["label"], o["answer"]) for o in q["options"]] == [("Stop the job", "ok")]
+
+
+def test_euklides_ask_whose_ok_is_refused_offers_only_stop(tmp_path, ark_home):
+    c = at_euklides(tmp_path, trigger="question", allowed=("ask",), situation="which file?", session="s1")
+    c.mjobs["ui"] = job("ui", ["T1"], ["src/ui/**"])
+    loop.on_euklides(c, "shell", euk_answer(action="ask", note="n", proposal="p", then="widen",
+                                            files=["src/ui/x.ts"]))
+    [q] = c.st["questions"]
+    assert [o["answer"] for o in q["options"]] == [":stop"]
+    assert questions.check_answer(q, ":stop") is None
+
+
+def test_the_run_budget_question_offers_euklides_raise_then_end(tmp_path, ark_home):
+    st = {"repo": "r", "slug": "s", "status": "running", "jobs": {}, "alerts": [], "events": [], "updated": ""}
+    loop._ask_cap_run(st, 12, 10, "\n\nProposal: raise 3.5", planned=10, usd=loop._raise_usd("raise 3.5"))
+    [q] = st["questions"]
+    assert [(o["label"], o["answer"], o["confirm"]) for o in q["options"]] == \
+        [("Raise $3.5", "raise 3.5", True), ("End the run", "stop", True)]
+    for o in q["options"]:
+        assert questions.check_answer(q, o["answer"]) is None
+
+
+def test_the_run_budget_raise_defaults_to_a_quarter_of_the_plan(tmp_path, ark_home):
+    for planned, n in ((10, 3), (2, 1), (0, 1)):
+        st = {"repo": "r", "slug": "s", "status": "running", "jobs": {}, "alerts": [], "events": [], "updated": ""}
+        loop._ask_cap_run(st, 12, 10, planned=planned, usd=loop._raise_usd("stop"))
+        assert st["questions"][0]["options"][0]["answer"] == f"raise {n}"
+
+
+
+# ---- Euklides' alternative: option 2 --------------------------------------------------------------
+
+ESCALATE_ALT = {"label": "Move it up a tier", "then": "escalate"}
+
+
+def test_euklides_ask_with_an_alternative_offers_ok_ok_2_and_stop(tmp_path, ark_home):
+    c, q = _ask_options(tmp_path, proposal="grant the fixture", then="go_on", label="Grant the fixture and go on",
+                        alternative=ESCALATE_ALT)
+    ask = c.st["jobs"]["shell"]["euklides_ask"]
+    assert ask["alternative"] == {"label": "Move it up a tier", "then": "escalate"}
+    first, second, stop = q["options"]
+    assert (first["label"], first["answer"]) == ("Grant the fixture and go on", "ok")
+    assert first["detail"] == loop._then_text(c.st, "shell", ask)
+    assert (second["label"], second["answer"]) == ("Move it up a tier", "ok 2")
+    assert second["detail"] == loop._then_text(c.st, "shell", ask["alternative"]) == "move shell to T2 and go on"
+    assert stop["answer"] == ":stop"
+    assert "Answer ok 2 to: move shell to T2 and go on" in q["text"]
+
+
+def test_a_widen_alternative_into_another_jobs_area_is_dropped_with_an_event(tmp_path, ark_home):
+    c = at_euklides(tmp_path, trigger="question", allowed=("ask",), situation="which file?", session="s1")
+    c.mjobs["ui"] = job("ui", ["T1"], ["src/ui/**"])
+    loop.on_euklides(c, "shell", euk_answer(action="ask", note="n", proposal="p", then="go_on",
+                                            alternative={"label": "Grant it", "then": "widen",
+                                                         "files": ["src/ui/x.ts"]}))
+    [q] = c.st["questions"]
+    assert "alternative" not in c.st["jobs"]["shell"]["euklides_ask"]
+    assert [o["answer"] for o in q["options"]] == ["ok", ":stop"]
+    assert any("alternative" in e and "ui's area" in e for e in c.st["events"])
+    assert questions.check_answer(q, "ok 2")
+
+
+@pytest.mark.parametrize("word", ["ok 2", "yes 2", "S\u00ed 2", " si  2 ", "OK 2"])
+def test_ok_2_carries_out_the_alternative(tmp_path, ark_home, word):
+    c = asked_then(tmp_path, proposal="go on", then="go_on", alternative=ESCALATE_ALT)
+    q = c.st["questions"][0]
+    assert questions.check_answer(q, word) is None
+    loop._apply_answer(c.st, {"id": "q1", "text": word})
+    j = c.st["jobs"]["shell"]
+    assert j["tier"] == "T2" and j["status"] == "needs_worker" and "euklides_ask" not in j
+    if word == "ok 2":
+        assert c.st["answers"][-1]["option"] == "Move it up a tier"
+
+
+def test_ok_still_carries_out_the_first_option(tmp_path, ark_home):
+    c = asked_then(tmp_path, proposal="go on", then="raise", usd=2, alternative=ESCALATE_ALT)
+    loop._apply_answer(c.st, {"id": "q1", "text": "ok"})
+    j = c.st["jobs"]["shell"]
+    assert j["usd_raised"] == 2 and j["tier"] == "T1" and j["status"] == "needs_worker"
+
+
+def test_ok_2_without_an_alternative_is_refused(tmp_path, ark_home):
+    c = asked_then(tmp_path, proposal="go on", then="go_on")
+    q = c.st["questions"][0]
+    assert questions.check_answer(q, "ok 2")
+    loop._apply_answer(c.st, {"id": "q1", "text": "ok 2"})
+    assert c.st["jobs"]["shell"]["status"] == "waiting_answer" and c.st["questions"]
+    assert any("was refused" in a for a in c.st["alerts"])
+
+
+def test_a_nul_in_the_alternatives_label_never_reaches_the_state(tmp_path, ark_home):
+    c = at_euklides(tmp_path, trigger="question", allowed=("ask",), situation="which file?", session="s1")
+    e = c.st["jobs"]["shell"].pop("euklides")
+    d = {"action": "ask", "note": "n", "proposal": "go on", "then": "go_on",
+         "alternative": {"label": "Move\u0000 it up", "then": "escalate"}}
+    loop._euklides_ask(c.st, "shell", e, d, None, mjobs=c.mjobs)
+    [q] = c.st["questions"]
+    assert c.st["jobs"]["shell"]["euklides_ask"]["alternative"]["label"] == "Move it up"
+    assert [o["label"] for o in q["options"] if o["answer"] == "ok 2"] == ["Move it up"]
