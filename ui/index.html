@@ -166,6 +166,18 @@ h1, h2, h3 { margin: 0; }
 .btn:hover { background: var(--wait-soft); }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--raised); }
 .btn[disabled] { opacity: .55; cursor: default; }
+.opts { display: grid; gap: 8px; }
+.opt { display: grid; gap: 2px; width: 100%; text-align: left; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--raised); cursor: pointer; overflow-wrap: anywhere; }
+.opt b { font-weight: 600; }
+.opt small { font-size: 12px; color: var(--muted); }
+.opt:hover { background: var(--wait-soft); }
+.opt.first { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+.opt.first small { color: inherit; opacity: .8; }
+.opt.first:hover { filter: brightness(1.08); background: var(--accent); }
+.opt.armed, .opt.first.armed { background: var(--attn-soft); border-color: var(--attn); color: var(--attn-ink); filter: none; }
+.opt.armed small { color: var(--attn-ink); }
+.opt[disabled] { opacity: .55; cursor: default; }
+.other { justify-self: start; border: 0; background: none; padding: 2px 0; color: var(--accent); cursor: pointer; font-size: 13px; }
 .msg { font-size: 13px; overflow-wrap: anywhere; }
 .msg.ok { color: var(--ok); } .msg.bad { color: var(--bad); }
 .qa { display: grid; gap: 2px; padding: 8px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
@@ -1571,27 +1583,58 @@ function questions(p) {
   const canAnswer = LIVE.includes(p.status);
   const openHtml = open.map(q => {
     const a = S.answers[`${keyOf(p)}#${q.id}`] || { text: "" };
-    const form = !canAnswer ? '<p class="hint">This run is closed: the question can no longer be answered.</p>'
-      : a.sent ? "" : `<textarea data-q="${esc(q.id)}" aria-label="Answer to ${esc(q.id)}" placeholder="Your answer…"${a.busy ? " disabled" : ""}>${esc(a.text)}</textarea>
+    const opts = Array.isArray(q.options) ? q.options : [];
+    const box = `<textarea data-q="${esc(q.id)}" aria-label="Answer to ${esc(q.id)}" placeholder="Your answer…"${a.busy ? " disabled" : ""}>${esc(a.text)}</textarea>
         <div class="actions"><button class="btn primary" type="button" data-answer="${esc(q.id)}"${a.busy ? " disabled" : ""}>${a.busy ? "Sending…" : "Answer"}</button>
         <span class="small muted">ark-loop applies it on its next beat.</span></div>`;
+    const buttons = opts.map((o, i) => {
+      const armed = a.armed === i + 1;
+      return `<button class="opt${i === 0 ? " first" : ""}${armed ? " armed" : ""}" type="button" data-opt="${esc(q.id)}" data-n="${i + 1}"${o.confirm ? ' data-confirm="1"' : ""}${a.busy ? " disabled" : ""}><b>${armed ? "Confirm: " : ""}${esc(o.label)}</b>${o.detail ? `<small>${esc(o.detail)}</small>` : ""}</button>`;
+    }).join("");
+    const form = !canAnswer ? '<p class="hint">This run is closed: the question can no longer be answered.</p>'
+      : a.sent ? "" : !opts.length ? box
+      : `<div class="opts">${buttons}${a.other ? "" : `<button class="other" type="button" data-other="${esc(q.id)}"${a.busy ? " disabled" : ""}>Other answer…</button>`}</div>${a.other ? box : ""}`;
     return `<div class="card q"><div class="card-top"><span class="label">${esc(q.id)}${q.job ? ` · ${esc(q.job)}` : ""} · ${esc(q.kind || "")}</span><span class="small muted">asked ${esc(when(ms(q.asked)))}</span></div>
       <div class="text">${esc(q.text)}</div>${form}${a.msg ? `<div class="msg ${a.cls || ""}">${esc(a.msg)}</div>` : ""}</div>`;
   }).join("");
   const doneHtml = done.slice().reverse().map(a => `<div class="qa"><span class="small muted">${esc(a.id)}${a.job ? ` · ${esc(a.job)}` : ""} · answered ${esc(when(ms(a.at)))}${a.by ? ` by ${esc(a.by)}` : ""}</span>
-    <span>${esc(a.question)}</span><strong>${esc(a.answer)}</strong></div>`).join("");
+    <span>${esc(a.question)}</span><strong>${esc(a.option || a.answer)}</strong>${a.option && a.option !== a.answer ? `<span class="small muted">${esc(a.answer)}</span>` : ""}</div>`).join("");
   return (open.length ? heroGraph(p) : "") + (open.length ? openHtml : '<div class="empty">No open questions.</div>')
     + (done.length ? `<div class="card"><span class="label">Answered</span>${doneHtml}</div>` : "");
 }
-async function sendAnswer(qid) {
+let armTimer = null;
+function disarm() {
+  clearTimeout(armTimer);
+  let hit = false;
+  for (const a of Object.values(S.answers)) if (a.armed) { a.armed = 0; hit = true; }
+  if (hit) render(true);
+}
+function pickOption(qid, n) {
+  const p = currentPlan();
+  const q = p && (p.questions || []).find(x => x.id === qid), o = q && (q.options || [])[n - 1];
+  if (!o) return;
+  const a = S.answers[`${keyOf(p)}#${qid}`] = S.answers[`${keyOf(p)}#${qid}`] || { text: "" };
+  if (o.confirm && a.armed !== n) {
+    disarm();
+    a.armed = n;
+    armTimer = setTimeout(disarm, 5000);
+    render(true);
+    return;
+  }
+  clearTimeout(armTimer);
+  a.armed = 0;
+  sendAnswer(qid, String(n));
+}
+async function sendAnswer(qid, text) {   // text: what to post — the typed answer, or an option's number
   const p = currentPlan();
   if (!p) return;
   const k = `${keyOf(p)}#${qid}`;
   const a = S.answers[k] = S.answers[k] || { text: "" };
-  if (!a.text.trim()) { Object.assign(a, { msg: "Write an answer first.", cls: "bad" }); render(true); return; }
+  if (text === undefined) text = a.text;
+  if (!text.trim()) { Object.assign(a, { msg: "Write an answer first.", cls: "bad" }); render(true); return; }
   Object.assign(a, { busy: true, msg: "", cls: "" });
   render(true);
-  const r = await api("/api/answer", { method: "POST", body: { repo: p.repo, slug: p.slug, id: qid, text: a.text.trim() } });
+  const r = await api("/api/answer", { method: "POST", body: { repo: p.repo, slug: p.slug, id: qid, text: text.trim() } });
   a.busy = false;
   if (r.ok) Object.assign(a, { sent: true, msg: `Sent: ${r.body.text}. ark-loop applies it on its next beat.`, cls: "ok" });
   else if (r.status === 409 && r.body.kind === "closed") {
@@ -2140,7 +2183,8 @@ function copyCommand() {
   try { navigator.clipboard.writeText(c.text).then(() => done(true), () => done(false)); } catch (e) { done(false); }
 }
 document.addEventListener("click", e => {
-  const t = e.target.closest("#motion,[data-close-job],[data-d],[data-job],[data-answer],[data-goto],[data-cmd],[data-copy],[data-notify],[data-eukamended],[data-verdict],[data-dv],[data-draft-act],[data-approve-plan],[data-draft-cancel],[data-reopen],#cmd-copy,#cmd-close");
+  if (!e.target.closest("[data-opt][data-confirm]")) disarm();   // a click elsewhere disarms a confirm
+  const t = e.target.closest("#motion,[data-opt],[data-other],[data-close-job],[data-d],[data-job],[data-answer],[data-goto],[data-cmd],[data-copy],[data-notify],[data-eukamended],[data-verdict],[data-dv],[data-draft-act],[data-approve-plan],[data-draft-cancel],[data-reopen],#cmd-copy,#cmd-close");
   if (!t) return;
   if (t.id === "motion") { setMotion(!moving()); return; }
   if (t.dataset.closeJob) { closeJob(); return; }
@@ -2158,6 +2202,12 @@ document.addEventListener("click", e => {
   if (t.id === "cmd-copy") { copyCommand(); return; }
   if (t.id === "cmd-close") { document.getElementById("cmd").hidden = true; menuNow(); return; }
   if (t.dataset.cmd) { openCommand(t.dataset.cmd); return; }
+  if (t.dataset.opt) { pickOption(t.dataset.opt, Number(t.dataset.n)); return; }
+  if (t.dataset.other) {
+    const p = currentPlan(), k = p && `${keyOf(p)}#${t.dataset.other}`;
+    if (k) { S.answers[k] = { ...(S.answers[k] || { text: "" }), other: true }; render(true); }
+    return;
+  }
   if (t.dataset.answer) { sendAnswer(t.dataset.answer); return; }
   if (t.dataset.dv) { pickDecision(t.dataset.dkey, t.dataset.dv); return; }
   if (t.dataset.verdict) { setVerdict(t.dataset.key, t.dataset.verdict); return; }
