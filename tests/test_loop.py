@@ -3954,6 +3954,16 @@ def test_euklides_ask_with_an_alternative_offers_ok_ok_2_and_stop(tmp_path, ark_
     assert "Answer ok 2 to: move shell to T2 and go on" in q["text"]
 
 
+def test_a_go_on_alternative_says_its_own_instruction_not_the_proposal(tmp_path, ark_home):
+    c, q = _ask_options(tmp_path, proposal="grant steps.py", then="widen", files=["src/shell/steps.py"],
+                        alternative={"label": "Keep plain green", "then": "go_on"})
+    first, second, _ = q["options"]
+    assert first["detail"] == "widen shell's area to src/shell/steps.py"
+    assert second["detail"] == "go on with: Keep plain green"
+    assert "Answer ok 2 to: go on with: Keep plain green" in q["text"]
+    assert "proposal above" not in second["detail"]
+
+
 def test_a_widen_alternative_into_another_jobs_area_is_dropped_with_an_event(tmp_path, ark_home):
     c = at_euklides(tmp_path, trigger="question", allowed=("ask",), situation="which file?", session="s1")
     c.mjobs["ui"] = job("ui", ["T1"], ["src/ui/**"])
