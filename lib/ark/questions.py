@@ -15,6 +15,15 @@ from .usage import clean
 MAX_TEXT = 2000
 STOP_JOB = ":stop"  # to a worker's question: no answer, the job ends blocked
 OK_WORDS = ("ok", "yes", "s\u00ed", "si")  # to Euklides' ask: the runner carries out its `then`
+OK_2 = "ok 2"  # to Euklides' ask with an alternative: the runner carries out the alternative's `then`
+
+
+def ok_choice(text) -> int | None:
+    """1 for an ok word, 2 for an ok word followed by 2 (`ok 2`, `yes 2`, ...), None for any other answer."""
+    words = str(text).strip().lower().split()
+    if words and words[0] in OK_WORDS and words[1:] in ([], ["2"]):
+        return len(words)
+    return None
 
 
 def _text(text) -> str:
@@ -102,6 +111,8 @@ def check_answer(q: dict, text: str) -> str | None:
         return "answer `raise <usd>` or `stop`"
     if q["kind"] == "worker" and q.get("refuse_ok") and text.lower() in OK_WORDS:
         return q["refuse_ok"]
+    if ok_choice(text) == 2 and not (q["kind"] == "worker" and any(o["answer"] == OK_2 for o in options(q))):
+        return "this question has no option `ok 2`"
     if q["kind"] == "plan_changed" and text != "stop":
         return "answer `stop` to end the run; to go on, restore the approved text or approve the new one"
     return None

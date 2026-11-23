@@ -258,7 +258,12 @@ THEN_TEXT = {
 THEN_RULE = ("Only these: a way out the runner cannot carry out (a PR to main, a plan edit, a push by hand) goes in "
              "`note` as what Marco must do himself; never as `then`. Then pick the `then` for what the run does "
              "meanwhile (often `fix_base` or `stop`).")
-ASK_EXAMPLE = ('{"action": "ask", "note": "...", "undo": null, "why": "...", "proposal": "...", "then": "go_on"}')
+LABEL_RULE = ("`label` is the button text for your proposal, at most 60 characters, an imperative (\"Grant the "
+              "fixture and go on\"). Offer an `alternative` (`label`, `then` and that `then`'s `files`, `usd` or "
+              "`gate`) only when it is a path you would defend, with a different `then`. Never offer `stop`: the "
+              "runner adds it. Put the option you would take first.")
+ASK_EXAMPLE = ('{"action": "ask", "note": "...", "undo": null, "why": "...", "proposal": "...", "then": "go_on", '
+               '"label": "...", "alternative": {"label": "...", "then": "escalate"}}')
 
 
 def _legacy() -> bool:
@@ -269,7 +274,8 @@ def _legacy() -> bool:
 def _actions(allowed: list[str], legacy: bool = True) -> str:
     items = [EUKLIDES_ACTIONS[a] if legacy else BLAST_ACTIONS.get(a, EUKLIDES_ACTIONS[a]) for a in allowed]
     if "ask" in allowed:
-        items[allowed.index("ask")] += "\n" + "\n".join(f"  - {t}" for t in THEN_TEXT.values()) + "\n  " + THEN_RULE
+        items[allowed.index("ask")] += ("\n" + "\n".join(f"  - {t}" for t in THEN_TEXT.values()) + "\n  " + THEN_RULE
+                                        + "\n  " + LABEL_RULE)
     return _bullets(items)
 BRANCH_COMMITS, BRANCH_FILES = 30, 50
 
