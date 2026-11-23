@@ -29,6 +29,10 @@ pyrun() {  # pytest args; sets $count from the final -q line; returns pytest's e
   local code=${PIPESTATUS[0]} line n=0 found=0 k
   line="$(grep -E '^(=+ )?[0-9]+ (passed|failed|error|errors|skipped|deselected|xfailed|xpassed)|^(=+ )?no tests ran' "$out" | tail -1)"
   for k in $(printf '%s\n' "$line" | grep -oE '[0-9]+ (passed|failed|errors?|skipped)' | cut -d' ' -f1); do n=$((n + k)); found=1; done
+  if [ "$found" = 0 ]; then  # pytest.ini adds -q, so `-q` is `-qq`: no summary line, only the progress lines
+    n="$(grep -E '^[.FEsxX]+ +\[ *[0-9]+%\]$' "$out" | sed 's/ .*//' | tr -d '\n' | wc -c | tr -d ' ')"
+    [ "$n" -gt 0 ] && { found=1; line=""; }
+  fi
   if [ "$found" = 1 ]; then count="$n"; elif printf '%s' "$line" | grep -q 'no tests ran'; then count=0; else count="?"; fi
   return "$code"
 }

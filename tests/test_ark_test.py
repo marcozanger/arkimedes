@@ -248,3 +248,9 @@ def test_summary_line_keeps_the_exit_code(repo):
     commit(repo, "lib/b.py")
     p, _ = run(repo, "job", STUB_EXIT="1", STUB_OUT="1 failed in 1s")
     assert p.returncode == 1 and last(p).startswith("ark-test: mode=job tests=1 (")
+
+
+def test_summary_line_counts_progress_characters_when_pytest_prints_no_summary(repo):
+    commit(repo, "lib/b.py")
+    p, _ = run(repo, "job", STUB_OUT="..F.s.E                                                                  [ 50%]\n...                                                                     [100%]")
+    assert last(p).startswith("ark-test: mode=job tests=10 (")
