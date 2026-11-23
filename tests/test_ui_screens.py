@@ -208,18 +208,76 @@ ANSWER = """<!doctype html><html><body>
 const f = document.querySelector("iframe");
 let tries = 0;
 function step() {
-  const d = f.contentDocument, box = d && d.querySelector("textarea[data-q]");
+  const d = f.contentDocument, box = d && d.querySelector("textarea[data-q='q3']");
   if (!box && ++tries < 100) { setTimeout(step, 50); return; }
   box.value = "Yes, as tooltips.";
   box.dispatchEvent(new f.contentWindow.Event("input", { bubbles: true }));
-  d.querySelector("[data-answer]").click();
+  d.querySelector("[data-answer='q3']").click();
   setTimeout(() => {
     const msg = d.querySelector(".msg");
     document.getElementById("result").textContent = JSON.stringify({
-      sent: f.contentWindow.ARK_POSTS, msg: msg ? msg.textContent : "", form: !!d.querySelector("textarea[data-q]") });
+      sent: f.contentWindow.ARK_POSTS, msg: msg ? msg.textContent : "", form: !!d.querySelector("textarea[data-q='q3']") });
   }, 500);
 }
 window.addEventListener("load", step);
+</script></body></html>"""
+
+OPTIONS = """<!doctype html><html><body>
+<pre id="result"></pre>
+<script>
+const wait = ms => new Promise(r => setTimeout(r, ms));
+function open() {
+  return new Promise(res => {
+    const f = document.createElement("iframe");
+    f.src = "/page.html#/plan/arkimedes/ui-polish/questions"; f.width = 700; f.height = 900;
+    document.body.appendChild(f);
+    let tries = 0;
+    (function poll() {
+      const d = f.contentDocument;
+      if (d && d.querySelector(".opt")) return res(f);
+      if (++tries > 300) return res(f);
+      setTimeout(poll, 25);
+    })();
+  });
+}
+(async () => {
+  const out = {};
+  try {
+    let f = await open(), d = f.contentDocument;
+    const card = () => d.querySelector(".card.q");
+    const opts = () => [...card().querySelectorAll(".opt")];
+    out.opts = opts().map(b => ({ text: b.innerText, first: b.classList.contains("first"), confirm: b.dataset.confirm === "1" }));
+    out.optsBold = opts().map(b => !!b.querySelector("b, strong"));
+    out.q2Box = !!d.querySelector("textarea[data-q='q2']");
+    out.q3Box = !!d.querySelector("textarea[data-q='q3']");
+    out.q3Opts = d.querySelectorAll(".card.q")[1].querySelectorAll(".opt").length;
+    const other = card().querySelector("[data-other]");
+    out.otherLabel = other ? other.textContent : "";
+    other.click(); await wait(100);
+    out.q2BoxAfterOther = !!d.querySelector("textarea[data-q='q2']");
+    // arm and confirm the confirm option (a new page keeps the state clean)
+    f = await open(); d = f.contentDocument;
+    const w = f.contentWindow;
+    const confirmBtn = () => card().querySelectorAll(".opt")[1];
+    confirmBtn().click(); await wait(100);
+    out.armedText = confirmBtn().innerText;
+    out.armedClass = confirmBtn().classList.contains("armed");
+    out.postsAfterFirst = (w.ARK_POSTS || []).length;
+    d.body.click(); await wait(100);
+    out.disarmedByClick = !confirmBtn().classList.contains("armed");
+    confirmBtn().click(); await wait(100);
+    confirmBtn().click(); await wait(300);
+    out.posts = w.ARK_POSTS || [];
+    out.msg = (d.querySelector(".msg") || {}).textContent || "";
+    // a non-confirm option posts at once
+    f = await open(); d = f.contentDocument;
+    card().querySelectorAll(".opt")[2].click(); await wait(300);
+    out.plain = f.contentWindow.ARK_POSTS || [];
+    out.answered = d.querySelector(".card:not(.q)") ? d.querySelector(".card:not(.q)").innerText : "";
+    out.all = d.querySelector("main").innerText;
+  } catch (e) { out.error = String(e); }
+  document.getElementById("result").textContent = JSON.stringify(out);
+})();
 </script></body></html>"""
 
 
@@ -337,6 +395,7 @@ def site(tmp_path_factory):
         (root / f"outer-{w}.html").write_text(OUTER % frames)
     (root / "answer.html").write_text(ANSWER)
     (root / "flows.html").write_text(FLOWS)
+    (root / "options.html").write_text(OPTIONS)
     srv = ThreadingHTTPServer(("127.0.0.1", 0), partial(_Quiet, directory=str(root)))
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     yield chrome, f"http://127.0.0.1:{srv.server_address[1]}", root
@@ -367,7 +426,8 @@ def _dump(chrome, url, width, dark, profile):
         args.insert(1, "--blink-settings=preferredColorScheme=0")
     # the suite's sandbox HOME makes Chrome hang at start: give it the real one
     env = {**os.environ, "HOME": pwd.getpwuid(os.getuid()).pw_dir}
-    r = subprocess.run(args, capture_output=True, text=True, timeout=90, env=env)
+    # a loaded machine (many runs at once) can keep a headless Chrome over 90 s; the check is the same
+    r = subprocess.run(args, capture_output=True, text=True, timeout=300, env=env)
     m = re.search(r'<pre id="result">(.*?)</pre>', r.stdout, re.S)
     assert m and m.group(1), r.stdout[-2000:] + r.stderr[-2000:]
     return json.loads(html.unescape(m.group(1)))
@@ -403,9 +463,53 @@ def test_an_open_question_is_answered_from_the_plan_screen(site, profile):
     chrome, base, _ = site
     out = _dump(chrome, f"{base}/answer.html", 390, False, profile)
     assert out["sent"] == [{"path": "/api/answer", "token": "{{ARK_TOKEN}}",
-                            "body": {"repo": "arkimedes", "slug": "ui-polish", "id": "q2", "text": "Yes, as tooltips."}}]
+                            "body": {"repo": "arkimedes", "slug": "ui-polish", "id": "q3", "text": "Yes, as tooltips."}}]
     assert out["msg"].startswith("Sent: Yes, as tooltips.") and out["form"] is False
 
+
+@pytest.fixture(scope="module")
+def options(site):
+    chrome, base, _ = site
+    d = tempfile.mkdtemp(prefix="ark-ui-", dir="/tmp" if Path("/tmp").is_dir() else None)
+    try:
+        yield _dump(chrome, f"{base}/options.html", 700, True, d)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_every_option_is_a_button_with_its_detail(options):
+    assert "error" not in options, options
+    labels = [("Yes, as tooltips", "Keep the old labels as tooltips and go on"),
+              ("Drop the old labels", "Remove them and rewrite the copy tests"),
+              ("Stop the job", "End the copy job here")]
+    assert len(options["opts"]) == 3
+    for got, (label, detail) in zip(options["opts"], labels):
+        assert label in got["text"] and detail in got["text"], got
+    assert [o["first"] for o in options["opts"]] == [True, False, False]
+    assert all(options["optsBold"])
+
+
+def test_a_confirm_option_needs_a_second_click(options):
+    assert options["postsAfterFirst"] == 0
+    assert options["armedText"].startswith("Confirm: Drop the old labels") and options["armedClass"] is True
+    assert options["disarmedByClick"] is True
+    assert options["posts"] == [{"path": "/api/answer", "token": "{{ARK_TOKEN}}",
+                                 "body": {"repo": "arkimedes", "slug": "ui-polish", "id": "q2", "text": "2"}}]
+    assert options["msg"].startswith("Sent: ")
+
+
+def test_a_plain_option_posts_at_once(options):
+    assert [p["body"] for p in options["plain"]] == [{"repo": "arkimedes", "slug": "ui-polish", "id": "q2", "text": "3"}]
+
+
+def test_other_answer_reveals_the_textarea(options):
+    assert options["otherLabel"] == "Other answer…"
+    assert options["q2Box"] is False and options["q2BoxAfterOther"] is True
+    assert options["q3Box"] is True and options["q3Opts"] == 0
+
+
+def test_an_answered_question_shows_the_option_label(options):
+    assert "Yes, 720 px" in options["all"]
 
 @pytest.fixture(scope="module")
 def flows(site, tmp_path_factory):
