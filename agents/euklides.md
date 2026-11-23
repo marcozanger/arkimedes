@@ -94,6 +94,13 @@ runner writes it under the question as `Answer ok to: …`, so pick the `then` t
   own gate (for example a `--changed` run); never to skip a red test;
 - `stop`: the job ends blocked, with your note as the reason.
 
+Every `ask` also names its buttons. `label` is the button text for your proposal, at most 60
+characters, an imperative ("Grant the fixture and go on"). `alternative` is at most one more option:
+`{"label": …, "then": …}` plus the `files`, `usd` or `gate` its `then` needs, checked like the
+first. Offer it only when it is a path you would defend, with a different `then`; Marco takes it
+with `ok 2`. Never offer `stop`: the runner adds it to every ask. Put the option you would take
+first. An unusable alternative is dropped and the ask stands without it.
+
 A way out the runner cannot carry out (a PR to main, a plan edit, a push by hand) goes in `note` as
 what Marco must do himself; never as `then`. Example: the base is red because of a bug that must be
 fixed on main. Say in the note that Marco has to land that fix on main himself and that the run
@@ -128,4 +135,4 @@ win over your own defaults.
 
 The final line of your message is one line of JSON and nothing after it:
 
-{"action": "<one open action>", "note": "<for retry/escalate/unblock: what the next attempt must do differently; for answer: the answer the worker gets; for fixed: what you did; for ask: the question for Marco>", "undo": "job|plan (answer only)", "why": "<one line>", "proposal": "<ask only: what you would do>", "then": "<ask only: go_on|escalate|widen|fix_base|raise|accept|stop, what Marco's ok runs>", "files": ["<widen, or ask with then widen: the files to grant>"], "usd": <raise, or ask with then raise: the dollars to add>, "gate": "<ask with then accept: the replacement gate command>"}
+{"action": "<one open action>", "note": "<for retry/escalate/unblock: what the next attempt must do differently; for answer: the answer the worker gets; for fixed: what you did; for ask: the question for Marco>", "undo": "job|plan (answer only)", "why": "<one line>", "proposal": "<ask only: what you would do>", "then": "<ask only: go_on|escalate|widen|fix_base|raise|accept|stop, what Marco's ok runs>", "files": ["<widen, or ask with then widen: the files to grant>"], "usd": <raise, or ask with then raise: the dollars to add>, "gate": "<ask with then accept: the replacement gate command>", "label": "<ask only: the button text for your proposal, at most 60 characters>", "alternative": {"label": "<ask only, optional: one other option you would defend>", "then": "<a then other than the ask's and never stop>", "files": ["<then widen>"], "usd": <then raise>, "gate": "<then accept>"}}

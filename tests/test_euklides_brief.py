@@ -79,3 +79,27 @@ def test_legacy_keeps_the_old_actions_text(ark_home):
     (ark_home / "workspace.json").write_text(json.dumps({"roots": [], "euklides": {"mode": "legacy"}}))
     p = euk(allowed=["retry", "widen", "fix_base", "ask"])
     assert "## What is yours" not in p and "1 to 3 exact paths" in p and "small-fix rule" in p
+
+
+def test_a_job_level_ask_shows_label_and_alternative_in_the_reply_format():
+    p = euk(allowed=["unblock", "ask"])
+    [line] = [x for x in p.splitlines() if '"action": "ask"' in x]
+    assert '"label"' in line and '"alternative"' in line
+    flat = " ".join(p.split())
+    assert "at most 60 characters" in flat and "Never offer `stop`" in flat and "different `then`" in flat
+    assert "label" not in euk(allowed=["unblock"]).split("## Decide")[1]
+
+
+def test_a_run_level_brief_has_no_label_or_alternative():
+    st, _, _ = setup(Path(tempfile.mkdtemp()))
+    p = brief.euklides_run_prompt(st, spent=12, planned=10, usd_raised=0, euklides_raised=0, margin_left=5,
+                                  allowed=["raise", "ask"], lessons="")
+    assert "label" not in p and "alternative" not in p
+
+
+def test_the_role_file_describes_label_and_alternative():
+    role = (Path(__file__).resolve().parents[1] / "agents" / "euklides.md").read_text()
+    flat = " ".join(role.split())
+    assert "`label`" in flat and "`alternative`" in flat and "Never offer `stop`" in flat
+    [schema] = [x for x in role.splitlines() if x.startswith('{"action"')]
+    assert '"label"' in schema and '"alternative"' in schema

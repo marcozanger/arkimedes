@@ -302,3 +302,33 @@ def test_a_refusal_is_told_once_for_each_reason(tmp_path):
     assert loop._first_refusal(st, a, "its area overlaps the running plan x")
     assert not loop._first_refusal(st, a, "its area overlaps the running plan x")
     assert loop._first_refusal(st, {"sha256": "t" * 64}, "its area overlaps the running plan x")
+
+
+# ---- ok 2: Euklides' alternative, with the same effect check -------------------------------------
+
+def test_ok_2_to_a_raise_alternative_raises_and_is_checked(tmp_path, ark_home):
+    c = asked_then(tmp_path, then="escalate", alternative={"label": "Raise $2", "then": "raise", "usd": 2})
+    loop._apply_answer(c.st, {"id": "q1", "text": "ok 2"})
+    j = c.st["jobs"]["shell"]
+    assert j["usd_raised"] == 2 and j["marco_raised"] == 2 and j["tier"] == "T1" and j["status"] == "needs_worker"
+    assert not [a for a in c.st["alerts"] if "not carried out" in a]
+
+
+def test_ok_2_to_a_raise_alternative_that_leaves_no_trace_asks_again(tmp_path, ark_home, monkeypatch):
+    c = asked_then(tmp_path, then="escalate", alternative={"label": "Raise $2", "then": "raise", "usd": 2})
+    seen = []
+    monkeypatch.setattr(loop, "_run_then", lambda st, job, q, ask, before: seen.append(ask))
+    loop._apply_answer(c.st, {"id": "q1", "text": "ok 2"})
+    assert [(a["then"], a["usd"]) for a in seen] == [("raise", 2)]
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "waiting_answer" and j.get("usd_raised", 0) == 0
+    assert any("Marco's ok to raise was not carried out: the budget did not grow" in a for a in c.st["alerts"])
+
+
+def test_ok_2_to_an_escalate_alternative_that_leaves_no_trace_asks_again(tmp_path, ark_home, monkeypatch):
+    c = asked_then(tmp_path, then="raise", usd=2, alternative={"label": "Move it up", "then": "escalate"})
+    monkeypatch.setattr(loop, "_escalate", lambda j: None)
+    loop._apply_answer(c.st, {"id": "q1", "text": "ok 2"})
+    j = c.st["jobs"]["shell"]
+    assert j["status"] == "waiting_answer" and j["tier"] == "T1" and j.get("usd_raised", 0) == 0
+    assert any("Marco's ok to escalate was not carried out: the tier did not change" in a for a in c.st["alerts"])

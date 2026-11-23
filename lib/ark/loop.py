@@ -707,15 +707,17 @@ def _then_text(st: dict, job: str, ask: dict) -> str:
 
 
 def _euklides_options(st: dict, job: str, ask: dict, d: dict, refuse: str | None) -> list[dict]:
-    """The buttons of Euklides' ask: his proposal (its ok carries out `then`), then stop the job. A `then` of stop
-    is the one option and its ok; an ok the runner refuses leaves only stop."""
+    """The buttons of Euklides' ask: his proposal (its ok carries out `then`), his alternative if any (`ok 2`), then
+    stop the job. A `then` of stop is the stop option and its ok; an ok the runner refuses leaves no first option."""
     stop = {"label": "Stop the job", "detail": f"{job} ends blocked", "answer": questions.STOP_JOB, "confirm": True}
+    alt = ask.get("alternative")
+    second = [{"label": alt["label"], "detail": _then_text(st, job, alt), "answer": questions.OK_2}] if alt else []
     if ask.get("then") == "stop":
-        return [{**stop, "answer": "ok"}]
+        return [{**stop, "answer": "ok"}] + second
     if refuse or not (ask.get("then") or ask.get("proposal")):
-        return [stop]
+        return second + [stop]
     label = _clean(str(d.get("label") or ask.get("proposal") or _then_text(st, job, ask)))
-    return [{"label": label[:questions.MAX_LABEL], "detail": _then_text(st, job, ask), "answer": "ok"}, stop]
+    return [{"label": label[:questions.MAX_LABEL], "detail": _then_text(st, job, ask), "answer": "ok"}, *second, stop]
 
 
 def _foreign(st: dict, job: str, files: list[str], mjobs: dict | None) -> str | None:
@@ -728,8 +730,9 @@ def _foreign(st: dict, job: str, files: list[str], mjobs: dict | None) -> str | 
 
 
 def _euklides_ask(st: dict, job: str, e: dict, d: dict, decision: str | None, mjobs: dict | None = None) -> None:
-    """Marco decides. The question ends with what his ok makes the runner do (`then`) and the other answers;
-    a `then` the runner refuses (a widen into another job's area) says why instead, and ok is refused."""
+    """Marco decides. The question ends with what his ok makes the runner do (`then`), what `ok 2` does when
+    Euklides offered an alternative, and the other answers; a `then` the runner refuses (a widen into another job's
+    area) says why instead, and ok is refused. Such an alternative is dropped, with an event."""
     j = st["jobs"][job]
     proposal = d["proposal"] or "(none: write what the job should do, or :stop)"
     ask = {"proposal": d["proposal"], "decision": decision, "ctx": e, "note": d["note"]}
@@ -738,7 +741,20 @@ def _euklides_ask(st: dict, job: str, e: dict, d: dict, decision: str | None, mj
         if d.get("gate") is not None:
             ask["gate"] = _clean(d["gate"])
     refuse = _foreign(st, job, ask["files"], mjobs) if ask.get("then") == "widen" else None
+    alt = d.get("alternative") if d.get("then") else None
+    if alt:
+        alt = {k: alt[k] for k in ("label", "then", "files", "usd", "gate") if alt.get(k) is not None}
+        alt["label"] = _clean(alt["label"])
+        if alt.get("gate") is not None:
+            alt["gate"] = _clean(alt["gate"])
+        why = _foreign(st, job, alt["files"], mjobs) if alt["then"] == "widen" else None
+        if why:
+            run.event(st, f"{job}: Euklides' alternative was dropped: {why}")
+        else:
+            ask["alternative"] = alt
     tail = [OTHER_ANSWERS]
+    if ask.get("alternative"):
+        tail.insert(0, f"Answer ok 2 to: {_then_text(st, job, ask['alternative'])}")
     if refuse:
         ask["refuse_ok"] = f"ok cannot be granted: {refuse}"
         tail.insert(0, f"The widen cannot be granted: {refuse}. Answer :stop or say what the job should do.")
@@ -2714,13 +2730,24 @@ def _answered_worker(st: dict, q: dict, text: str) -> None:
             euklides.set_marco(ask["decision"], text)
         except OSError as err:
             run.event(st, f"{job}: the Euklides journal could not be written: {err}")
-    if ask and text.strip().lower() in questions.OK_WORDS and not ask.get("refuse_ok"):
+    choice = questions.ok_choice(text) if ask else None
+    if choice == 1 and not ask.get("refuse_ok"):
         return _carry_out(st, job, q, ask)
+    if choice == 2 and ask.get("alternative"):
+        return _carry_out(st, job, q, _with_alternative(ask))
     if text == questions.STOP_JOB or text.startswith(questions.STOP_JOB + " "):
         return _block(st, job, f"stopped by Marco at question {q['id']}: {text}"[:600])
     if ask:
         return _go_on(st, job, ask["ctx"], text)
     _resume_with_answer(st, job, text)  # a question asked before Euklides
+
+
+def _with_alternative(ask: dict) -> dict:
+    """Euklides' ask with its alternative in place of the first option: its `then` and parameters, and its label
+    as the proposal (what a go_on tells the worker). The note, decision and situation stay."""
+    alt = ask["alternative"]
+    out = {k: v for k, v in ask.items() if k not in ("then", "files", "usd", "gate", "alternative", "refuse_ok")}
+    return {**out, **{k: v for k, v in alt.items() if k != "label"}, "proposal": alt["label"]}
 
 
 def _effect_ok(st: dict, job: str, then: str | None, ask: dict, before: dict) -> str | None:
