@@ -5,7 +5,8 @@ Each process `name` in a run folder has:
   <name>.log           its stdout and stderr
   <name>.receipt.json  written when it ends: exit, reason, result, usd, session
   <name>.stop          Marco stopped it: written before any signal, and it decides the receipt
-ark-loop consumes receipts (they move to done/ with the log). A process that died without
+ark-loop consumes receipts (they move to done/ with the log); on the way, a resumed session's `usd` becomes what
+that process added, and the session's running total goes to `session_usd` (_session_delta). A process that died without
 a receipt, or ran past its deadline, gets one from reap(). `ark-dispatch stop` stops one by hand.
 
 A stop from Marco wins over whoever else has a word on how the process ended: the loop can see the
@@ -466,6 +467,35 @@ def _stop_after_the_receipt(r: dict, run_dir: Path, name: str, info: dict | None
     return True
 
 
+def _money(v) -> bool:
+    return type(v) in (int, float) and math.isfinite(v) and v >= 0
+
+
+def _session_delta(r: dict, done: Path, stamp: str) -> None:
+    """`claude -p --resume` reports total_cost_usd for the whole session, every earlier process on it included.
+    Keep that total as `session_usd` and leave in `usd` only what this process added: the total minus the
+    highest total an earlier archive of the same session saw. An archive from before `session_usd` existed
+    holds the total in `usd`. A total below the earlier one is not a running total of that session: all of it
+    counts. The archive under `stamp` is this same receipt written by a consume that crashed, so it is skipped,
+    and `session_usd` once set is never read as a new total, so a repeated consume charges the same."""
+    total = r.get("session_usd", r.get("usd"))
+    session = r.get("session")
+    if not (isinstance(session, str) and session and _money(total)):
+        return
+    seen = 0.0
+    for f in done.glob("*.json"):
+        if f.stem == stamp:
+            continue
+        a = _read(f)
+        if not a or a.get("session") != session:
+            continue
+        prev = a.get("session_usd", a.get("usd"))
+        if _money(prev):
+            seen = max(seen, prev)
+    r["session_usd"] = total
+    r["usd"] = round(total - seen, 6) if total >= seen else total
+
+
 def consume(run_dir, name: str) -> dict | None:
     """Read a receipt and archive it (with its log) in done/; the process is forgotten. None if there is
     no receipt, and then nothing changes. A crash at any step is safe: the steps repeat with the same
@@ -490,6 +520,7 @@ def consume(run_dir, name: str) -> dict | None:
         end = None
     _stop_after_the_receipt(r, run_dir, name, info)
     stamp = f"{name}-{int(end * 1e9) if end is not None else time.time_ns()}"
+    _session_delta(r, done, stamp)
     _atomic(done / f"{stamp}.json", {**r, "proc": known})
     log = run_dir / f"{name}.log"
     if log.exists():
