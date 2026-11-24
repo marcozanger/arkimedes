@@ -1130,7 +1130,8 @@ def _start_fix_worker(c: Ctx, f: dict) -> None:
                             area=json.dumps(["**"]), report=c.report(name), gate=m["integration_gate"],
                             run_dir=c.dir, job=name)
     sid = str(uuid.uuid4())
-    cmd = claude.agent_cmd("worker", claude.MODELS["T1"], prompt, session=sid, resume=False, usd=FIX_BASE_USD)
+    cmd = claude.agent_cmd("worker", claude.MODELS["T1"], prompt, session=sid, resume=False, usd=FIX_BASE_USD,
+                           advisor=claude.advisor_for("T1"))
     proc.start(c.dir, f"{name}.worker", cmd, cwd=wt, env=env, minutes=30, pre=list(m.get("setup") or []),
                meta={"session": sid})
     f["status"] = "working"
@@ -1462,7 +1463,8 @@ def _start_refresh_worker(c: Ctx, r: dict) -> None:
                             area=json.dumps(["**"]), report=c.report(name), gate=m["integration_gate"],
                             run_dir=c.dir, job=name)
     sid = str(uuid.uuid4())
-    cmd = claude.agent_cmd("worker", claude.MODELS[tier], prompt, session=sid, resume=False, usd=usd)
+    cmd = claude.agent_cmd("worker", claude.MODELS[tier], prompt, session=sid, resume=False, usd=usd,
+                           advisor=claude.advisor_for(tier))
     proc.start(c.dir, f"{name}.worker", cmd, cwd=wt, env=env, minutes=minutes, pre=list(m.get("setup") or []),
                meta={"session": sid, "tier": tier})
     r.pop("retry", None)
@@ -2010,7 +2012,8 @@ def start_worker(c: Ctx, job: str) -> bool:
                             report=report, gate=mj["gate"], done_count=str(len(mj["done"])), run_dir=c.dir, job=job, grants_file=grants_file(c.st, job),
                             **({"companions": "0"} if mj.get("companions") is False else {}))
     sid = j["session"] or str(uuid.uuid4())  # the worker's id before it says so: a kill may come first
-    cmd = claude.agent_cmd("worker", claude.MODELS[j["tier"]], prompt, session=sid, resume=resume, usd=mj["budget"]["usd"])
+    cmd = claude.agent_cmd("worker", claude.MODELS[j["tier"]], prompt, session=sid, resume=resume, usd=mj["budget"]["usd"],
+                           advisor=claude.advisor_for(j["tier"]))
     proc.start(c.dir, f"{job}.worker", cmd, cwd=wt, env=env, minutes=claude.TIER_MINUTES[j["tier"]] * claude.HARD_FACTOR, pre=pre,
                meta={"session": sid, "tier": j["tier"], "attempt": j["attempts"] + 1})
     j.update(status="working", attempts=j["attempts"] + 1, error=None)

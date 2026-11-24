@@ -149,6 +149,9 @@ def test_stop_escalate_goes_up_a_tier(feature, monkeypatch, tmp_path):
     j = state()["jobs"]["shell"]
     assert j["tier"] == "T2" and j["tier_path"] == ["T1", "T2"]
     assert "--resume" not in json.loads(fake_file("shell.worker.2.argv").read_text())
+    first, second = (json.loads(fake_file(f"shell.worker.{n}.argv").read_text()) for n in (1, 2))
+    assert first[first.index("--advisor") + 1] == "opus"  # the T1 worker may consult opus; the T2 one has no one above
+    assert "--advisor" not in second
     go.touch()
     drive(settled)
 

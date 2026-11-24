@@ -61,6 +61,9 @@ DEFAULTS = {
                # api_quiet_minutes: a worker whose log ends in an API error and stays quiet this long is stopped
                # and resumed in its session; auto_resumes: how many such resumes one attempt gets.
                "stall_minutes": 20, "api_quiet_minutes": 3, "auto_resumes": 3},
+    # advisor: a worker of one of these tiers may consult `model` (a stronger one) mid-job, through Claude Code's
+    # advisor tool (`claude --advisor`). model null turns it off.
+    "advisor": {"model": "opus", "tiers": ["T0", "T1"]},
     "tick_minutes": 15,
     "poll_seconds": 15,
     "notify": [],
@@ -86,8 +89,9 @@ def load_workspace() -> dict:
     f = ark_home() / "workspace.json"
     data = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
     ws = copy.deepcopy(DEFAULTS)
-    ws.update({k: v for k, v in data.items() if k != "limits"})
+    ws.update({k: v for k, v in data.items() if k not in ("limits", "advisor")})
     ws["limits"].update(data.get("limits") or {})
+    ws["advisor"].update(data.get("advisor") or {})
     return ws
 
 

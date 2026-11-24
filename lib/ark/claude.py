@@ -25,13 +25,24 @@ def claude_bin() -> str:
     return os.environ.get("ARK_CLAUDE") or shutil.which("claude") or "claude"
 
 
+def advisor_for(tier: str) -> str | None:
+    """The model a worker of `tier` may consult mid-job (workspace.json `advisor`), or None. A tier that is not
+    listed, or no model, means no advisor. Its tokens are billed on top of the worker's own."""
+    block = paths.load_workspace().get("advisor") or {}
+    model = block.get("model")
+    return model if model and tier in (block.get("tiers") or []) else None
+
+
 def agent_cmd(role: str, model: str, prompt: str, *, session: str, resume: bool = False, usd: float,
-              tools: list[str] | None = None, denied_tools: list[str] | None = None) -> list[str]:
+              tools: list[str] | None = None, denied_tools: list[str] | None = None,
+              advisor: str | None = None) -> list[str]:
     code = paths.code_dir()
     cmd = [claude_bin(), "-p", prompt, "--model", model,
            "--settings", str(code / "worker-settings.json"),
            "--permission-mode", "auto",
            "--max-budget-usd", f"{usd:g}"]
+    if advisor and role == "worker":
+        cmd += ["--advisor", advisor]
     if role in ROLE_FILES:
         cmd += ["--append-system-prompt-file", str(code / "agents" / ROLE_FILES[role]),
                 "--output-format", "stream-json", "--verbose"]
