@@ -139,3 +139,33 @@ def test_euklides_command_is_read_only_and_has_its_role_file(monkeypatch):
 def test_euklides_env_needs_no_push_layer():
     env = claude.runner_env("euklides", repo_name=None)  # no origin_url: euklides is not in ROLE_FILES
     assert env["ARK_ROLE"] == "euklides"
+
+
+def advisor_ws(ark_home, block):
+    f = ark_home / "workspace.json"
+    data = json.loads(f.read_text())
+    data["advisor"] = block
+    f.write_text(json.dumps(data))
+
+
+def test_advisor_defaults_to_opus_for_the_cheap_tiers(ark_home):
+    assert claude.advisor_for("T0") == "opus" and claude.advisor_for("T1") == "opus"
+    assert claude.advisor_for("T2") is None  # an opus worker has no stronger model to ask
+
+
+def test_advisor_setting_overrides_only_its_keys(ark_home):
+    advisor_ws(ark_home, {"tiers": ["T1"]})
+    assert claude.advisor_for("T0") is None and claude.advisor_for("T1") == "opus"
+    advisor_ws(ark_home, {"model": None})
+    assert claude.advisor_for("T1") is None
+    advisor_ws(ark_home, {"model": "fable", "tiers": ["T2"]})
+    assert claude.advisor_for("T2") == "fable"
+
+
+def test_only_a_worker_command_carries_the_advisor(monkeypatch):
+    monkeypatch.setenv("ARK_CLAUDE", "/x/claude")
+    w = claude.agent_cmd("worker", "sonnet", "do it", session="u1", usd=2, advisor="opus")
+    assert w[w.index("--advisor") + 1] == "opus"
+    assert "--advisor" not in claude.agent_cmd("worker", "sonnet", "do it", session="u1", usd=2)
+    for role in ("reviewer", "euklides", "tick"):
+        assert "--advisor" not in claude.agent_cmd(role, "sonnet", "x", session="u1", usd=2, advisor="opus")

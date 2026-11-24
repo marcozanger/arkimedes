@@ -215,6 +215,22 @@ every call. A journal that cannot be written is an event; the decision still app
 
 A run saved before Euklides, with a job in `needs_judge` or `judging`, loads as `needs_euklides`.
 
+### Worker advisor
+
+Euklides decides after a job stops; the advisor helps while it runs. A worker of a cheap tier starts with Claude Code's
+advisor tool (`claude --advisor <model>`, experimental): a stronger model that reads the worker's whole session and
+answers when the worker asks. `agents/ark-dev.md` tells the worker when to ask: before it picks an approach, when
+something does not add up or a test fails twice the same way, and once before DONE. Reviewers, Euklides and the ticks
+never get one.
+
+```json
+"advisor": {"model": "opus", "tiers": ["T0", "T1"]}
+```
+
+Both keys are optional and override only themselves. `model: null` turns it off; a tier not in `tiers` (T2 by default:
+an opus worker has no stronger model to ask) starts without it. The pairing rule is the CLI's: the advisor must rank at
+or above the worker. Advisor tokens are billed at the advisor's rates on top of the worker's own, and count in `/usage`.
+
 ### Euklides settings
 
 The `euklides` block of `workspace.json` sets how Euklides is called. Every key is optional; a missing block or key
