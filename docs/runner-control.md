@@ -183,7 +183,7 @@ head is accepted on that replacement gate, see below) or `stop` (the job ends bl
 without a valid `then` is an unusable answer. The runner writes the action at the end of the question, `Answer ok
 to: …`, followed by `Other answers: :stop blocks the job; any other text goes to the worker as its instruction.`
 `ok`, `yes` and `si` (with or without its accent; any case, trimmed) are the ok words; `commit yes` is text. A `widen` naming a file inside
-another job's area cannot be granted: the question says why instead of `Answer ok to`, and `ark answer` refuses an
+another unmerged job's area cannot be granted: the question says why instead of `Answer ok to`, and `ark answer` refuses an
 ok word with that reason. A way out the runner cannot carry out (a PR to main, a plan edit, a push by hand) is never
 a `then`: Euklides writes it in the note as what Marco must do himself. A question saved before `then` existed
 still works: its `grant` widens and its `raise_usd` raises on `ok`; with neither, `ok` takes the proposal.
@@ -275,7 +275,8 @@ the only way past it.
 ### What Euklides can fix
 
 Two more actions let Euklides fix small things himself, inside the **small-fix rule** the runner checks: at most 3
-files and 30 changed lines, no binary file, and no file inside another job's area.
+files and 30 changed lines, no binary file, and no file inside another unmerged job's area. A merged job's work is
+already in the run branch, so it owns no files for any widen, companion or base fix.
 
 - `widen` opens after an area block (files changed outside the area), under budget. It names the files; when the
   job changed exactly those outside its area and the change is within the rule, they become **grants**: the run
@@ -287,13 +288,13 @@ files and 30 changed lines, no binary file, and no file inside another job's are
 - **Companion files** (`lib/ark/companions.py`: `tests/**`, `test/**`, `**/__tests__/**`, `*.test.*`, `*.spec.*`,
   `conftest.py`, `docs/decisions/**`, `docs/*.md`) may be written outside the area without a question. area-guard
   lets a worker write them; after the worker's DONE (and Euklides' `fixed`) the runner counts the companions outside
-  the area, and when they are within the small-fix rule together and none lies in another job's area it records
+  the area, and when they are within the small-fix rule together and none lies in another unmerged job's area it records
   them as grants (`runner (companion files)`) and an event, with no Euklides call. Otherwise the usual block, and
   Euklides' widen or ask, applies. Source and config files are never companions. A job opts out with
   `companions: false` in its plan entry (default true).
 - `fix_base` opens after the integration gate failed twice and is red on the base too, at most 3 times per run. A
   small worker (job name `_fix-<n>`, branch `ark/<slug>-_fix-<n>`, never pushed) fixes `ark/<slug>`; its change must
-  be within the rule (files of merged jobs do not count) and the integration gate must pass on it. Then one
+  be within the rule and the integration gate must pass on it. Then one
   `fix(base): … (Euklides fix <n>)` commit lands on `ark/<slug>` under the run's merge lock, and every job waiting
   on it (`waiting_fix`, `ark ps` shows "waiting for base fix <n>") integrates again. Only one fix runs at a time;
   a job that hits a red base meanwhile waits on the same fix.
