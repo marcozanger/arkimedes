@@ -776,10 +776,16 @@ def _euklides_options(st: dict, job: str, ask: dict, d: dict, refuse: str | None
     return [{"label": label[:questions.MAX_LABEL], "detail": _then_text(st, job, ask), "answer": "ok"}, *second, stop]
 
 
+def _merged_jobs(st: dict) -> tuple[str, ...]:
+    """The run's merged jobs: their work is in the run branch, so they own no files any more (R3 is about live jobs)."""
+    return tuple(j for j, s in (st.get("jobs") or {}).items() if s.get("status") == "merged")
+
+
 def _foreign(st: dict, job: str, files: list[str], mjobs: dict | None) -> str | None:
-    """Why a widen cannot be granted: a file inside another job's area. None when it can."""
+    """Why a widen cannot be granted: a file inside another unmerged job's area. None when it can."""
+    done = _merged_jobs(st)
     for other, mj in (mjobs or {}).items():
-        hit = [f for f in files if other != job and match_any(f, run.area(st, other, mj))]
+        hit = [f for f in files if other != job and other not in done and match_any(f, run.area(st, other, mj))]
         if hit:
             return f"{', '.join(hit)} belong to {other}'s area, and a widen never takes another job's files"
     return None
@@ -1004,6 +1010,7 @@ def _risk(c: Ctx, files: list[str], wt: Path, skip: tuple = ()) -> str | None:
     legacy: the small-fix rule. blast-radius: the reserved list (reserved.py) on the change's diff, against the
     live areas of this run's other jobs and of every other run of the repo."""
     base = f"origin/{c.base}"
+    skip = (*skip, *_merged_jobs(c.st))
     if _legacy():
         why = _small_fix(c, files, gitops.changed_lines(wt, base, "HEAD", files), skip)
         return f"over the small-fix rule: {why}" if why else None
@@ -1211,8 +1218,7 @@ def on_fix(c: Ctx, name: str, r: dict) -> None:
         files = [_printable(x) for x in gitops.changed_files(wt, f"origin/{c.base}", "HEAD")]
         if not files:
             return _fix_failed(c, f, "the fix worker changed nothing")
-        skip = tuple(j for j, s in c.st["jobs"].items() if s["status"] == "merged")
-        why = _risk(c, files, wt, skip=skip)
+        why = _risk(c, files, wt)
         if why:
             return _fix_failed(c, f, why)
         review = not _legacy() and _big(wt, f"origin/{c.base}", files)

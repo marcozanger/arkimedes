@@ -3490,6 +3490,18 @@ def test_a_widen_into_another_jobs_area_refuses_ok(tmp_path, ark_home):
     assert c.st["jobs"]["shell"]["status"] == "waiting_answer" and not c.st.get("grants")
 
 
+def test_a_merged_job_no_longer_owns_its_area_for_a_widen_ok(tmp_path, ark_home):
+    c = at_euklides(tmp_path, trigger="question", allowed=("ask",), situation="which file?", session="s1")
+    c.mjobs["ui"] = job("ui", ["T1"], ["src/ui/**"])
+    c.st["jobs"]["ui"] = {"status": "merged"}
+    loop.on_euklides(c, "shell", euk_answer(action="ask", note="n", proposal="p", then="widen",
+                                            files=["src/ui/x.ts"]))
+    [q] = c.st["questions"]
+    assert "Answer ok to: widen shell's area to src/ui/x.ts" in q["text"] and not q.get("refuse_ok")
+    loop._apply_answer(c.st, {"id": "q1", "text": "ok"})
+    assert c.st["grants"]["shell"] == ["src/ui/x.ts"]
+
+
 def test_ok_to_a_raise_adds_to_the_budget_and_marcos_raises(tmp_path, ark_home):
     c = asked_then(tmp_path, then="raise", usd=2)
     assert "Answer ok to: raise shell's budget by $2.00" in c.st["questions"][0]["text"]

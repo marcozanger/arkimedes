@@ -234,7 +234,7 @@ EUKLIDES_ACTIONS = {
     "unblock": "`unblock`: the job runs again from where it was blocked; `note` is what it must do differently.",
     "widen": "`widen`: add the files in `files` (1 to 3 exact paths) to this job's area for this run, when the job "
              "needs them for a small fix; the runner checks the small-fix rule (at most 3 files, 30 changed lines, "
-             "none in another job's area) and asks Marco if it fails.",
+             "none in another unmerged job's area) and asks Marco if it fails.",
     "fix_base": "`fix_base`: the integration branch itself is red; a small worker fixes it there in its own commit; "
                 "`note` says what is red and what to change. Same small-fix rule.",
     "fixed": "`fixed`: you repaired the job's branch yourself (any git or test command in the worktree, even a "
@@ -286,7 +286,7 @@ THEN_TEXT = {
     "go_on": "`go_on`: the worker gets your `proposal` as its instruction and goes on in the job's area.",
     "escalate": "`escalate`: a fresh worker one tier up, told your `note`.",
     "widen": "`widen`: the files in `files` (exact paths, no globs) join this job's area; never a file inside a "
-             "different job's area (the runner refuses that `ok`).",
+             "different unmerged job's area (the runner refuses that `ok`).",
     "fix_base": "`fix_base`: fix the integration branch with a small worker and one fix(base) commit; the job waits "
                 "on it. `note` says what to change.",
     "raise": "`raise`: add `usd` (a positive number) to this job's budget, with Marco's money, not your margin.",

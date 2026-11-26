@@ -216,6 +216,23 @@ def test_a_widen_into_another_jobs_area_asks_marco(tmp_path, ark_home, monkeypat
     assert "ui's area" in questions.check_answer(c.st["questions"][0], "ok")
 
 
+@pytest.mark.parametrize("mode", ["blast-radius", "legacy"])
+def test_a_widen_into_a_merged_jobs_area_is_granted(tmp_path, ark_home, monkeypatch, mode):
+    if mode == "legacy":
+        legacy(ark_home)
+    c = at_euklides(tmp_path, trigger="blocked", allowed=("widen", "ask"), kind="area")
+    c.mjobs["ui"] = job("ui", [], ["src/ui/**"])
+    c.st["jobs"]["ui"] = {"status": "merged"}
+    monkeypatch.setattr(loop, "_outside", lambda c, job: ["src/ui/x.ts"])
+    monkeypatch.setattr(gitops, "changed_lines", lambda *a: 2)
+    monkeypatch.setattr(gitops, "diff_text", lambda *a: "")
+    monkeypatch.setattr(gitops, "rev", lambda wt, ref: "f" * 40)
+    loop.on_euklides(c, "shell", euk_answer(action="widen", note="n", undo="job", why="w", proposal=None,
+                                            files=["src/ui/x.ts"]))
+    assert c.st["grants"]["shell"] == ["src/ui/x.ts"] and not c.st.get("questions")
+    assert c.st["jobs"]["shell"]["status"] == "needs_push"
+
+
 def test_a_fixed_that_fails_its_check_asks_with_then_stop(tmp_path, ark_home):
     c = at_euklides(tmp_path, trigger="failure", allowed=("fixed", "ask"))
     loop.on_euklides(c, "shell", euk_answer(action="fixed", note="repaired it"))
