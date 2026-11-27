@@ -1,0 +1,6 @@
+This is an automated check in a throwaway repo. Nobody will answer questions.
+
+Write and run a dynamic workflow with two agents. Each agent reads README.md and returns its first
+line. After the workflow returns, run this command yourself and then stop:
+
+{{ARK}} event {{NAME}} c1-done

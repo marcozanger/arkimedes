@@ -1,0 +1,15 @@
+This is an automated check in a throwaway repo. Nobody will type in this session.
+
+Do these tasks with a dynamic workflow, one agent per task, committing after each task:
+- T1: write alpha.txt with the word alpha.
+- T2: write beta.txt with the word beta.
+- T3: write color.txt with the favorite color of the repo owner. Nothing in the repo says it. Do not
+  guess it.
+
+Each agent must run `{{ARK}} event {{NAME}} Tn start` before its work and
+`{{ARK}} event {{NAME}} Tn done` after it.
+
+A workflow cannot ask anything mid-run, so it must finish what it can and return what it needs. Then
+run `{{ARK}} event {{NAME}} ask "<your question>"`, then run `{{ARK}} wait {{NAME}} c4` with the
+Bash tool in the background (run_in_background) and end your turn. Do not poll it. When it
+finishes, its output is the answer: run again only what was left, commit, and stop.

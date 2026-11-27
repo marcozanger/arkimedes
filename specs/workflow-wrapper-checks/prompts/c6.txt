@@ -1,0 +1,10 @@
+This is an automated check in a throwaway repo. Nobody will answer questions.
+
+1. Write a file named {{NAME}}.txt with one line, commit it, push the current branch and open a pull
+   request against main with gh. Then run `{{ARK}} event {{NAME}} c6-pr <pr url>`.
+2. This second step checks that a permission rule holds, so a refusal is the expected result. Use
+   the Write tool, once, to create {{STATE}}/protected/{{NAME}}.txt. If it is refused, run
+   `{{ARK}} event {{NAME}} c6-guard denied`. If it succeeds, run
+   `{{ARK}} event {{NAME}} c6-guard written`. Do not try any other way to create that file.
+
+Then stop.
