@@ -1,0 +1,9 @@
+This is an automated check in a throwaway repo. Nobody will answer questions.
+
+Write and run a dynamic workflow for six independent tasks, T1 to T6, each done by its own agent,
+running in parallel where possible. Task Tn writes a file tn.txt holding a short sentence about the
+number n.
+
+Each agent must run `{{ARK}} event {{NAME}} Tn start` before its work and
+`{{ARK}} event {{NAME}} Tn done` after it, with its own task id. Only the agent doing a task reports
+it. Do not report events yourself. When the workflow returns, stop.

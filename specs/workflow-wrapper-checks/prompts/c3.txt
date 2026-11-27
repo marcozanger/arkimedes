@@ -1,0 +1,7 @@
+This is an automated check in a throwaway repo. Nobody will type in this session.
+
+Run `{{ARK}} wait {{NAME}} c3` with the Bash tool in the background (run_in_background), then end
+your turn. Do not poll it, sleep or run anything else. The command exits when a message arrives.
+When you are told it finished, read its output and run:
+
+{{ARK}} event {{NAME}} c3-got <the message>
