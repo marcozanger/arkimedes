@@ -86,15 +86,21 @@ Run it together with a second C3 if you like.
 
 ## Results
 
+Run by Claude on 2026-11-27 (Claude Code 2.1.332, tmux 3.8, sessions on Sonnet 5.5). Sessions
+were started without the parent session's `CLAUDE*` environment variables. No fallback was needed.
+
 | Check | Result (pass / fallback / fail) | What you saw |
 |---|---|---|
-| C1 | | |
-| C3 short wait | | |
-| C3 long wait | | |
-| C6 | | |
-| C2 | | |
-| C4 | | |
-| C5 | | |
+| C1 | pass, 2 of 2 | A two-agent workflow ran with no keypress ("Allowed by auto mode"). `skipWorkflowUsageWarning` was already true in user settings; a setup without it was not tried. |
+| C3 short wait | pass, 2 of 2 | The idle session reacted about 6 s after the message. |
+| C3 long wait | pass, 1 of 1 | Message sent after 4 h 10 min; reaction in 7 s. Not tested with the Mac asleep in between. |
+| C6 | pass, 2 of 2 | Commit, push and PR with no prompt; the Write into the protected folder was denied and the folder stayed empty. |
+| C2 | pass, 2 of 2 | 12 of 12 events per session, sent while the workflow ran. |
+| C4 | pass, 1 of 1 | After the answer, two agent results came from cache and only T3 ran. The blocked T3 agent had also reported `done`, so that event does not mean the task is complete. |
+| C5 | pass, 2 of 2 | Telemetry totals 0.69 and 0.67 USD, matching `/usage`; workflow requests carry the run id. |
+
+The sessions also loaded the user's own hooks: they answered in Spanish and added coaching tips,
+some offering to delete worktrees.
 
 ## Cleanup
 
