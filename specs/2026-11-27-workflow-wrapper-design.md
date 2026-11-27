@@ -54,7 +54,7 @@ It works when:
 - **Sessions pull messages from Ark with a blocking background command**
   - Alternatives: type into the pane with `tmux send-keys`; cross-session messaging; restart with `claude --resume`.
   - Pros: no injected keystrokes; a finished background command wakes the session.
-  - Cons: it depends on the session starting the wait; not yet proven for waits of many hours (check C3).
+  - Cons: it depends on the session starting the wait. Check C3 passed after 4 h 10 min; a wait that spans Mac sleep is untested.
   - Why: no documented way to send input from a script was found.
 
 - **One local process, `ark serve`, with no model**
@@ -147,8 +147,12 @@ tmux session that runs `claude` with a known `--session-id`, `--effort ultracode
 `--permission-mode auto`, Ark's per-plan `--settings` file, and a first prompt that holds the frozen
 plan and the protocol below. The repo must already be trusted; if it is not, the plan goes to
 `needs_you` with that reason. `ultracode` raises effort and cost; it is there so the workflow starts
-without an approval prompt (check C1). The worktree and branch are removed once the PRs are merged,
-never while work is unmerged without Marco's OK.
+without an approval prompt (check C1). C1 passed only with `skipWorkflowUsageWarning` already on in
+the user settings, so Ark checks it and warns if it is missing. The worktree and branch are removed
+once the PRs are merged, never while work is unmerged without Marco's OK.
+
+The user's settings and hooks apply to plan sessions and to the reviewer. Ark sets `ARKIMEDES=1`
+in their environment, which turns the coach hooks off; everything else stays on.
 
 ### Session protocol
 
@@ -164,7 +168,9 @@ The session talks to Ark only through these commands. It never writes Ark's stat
 
 `ark event` and the other commands write to disk directly, so they work while `ark serve` is down.
 Progress is what the agents report: it is informative and no rule depends on it. The page marks a
-task as unreported instead of guessing.
+task as unreported instead of guessing. `done` only means that an agent finished running: in check
+C4 a blocked agent reported it too. The page never shows a task as complete on that event alone;
+tasks are complete only when Ark has verified the delivery that holds them.
 
 ### Verification and delivery
 
@@ -256,8 +262,8 @@ commit, a green suite and a review by another agent. It starts only after the ch
 
 ### Checks first
 
-Marco runs them by hand. Each one is run on a throwaway repo, at least twice where a script is
-involved. Steps, stand-in scripts and pass criteria: `workflow-wrapper-checks/README.md`.
+All six passed on 2026-11-27, run by Claude on a throwaway repo; no fallback was needed. Steps,
+stand-in scripts, pass criteria and results: `workflow-wrapper-checks/README.md`.
 
 | Check | Question | If it fails |
 |---|---|---|
@@ -293,7 +299,8 @@ W1–W8 and one for W9, both merged by Marco.
 
 The state machine, lanes, validation and verification are tested without a model. A fake `claude`
 and a fake `gh` cover the whole flow. One real run on a throwaway repo, with two lanes and one
-planted question, closes the build.
+planted question, closes the build. When Marco tries the product, one question is left unanswered
+while the Mac sleeps, to cover the case C3 did not.
 
 ## Out of scope
 
